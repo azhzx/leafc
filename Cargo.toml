@@ -1,0 +1,12 @@
+[package]
+name = "leafc"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+leafc_coreapi = { path = "leafc/leafc_coreapi" }
+leafc_lexer = { path = "leafc/leafc_lexer" }
+leafc_parser = { path = "leafc/leafc_parser" }
+leafc_diag = { path = "leafc/leafc_diag" }
+leafc_tokenpass = { path = "leafc/leafc_tokenpass" }
+
