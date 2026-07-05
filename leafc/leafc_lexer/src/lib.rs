@@ -80,8 +80,9 @@ impl Lexer {
             "external" => TokenType::KwExternal,
             "ctype" => TokenType::KwCType,
             "pub" => TokenType::KwPub,
-            "unsafecall_external" => TokenType::KwUnsafeCallExternal,
+            "unsafe_call_external" => TokenType::KwUnsafeCallExternal,
             "type" => TokenType::KwType,
+            "where" => TokenType::KwWhere,
             "no" => TokenType::KwNo,
             "only" => TokenType::KwOnly,
             "impl" => TokenType::KwImpl,
@@ -380,7 +381,7 @@ impl Lexer {
                     self.column = 1;
                     tokens.push(Token {
                         kind: TokenType::NewLine,
-                        span: Span { start: last_line_pos, end: self.current_pos() },
+                        span: Span { start: last_line_pos.clone(), end: last_line_pos },
                         source : self.source,
                         text: "\n".to_string(),
                     });

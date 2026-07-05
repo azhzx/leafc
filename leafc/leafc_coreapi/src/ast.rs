@@ -5,14 +5,16 @@ pub type AtomExprNodeId = usize;
 pub type ExprNodeId = usize;
 pub type DeclNodeId = usize;
 
-pub type TypeNameId = usize;
 
+#[derive(Debug, Clone)]
 pub struct TypeNameString {
-    name: String,
-    generics: Option<Vec<TypeNameId>>,
-    span: Span
+    pub name: String,
+    pub generics: Vec<TypeNameString>,
+    pub span: Span
 }
 
+
+#[derive(Debug, Clone)]
 pub enum Binder {
     Ignore,
     Ellipsis,
@@ -24,20 +26,22 @@ pub enum Binder {
     }
 }
 
+#[derive(Debug, Clone)]
 pub enum Unpack {
     Tuple {
         tuple: Vec<Binder>
     },
     ADT {
-        type_name: TypeNameId,
+        type_name: String,
         binder: Vec<Binder>,
     },
     Struct {
-        type_name: TypeNameId,
+        type_name: String,
         binder: Vec<Binder>,
     }
 }
 
+#[derive(Debug, Clone)]
 pub enum CaseMode {
     Literal {
         lit: AtomExprNodeId,
@@ -54,6 +58,7 @@ pub enum CaseMode {
 
 }
 
+#[derive(Debug, Clone)]
 pub enum AtomExprNode {
     Decimal {
         dec: String,
@@ -92,6 +97,7 @@ pub enum AtomExprNode {
 }
 
 
+#[derive(Debug, Clone)]
 pub enum ExprNode {
     Atom {
         expr: AtomExprNode,
@@ -195,50 +201,48 @@ pub enum ExprNode {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct Param {
-    name: String,
-    type_str: TypeNameString,
-    span: Span,
+    pub name: String,
+    pub type_str: TypeNameString,
+    pub span: Span,
 }
 
+#[derive(Debug, Clone)]
 pub struct Field {
     name: String,
     type_str: TypeNameString,
     span: Span,
 }
 
+#[derive(Debug, Clone)]
 pub struct GenericVar {
-    name: String,
-    impl_abst: Vec<TypeNameId>,
-    only_type: Vec<TypeNameId>,
-    expected_type: Vec<TypeNameId>,
+    pub name: String,
+    pub constraint: Vec<TypeNameString>,
 }
 
-pub enum AccessLevel {
-    Private, Public, PublicExternal
-}
-
+#[derive(Debug, Clone)]
 pub enum DeclNode {
     Fun {
         name: String,
         params: Vec<Param>,
         return_type_str: TypeNameString,
-        block: ExprNodeId,
-        access_level: AccessLevel,
+        block: Vec<ExprNodeId>,
+        visibility: Visibility,
         span: Span,
     },
     FunDecl {
         name: String,
         params: Vec<Param>,
         return_type_str: TypeNameString,
-        access_level: AccessLevel,
+        visibility: Visibility,
         span: Span,
     },
     Abstract {
         name: String,
         has_abst: Vec<String>,
         generic_vars: Vec<GenericVar>,
-        access_level: AccessLevel,
+        visibility: Visibility,
         methods: Vec<DeclNodeId>,
         span: Span,
     },
@@ -247,7 +251,7 @@ pub enum DeclNode {
         fields: Vec<Field>,
         has_abst: Vec<String>,
         generic_vars: Vec<GenericVar>,
-        access_level: AccessLevel,
+        visibility: Visibility,
         span: Span,
     },
     ADT {
@@ -255,19 +259,19 @@ pub enum DeclNode {
         has_abst: Vec<String>,
         generic_vars: Vec<GenericVar>,
         ctors: Vec<DeclNode>,
-        access_level: AccessLevel,
+        visibility: Visibility,
         span: Span,
     },
     Ctor {
         name: String,
         generic_vars: Vec<GenericVar>,
         return_type_str: TypeNameString,
-        access_level: AccessLevel,
+        visibility: Visibility,
         span: Span,
     },
     CType {
         name: String,
-        access_level: AccessLevel,
+        visibility: Visibility,
         span: Span,
     },
     External {
@@ -275,15 +279,25 @@ pub enum DeclNode {
         sym_name: String,
         params: Vec<Param>,
         return_type_str: TypeNameString,
-        access_level: AccessLevel,
+        visibility: Visibility,
         span: Span,
     }
 }
 
+
+#[derive(Debug, Clone)]
+pub enum Visibility {
+    Private,
+    Public,
+    PublicExternal
+}
+
+
+#[derive(Debug, Clone)]
 pub struct FileAst {
-    file: SourceId,
-    atom_expr_pool: Vec<AtomExprNode>,
-    expr_pool: Vec<ExprNode>,
-    decl_pool: Vec<DeclNode>,
-    type_name_pool: Vec<TypeNameString>,
+    pub file: SourceId,
+    pub atom_expr_pool: Vec<AtomExprNode>,
+    pub expr_pool: Vec<ExprNode>,
+    pub decl_pool: Vec<DeclNode>,
+    pub type_name_pool: Vec<TypeNameString>,
 }

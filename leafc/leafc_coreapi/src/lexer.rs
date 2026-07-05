@@ -39,6 +39,7 @@ pub enum TokenType {
     KwUnsafeCallExternal,
     KwType,
     KwNo,
+    KwWhere,
     KwOnly,
     KwImpl,
     KwFor,

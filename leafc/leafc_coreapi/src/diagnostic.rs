@@ -8,19 +8,17 @@ pub struct DiagMsg {
     pub source: SourceId
 }
 
-pub struct Colors {
-    pub red: &'static str,
-    pub green: &'static str,
-    pub blue: &'static str,
-    pub cyan: &'static str,
-    pub pink: &'static str,
-    pub purple: &'static str,
-    pub reset_color: &'static str,
+pub struct DiagTextColor {
+    pub diag_title: &'static str,
+    pub diag_message: &'static str,
+    pub diag_bar: &'static str,
+    pub diag_reset: &'static str,
+    pub diag_source_name: &'static str,
 }
 
 pub trait DiagnosticianApi {
-    fn new(source_pool: SourcePool, colors: Colors) -> Self;
-    fn reset_colors(&mut self, new_colors: Colors);
+    fn new(source_pool: SourcePool, colors: DiagTextColor) -> Self;
+    fn reset_colors(&mut self, new_colors: DiagTextColor);
     fn add_source(&mut self, source_name: String, text: String) -> SourceId;
     fn report(&self, diag: DiagMsg) -> String;
 }

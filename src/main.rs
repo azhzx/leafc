@@ -1,28 +1,26 @@
-use leafc_coreapi::diagnostic::{Colors, DiagnosticianApi};
+use leafc_coreapi::diagnostic::{DiagTextColor, DiagnosticianApi};
 use leafc_coreapi::lexer::LexerApi;
+use leafc_coreapi::parser::{ParserApi, ParserResult};
 use leafc_coreapi::source::SourcePool;
 use leafc_coreapi::tokens_pass::TokenPassApi;
 use leafc_lexer::Lexer;
+use leafc_parser::Parser;
 use leafc_diag::Diagnostician;
 use leafc_tokenpass::TokenPass;
 
 fn main() {
     let code = r#"
-__nightly__preprocess__ N 100
-__nightly__preprocess__ M(v) let v = N
-
-fun main()
-    M(100)
+abst A[u]
+where u: s+s+
+    fun foo() -> T;
 "#;
     let source_pool = SourcePool::new();
-    let mut diag = Diagnostician::new(source_pool, Colors {
-        red: "\x1b[31m",
-        green: "\x1b[32m",
-        blue: "\x1b[34m",
-        cyan: "\x1b[36m",
-        pink: "\x1b[95m",
-        purple: "\x1b[35m",
-        reset_color: "\x1b[0m",
+    let mut diag = Diagnostician::new(source_pool, DiagTextColor {
+        diag_title: "\x1b[31m",       // 红
+        diag_message: "\x1b[34m",     // 蓝
+        diag_bar: "\x1b[35m",         // 紫
+        diag_source_name: "\x1b[35m", // 紫
+        diag_reset: "\x1b[0m",        // 重置
     });
     let source_id = diag.add_source("<TEST>".to_string(), code.to_string());
 
@@ -61,5 +59,23 @@ fun main()
     //         return;
     //     }
     // };
+
+    let file_ast = match Parser::new(source_id, &tokens).parse() {
+        Ok(ParserResult {ast, requires})  => {
+            println!("=== ast ===");
+
+            println!("{:#?}", ast);
+            println!("=== === ===");
+
+            println!("=== requires ==");
+            println!("{:?}", requires);
+            println!("=== === ===");
+            ast
+        },
+        Err(e) => {
+            println!("{}", diag.report(e));
+            return;
+        }
+    };
 }
 

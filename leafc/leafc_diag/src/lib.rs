@@ -1,19 +1,19 @@
 use std::fmt::Write;
 use leafc_coreapi;
-use leafc_coreapi::diagnostic::{Colors, DiagMsg, DiagnosticianApi};
+use leafc_coreapi::diagnostic::{DiagTextColor, DiagMsg, DiagnosticianApi};
 use leafc_coreapi::source::{Source, SourceId, SourcePool};
 
 pub struct Diagnostician {
     source_pool: SourcePool,
-    colors: Colors
+    colors: DiagTextColor
 }
 
 impl DiagnosticianApi for Diagnostician {
-    fn new(source_pool: SourcePool, colors: Colors) -> Diagnostician {
+    fn new(source_pool: SourcePool, colors: DiagTextColor) -> Diagnostician {
         Diagnostician { source_pool, colors }
     }
 
-    fn reset_colors(&mut self, new_colors: Colors) {
+    fn reset_colors(&mut self, new_colors: DiagTextColor) {
         self.colors = new_colors;
     }
 
@@ -49,15 +49,15 @@ impl DiagnosticianApi for Diagnostician {
         let end_col    = diag.span.end.column;
 
         // 第一行：源文件位置（紫色）
-        writeln!(&mut out, "{}  -->    {}{}", self.colors.purple, source_name, self.colors.reset_color).unwrap();
+        writeln!(&mut out, "{}  -->    {}{}", self.colors.diag_source_name, source_name, self.colors.diag_reset).unwrap();
 
         let first = if start_line > 1 { start_line - 1 } else { start_line };
         let last  = if end_line < lines.len() { end_line + 1 } else { end_line };
 
         let indicator_prefix = format!("{}{}{}",
-                                       self.colors.purple,
+                                       self.colors.diag_bar,
                                        "  ╭─➜  |",
-                                       self.colors.reset_color);
+                                       self.colors.diag_reset);
         let indicator_len = indicator_prefix.chars().count();
 
         for lineno in first..=last {
@@ -67,13 +67,13 @@ impl DiagnosticianApi for Diagnostician {
             // 根据行号决定前缀
             let prefix = if lineno < start_line {
                 // 错误行之前
-                format!("{}  {:>4} | {}", self.colors.purple, lineno, self.colors.reset_color)
+                format!("{}  {:>4} | {}", self.colors.diag_bar, lineno, self.colors.diag_reset)
             } else if lineno == start_line {
                 // 错误行本身
-                format!("{}  {:>4} | {}", self.colors.purple, lineno, self.colors.reset_color)
+                format!("{}  {:>4} | {}", self.colors.diag_bar, lineno, self.colors.diag_reset)
             } else {
                 // 错误行之后
-                format!("{}  |  {} | {}", self.colors.purple, lineno, self.colors.reset_color)
+                format!("{}  |  {} | {}", self.colors.diag_bar, lineno, self.colors.diag_reset)
             };
 
             writeln!(&mut out, "{}{}", prefix, line).unwrap();
@@ -90,17 +90,17 @@ impl DiagnosticianApi for Diagnostician {
                 }
 
                 let caret_len = if end_col > start_col { end_col - start_col } else { 1 };
-                write!(&mut indicator, "{}{}{}", self.colors.red, "^".repeat(caret_len), self.colors.reset_color).unwrap();
+                write!(&mut indicator, "{}{}{}", self.colors.diag_title, "^".repeat(caret_len), self.colors.diag_reset).unwrap();
                 writeln!(&mut out, "{}", indicator).unwrap();
             }
         }
 
-        writeln!(&mut out, "{}  |{}", self.colors.purple, self.colors.reset_color).unwrap();
+        writeln!(&mut out, "{}  |{}", self.colors.diag_bar, self.colors.diag_reset).unwrap();
         writeln!(&mut out, "  {}{}: {}{}{}",
-                 self.colors.red,
+                 self.colors.diag_title,
                  diag.title,
-                 self.colors.blue,
-                 diag.msg, self.colors.reset_color).unwrap();
+                 self.colors.diag_message,
+                 diag.msg, self.colors.diag_reset).unwrap();
 
         out
     }
