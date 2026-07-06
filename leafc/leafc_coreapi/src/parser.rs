@@ -6,17 +6,18 @@ use crate::source::{Source, SourceId, Span};
 #[derive(Debug)]
 pub enum ParserError {
     TokenExpect,
-    InvalidTopDeclare,
+    InvalidTopDeclaration,
     InvalidImportList,
     InvalidOnlyList,
-    InvalidUseDeclare,
-    FunctionDeclareMissingParameterList,
+    InvalidUseDeclaration,
+    FunctionDeclarationMissingParameterList,
     InvalidGenericList,
     InvalidFunctionParameterList,
     InvalidFunctionBody,
     InvalidGenericParameterList,
     InvalidWhereBody,
     WhereBodyGenericMissingMatchGenericParameterList,
+    InvalidTypeDeclaration,
 }
 
 #[derive(Debug, Clone)]

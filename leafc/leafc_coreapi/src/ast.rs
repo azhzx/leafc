@@ -210,15 +210,25 @@ pub struct Param {
 
 #[derive(Debug, Clone)]
 pub struct Field {
-    name: String,
-    type_str: TypeNameString,
-    span: Span,
+    pub name: String,
+    pub type_str: TypeNameString,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]
 pub struct GenericVar {
     pub name: String,
     pub constraint: Vec<TypeNameString>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Ctor {
+    pub name: String,
+    pub generic_vars: Vec<GenericVar>,
+    pub from_type_str: TypeNameString,
+    pub return_type_str: TypeNameString,
+    pub visibility: Visibility,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]
@@ -254,18 +264,19 @@ pub enum DeclNode {
         visibility: Visibility,
         span: Span,
     },
+    TypeAlias {
+        name: String,
+        ref_to: TypeNameString,
+        has_abst: Vec<String>,
+        generic_vars: Vec<GenericVar>,
+        visibility: Visibility,
+        span: Span,
+    },
     ADT {
         name: String,
         has_abst: Vec<String>,
         generic_vars: Vec<GenericVar>,
-        ctors: Vec<DeclNode>,
-        visibility: Visibility,
-        span: Span,
-    },
-    Ctor {
-        name: String,
-        generic_vars: Vec<GenericVar>,
-        return_type_str: TypeNameString,
+        ctors: Vec<Ctor>,
         visibility: Visibility,
         span: Span,
     },

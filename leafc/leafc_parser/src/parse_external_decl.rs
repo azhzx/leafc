@@ -13,9 +13,9 @@ impl<'a> Parser<'a> {
             let name_token = self.current_token();
             let name = name_token.text.clone();
             let span = name_token.span.clone();
-            self.skip_token_if(TokenType::Ident)?;
-            self.skip_token_if(TokenType::Semicolon)?;
-            self.skip_token_if(TokenType::NewLine)?;
+            self.skip_token_only(TokenType::Ident)?;
+            self.skip_token_only(TokenType::Semicolon)?;
+            self.skip_token_only(TokenType::NewLine)?;
 
             self.ast.decl_pool.push(DeclNode::CType {
                 name,
@@ -26,13 +26,13 @@ impl<'a> Parser<'a> {
             return Ok(());
         }
 
-        self.skip_token_if(TokenType::KwFun)?;
+        self.skip_token_only(TokenType::KwFun)?;
         let fist_name_token = self.current_token().clone();
-        self.skip_token_if(TokenType::Ident)?;
+        self.skip_token_only(TokenType::Ident)?;
 
         if self.current_token().kind != TokenType::Lparen {
             return Err(DiagMsg{
-                title: format!("{:?}", ParserError::FunctionDeclareMissingParameterList),
+                title: format!("{:?}", ParserError::FunctionDeclarationMissingParameterList),
                 msg: "function declare missing parameter list".to_string(),
                 span: self.current_token().span.clone(),
                 source: self.source
@@ -43,7 +43,7 @@ impl<'a> Parser<'a> {
 
         while self.current_token().kind != TokenType::Rparen {
             let param_name = self.current_token().text.clone();
-            self.skip_token_if(TokenType::Ident)?;
+            self.skip_token_only(TokenType::Ident)?;
 
             let type_str = if self.current_token().kind == TokenType::Colon {
                 self.skip_token();
@@ -87,15 +87,15 @@ impl<'a> Parser<'a> {
         let sym_name = if self.current_token().kind == TokenType::Eq {
             self.skip_token();
             let name = self.current_token().text.clone();
-            self.skip_token_if(TokenType::String)?;
+            self.skip_token_only(TokenType::String)?;
             name
         } else {
             fist_name_token.text.clone()
         };
 
-        self.skip_token_if(TokenType::Semicolon)?;
+        self.skip_token_only(TokenType::Semicolon)?;
 
-        self.skip_token_if(TokenType::NewLine)?;
+        self.skip_token_only(TokenType::NewLine)?;
         self.ast.decl_pool.push(DeclNode::External {
             name: fist_name_token.text,
             sym_name,

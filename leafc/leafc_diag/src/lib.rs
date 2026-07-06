@@ -20,7 +20,11 @@ impl DiagnosticianApi for Diagnostician {
     fn add_source(&mut self, source_name: String, text: String) -> SourceId {
         self.source_pool.push(Source {
             file_name: source_name,
-            file_lines : text.lines().map(String::from).collect(),
+            file_lines : {
+                let mut lines = text.lines().map(String::from).collect::<Vec<_>>();
+                lines.push("".to_string());
+                lines
+            }
         });
 
         (self.source_pool.len() - 1) as SourceId

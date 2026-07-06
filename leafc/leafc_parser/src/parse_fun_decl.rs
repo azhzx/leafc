@@ -8,11 +8,11 @@ impl<'a> Parser<'a> {
     pub fn parse_fun_decl(&mut self, visibility: Visibility) -> Result<(), DiagMsg> {
         self.skip_token();
         let fist_name_token = self.current_token().clone();
-        self.skip_token_if(TokenType::Ident)?;
+        self.skip_token_only(TokenType::Ident)?;
 
         if self.current_token().kind != TokenType::Lparen {
             return Err(DiagMsg{
-                title: format!("{:?}", ParserError::FunctionDeclareMissingParameterList),
+                title: format!("{:?}", ParserError::FunctionDeclarationMissingParameterList),
                 msg: "function declare missing parameter list".to_string(),
                 span: self.current_token().span.clone(),
                 source: self.source
@@ -23,7 +23,7 @@ impl<'a> Parser<'a> {
 
         while self.current_token().kind != TokenType::Rparen {
             let param_name = self.current_token().text.clone();
-            self.skip_token_if(TokenType::Ident)?;
+            self.skip_token_only(TokenType::Ident)?;
 
             let type_str = if self.current_token().kind == TokenType::Colon {
                 self.skip_token();
@@ -76,8 +76,8 @@ impl<'a> Parser<'a> {
             return Ok(())
         }
 
-        self.skip_token_if(TokenType::NewLine)?;
-        self.skip_token_if(TokenType::Indent)?; // indent
+        self.skip_token_only(TokenType::NewLine)?;
+        self.skip_token_only(TokenType::Indent)?; // indent
 
         let mut body = vec![];
 
@@ -85,7 +85,7 @@ impl<'a> Parser<'a> {
             body.push(self.parse_expr()?);
         }
 
-        self.skip_token_if(TokenType::Dedent)?; // dedent
+        self.skip_token_only(TokenType::Dedent)?; // dedent
 
         self.ast.decl_pool.push(DeclNode::Fun {
             name: fist_name_token.text.clone(),

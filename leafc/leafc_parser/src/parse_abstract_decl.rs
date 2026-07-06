@@ -10,7 +10,7 @@ impl<'a> Parser<'a> {
         let name_token = self.current_token();
         let name = name_token.text.clone();
         let name_span = name_token.span.clone();
-        self.skip_token_if(TokenType::Ident)?;
+        self.skip_token_only(TokenType::Ident)?;
 
         let mut generic = if self.current_token().kind == TokenType::Lbracket {
             self.handle_generic_param()?
@@ -34,22 +34,22 @@ impl<'a> Parser<'a> {
             }
         }
 
-        self.skip_token_if(TokenType::NewLine)?;
+        self.skip_token_only(TokenType::NewLine)?;
         if self.current_token().kind == TokenType::KwWhere {
             generic = self.handle_where(generic)?;
         }
 
-        self.skip_token_if(TokenType::Indent)?;
+        self.skip_token_only(TokenType::Indent)?;
         let mut methods_id = vec![];
 
         while self.current_token().kind == TokenType::KwFun {
             self.skip_token();
             let fist_name_token = self.current_token().clone();
-            self.skip_token_if(TokenType::Ident)?;
+            self.skip_token_only(TokenType::Ident)?;
 
             if self.current_token().kind != TokenType::Lparen {
                 return Err(DiagMsg{
-                    title: format!("{:?}", ParserError::FunctionDeclareMissingParameterList),
+                    title: format!("{:?}", ParserError::FunctionDeclarationMissingParameterList),
                     msg: "function declare missing parameter list".to_string(),
                     span: self.current_token().span.clone(),
                     source: self.source
@@ -60,7 +60,7 @@ impl<'a> Parser<'a> {
 
             while self.current_token().kind != TokenType::Rparen {
                 let param_name = self.current_token().text.clone();
-                self.skip_token_if(TokenType::Ident)?;
+                self.skip_token_only(TokenType::Ident)?;
 
                 let type_str = if self.current_token().kind == TokenType::Colon {
                     self.skip_token();
@@ -112,10 +112,12 @@ impl<'a> Parser<'a> {
                 });
                 methods_id.push(self.ast.decl_pool.len() - 1);
             }
-            self.skip_token_if(TokenType::NewLine)?;
+            self.skip_token_only(TokenType::NewLine)?;
+            self.skip_token_if_newlines()?;
         }
 
-        self.skip_token_if(TokenType::Dedent)?;
+        self.skip_token_if_newlines()?;
+        self.skip_token_only(TokenType::Dedent)?;
 
         self.ast.decl_pool.push( DeclNode::Abstract {
             name: name,

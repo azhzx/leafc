@@ -40,6 +40,7 @@ pub enum TokenType {
     KwType,
     KwNo,
     KwWhere,
+    KwOf,
     KwOnly,
     KwImpl,
     KwFor,

@@ -39,7 +39,7 @@ impl<'a> Parser<'a> {
         self.skip_token();
         self.current_token()
     }
-    fn skip_token_if(&mut self, expected: TokenType) -> Result<(), DiagMsg> {
+    fn skip_token_only(&mut self, expected: TokenType) -> Result<(), DiagMsg> {
         let tok = self.current_token();
         if tok.kind == expected {
             self.skip_token();
@@ -54,6 +54,13 @@ impl<'a> Parser<'a> {
         })
     }
 
+    fn skip_token_if_newlines(&mut self) -> Result<(), DiagMsg> {
+        while self.current_token().kind == TokenType::NewLine {
+            self.skip_token();
+        }
+        Ok(())
+    }
+
     fn unknown_type_name(&self) -> TypeNameString {
         TypeNameString {
             name: "".to_string(), generics: vec![], span: self.current_token().span.clone()
@@ -62,7 +69,7 @@ impl<'a> Parser<'a> {
 
     fn handle_type_name_string(&mut self) -> Result<TypeNameString, DiagMsg> {
         let start_token = self.current_token().clone();
-        self.skip_token_if(TokenType::Ident)?;
+        self.skip_token_only(TokenType::Ident)?;
         let mut generics = vec![];
 
         if self.current_token().kind == TokenType::Lbracket {
@@ -95,10 +102,10 @@ impl<'a> Parser<'a> {
     }
     fn handle_generic_param(&mut self) -> Result<Vec<GenericVar>, DiagMsg> {
         let mut generics = vec![];
-        self.skip_token_if(TokenType::Lbracket)?;
+        self.skip_token_only(TokenType::Lbracket)?;
         while self.current_token().kind != TokenType::Rbracket {
             let param_name = self.current_token().text.clone();
-            self.skip_token_if(TokenType::Ident)?;
+            self.skip_token_only(TokenType::Ident)?;
 
             if self.current_token().kind == TokenType::Comma {
                 self.skip_token();
@@ -120,19 +127,19 @@ impl<'a> Parser<'a> {
                 })
             }
         }
-        self.skip_token_if(TokenType::Rbracket)?;
+        self.skip_token_only(TokenType::Rbracket)?;
         Ok(generics)
     }
 
     fn handle_where(&mut self, mut generics: Vec<GenericVar>) -> Result<Vec<GenericVar>, DiagMsg> {
-        self.skip_token_if(TokenType::KwWhere)?;
+        self.skip_token_only(TokenType::KwWhere)?;
         let mut current_generic_index = 0;
 
         while self.current_token().kind == TokenType::Ident {
             let mut constraint = vec![];
 
             self.skip_token();
-            self.skip_token_if(TokenType::Colon)?;
+            self.skip_token_only(TokenType::Colon)?;
             while self.current_token().kind != TokenType::NewLine {
 
                 let type_str = self.handle_type_name_string()?;
@@ -210,8 +217,8 @@ impl<'a> ParserApi<'a> for Parser<'a> {
                 self.skip_token();
                 if self.current_token().kind == Lparen {
                     self.skip_token();
-                    self.skip_token_if(TokenType::KwExternal)?;
-                    self.skip_token_if(TokenType::Rparen)?;
+                    self.skip_token_only(TokenType::KwExternal)?;
+                    self.skip_token_only(TokenType::Rparen)?;
                     visibility = Visibility::PublicExternal;
                 } else {
                     visibility = Visibility::Public;
@@ -227,7 +234,7 @@ impl<'a> ParserApi<'a> for Parser<'a> {
                 TokenType::NewLine => self.skip_token(),
                 _ => {
                     return Err(DiagMsg{
-                        title: format!("{:?}", ParserError::InvalidTopDeclare),
+                        title: format!("{:?}", ParserError::InvalidTopDeclaration),
                         msg: "invalid top declare".to_string(),
                         span: self.current_token().span.clone(),
                         source: self.source

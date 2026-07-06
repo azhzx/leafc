@@ -48,6 +48,7 @@ impl Lexer {
     fn keyword_map(&self, s: &String) -> TokenType {
         match s.as_str() {
             "use" => TokenType::KwUse,
+            "of" => TokenType::KwOf,
             "or" => TokenType::KwOr,
             "and" => TokenType::KwAnd,
             "not" => TokenType::KwNot,

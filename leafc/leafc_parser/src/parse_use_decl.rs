@@ -5,7 +5,7 @@ use crate::Parser;
 
 impl<'a> Parser<'a> {
     pub fn parse_use_decl(&mut self) -> Result<(), DiagMsg> {
-        self.skip_token_if(TokenType::KwUse)?;
+        self.skip_token_only(TokenType::KwUse)?;
         let mut require_paths = vec![];
         let mut is_external_module = false;
         let mut only = vec![];
@@ -26,7 +26,7 @@ impl<'a> Parser<'a> {
         // use a.b.c
         while self.current_token().kind == TokenType::Ident{
             let name = self.current_token().text.clone();
-            self.skip_token_if(TokenType::Ident)?;
+            self.skip_token_only(TokenType::Ident)?;
             require_paths.push(name);
 
             if self.current_token().kind == TokenType::Dot {
@@ -40,7 +40,7 @@ impl<'a> Parser<'a> {
             self.skip_token();
             while self.current_token().kind == TokenType::Ident{
                 let name = self.current_token().text.clone();
-                self.skip_token_if(TokenType::Ident)?;
+                self.skip_token_only(TokenType::Ident)?;
                 only.push(name);
 
                 if self.current_token().kind == TokenType::Comma {
@@ -84,7 +84,7 @@ impl<'a> Parser<'a> {
 
         while self.current_token().kind != TokenType::NewLine {
             return Err(DiagMsg {
-                title: format!("{:?}", ParserError::InvalidUseDeclare),
+                title: format!("{:?}", ParserError::InvalidUseDeclaration),
                 msg: "invalid use declare".to_string(),
                 span: self.current_token().span.clone(),
                 source: self.source

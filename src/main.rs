@@ -10,9 +10,11 @@ use leafc_tokenpass::TokenPass;
 
 fn main() {
     let code = r#"
-abst A[u]
-where u: s+s+
-    fun foo() -> T;
+pub type Maybe[T]
+    | Nothing
+    | Just of T
+
+fun main() -> Int;
 "#;
     let source_pool = SourcePool::new();
     let mut diag = Diagnostician::new(source_pool, DiagTextColor {
