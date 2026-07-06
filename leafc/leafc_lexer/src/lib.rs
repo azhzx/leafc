@@ -49,6 +49,7 @@ impl Lexer {
         match s.as_str() {
             "use" => TokenType::KwUse,
             "of" => TokenType::KwOf,
+            "ref" => TokenType::KwRef,
             "or" => TokenType::KwOr,
             "and" => TokenType::KwAnd,
             "not" => TokenType::KwNot,

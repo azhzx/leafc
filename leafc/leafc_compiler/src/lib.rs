@@ -24,7 +24,7 @@ impl CompilerApi for NativeCompiler {
         config: &CompilerConfig,
         lexer: impl LexerApi,
         parser: impl ParserApi<'a>,
-        name_pass: impl NamePassApi,
+        name_pass: impl NamePassApi<'a>,
         type_checker: impl TypeCheckerApi,
         hir_lower: impl HirLowerApi,
         hir_pass: impl HirPassApi,

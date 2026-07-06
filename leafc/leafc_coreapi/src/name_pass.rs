@@ -5,6 +5,7 @@ pub enum NamePassError {
     
 }
 
-pub trait NamePassApi {
-    fn name_pass(&self, ast: &mut FileAst) -> Result<(), DiagMsg>;
+pub trait NamePassApi<'a> {
+    fn new(ast: &'a mut FileAst) -> Self;
+    fn pass(&self,) -> Result<(), DiagMsg>;
 }

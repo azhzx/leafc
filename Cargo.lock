@@ -9,6 +9,7 @@ dependencies = [
  "leafc_coreapi",
  "leafc_diag",
  "leafc_lexer",
+ "leafc_namepass",
  "leafc_parser",
  "leafc_tokenpass",
 ]
@@ -26,6 +27,13 @@ dependencies = [
 
 [[package]]
 name = "leafc_lexer"
+version = "0.1.0"
+dependencies = [
+ "leafc_coreapi",
+]
+
+[[package]]
+name = "leafc_namepass"
 version = "0.1.0"
 dependencies = [
  "leafc_coreapi",

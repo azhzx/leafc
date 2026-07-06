@@ -18,6 +18,10 @@ pub enum ParserError {
     InvalidWhereBody,
     WhereBodyGenericMissingMatchGenericParameterList,
     InvalidTypeDeclaration,
+    InvalidTupleLiteral,
+    InvalidExpression,
+    InvalidOperator,
+    InvalidCallArgumentList,
 }
 
 #[derive(Debug, Clone)]

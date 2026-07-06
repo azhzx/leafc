@@ -44,6 +44,7 @@ pub enum TokenType {
     KwOnly,
     KwImpl,
     KwFor,
+    KwRef,
     KwSubType,
     KwBaseType,
 

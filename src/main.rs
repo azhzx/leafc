@@ -1,5 +1,6 @@
 use leafc_coreapi::diagnostic::{DiagTextColor, DiagnosticianApi};
 use leafc_coreapi::lexer::LexerApi;
+use leafc_coreapi::name_pass::{NamePassApi, NamePassError};
 use leafc_coreapi::parser::{ParserApi, ParserResult};
 use leafc_coreapi::source::SourcePool;
 use leafc_coreapi::tokens_pass::TokenPassApi;
@@ -7,14 +8,21 @@ use leafc_lexer::Lexer;
 use leafc_parser::Parser;
 use leafc_diag::Diagnostician;
 use leafc_tokenpass::TokenPass;
+use leafc_namepass::NamePass;
 
 fn main() {
     let code = r#"
-pub type Maybe[T]
-    | Nothing
-    | Just of T
-
-fun main() -> Int;
+fun main() -> Int
+    let x = #[1+2+4*(-1==0%4), "s", -2, if 1 then 0 else -1]
+    if 1>0
+        0
+    elif 2>0
+        8
+    elif 4>8
+        9
+    else
+        do
+            1
 "#;
     let source_pool = SourcePool::new();
     let mut diag = Diagnostician::new(source_pool, DiagTextColor {
@@ -62,7 +70,7 @@ fun main() -> Int;
     //     }
     // };
 
-    let file_ast = match Parser::new(source_id, &tokens).parse() {
+    let mut file_ast = match Parser::new(source_id, &tokens).parse() {
         Ok(ParserResult {ast, requires})  => {
             println!("=== ast ===");
 
@@ -79,5 +87,17 @@ fun main() -> Int;
             return;
         }
     };
+
+    // let name_passed_ast = match NamePass::new(&mut file_ast).pass() {
+    //     Ok(..)  => {
+    //         println!("=== ast ===");
+    //         println!("{:#?}", file_ast);
+    //         println!("=== === ===");
+    //     },
+    //     Err(e) => {
+    //         println!("{}", diag.report(e));
+    //         return;
+    //     }
+    // };
 }
 

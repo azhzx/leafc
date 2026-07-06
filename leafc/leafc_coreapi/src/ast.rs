@@ -1,5 +1,4 @@
 use crate::source::{SourceId, Span};
-use crate::symbol::TyId;
 
 pub type AtomExprNodeId = usize;
 pub type ExprNodeId = usize;
@@ -63,141 +62,133 @@ pub enum AtomExprNode {
     Decimal {
         dec: String,
         span: Span,
-        concrete_type: TyId,
     },
     Int {
         int: String,
         span: Span,
-        concrete_type: TyId,
     },
     Str {
         string: String,
         span: Span,
-        concrete_type: TyId,
     },
     Name {
         name: String,
         span: Span,
-        concrete_type: TyId,
     },
     Complex {
         int: AtomExprNodeId,
         span: Span,
-        concrete_type: TyId,
     },
     Tuple {
         exprs: Vec<ExprNodeId>,
         span: Span,
-        concrete_type: TyId,
     },
     Ellipsis {
         span: Span,
-        concrete_type: TyId,
     }
+}
+
+#[derive(Debug, Clone)]
+pub enum Operator {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    And,
+    Or,
+    Not,
+    Eq,
+    Neq,
+    Lt,
+    Gt,
+    Le,
+    Ge,
 }
 
 
 #[derive(Debug, Clone)]
 pub enum ExprNode {
     Atom {
-        expr: AtomExprNode,
+        expr: AtomExprNodeId,
         span: Span,
-        concrete_type: TyId,
     },
     Binary {
         left: ExprNodeId,
         right: ExprNodeId,
-        op: String,
+        op: Operator,
         span: Span,
-        concrete_type: TyId,
     },
     Unary {
-        op: String,
+        op: Operator,
         right: ExprNodeId,
         span: Span,
-        concrete_type: TyId,
     },
     Move {
         target: ExprNodeId,
         span: Span,
-        concrete_type: TyId,
     },
     Copy {
         target: ExprNodeId,
         span: Span,
-        concrete_type: TyId,
     },
     Ref {
         target: ExprNodeId,
         span: Span,
-        concrete_type: TyId,
     },
     MutRef {
         target: ExprNodeId,
         span: Span,
-        concrete_type: TyId,
     },
     Share {
         target: ExprNodeId,
         span: Span,
-        concrete_type: TyId,
     },
     Call {
         callee: ExprNodeId,
         args: Vec<ExprNodeId>,
         span: Span,
-        concrete_type: TyId,
     },
     UnsafeExternalCall {
         callee: ExprNodeId,
         args: Vec<ExprNodeId>,
         span: Span,
-        concrete_type: TyId,
     },
     Member {
         left: ExprNodeId,
-        right: ExprNodeId,
+        right: String,
         span: Span,
-        concrete_type: TyId,
     },
     TypeCast {
         expr: ExprNodeId,
         into_type_str: TypeNameString,
         span: Span,
-        concrete_type: TyId,
     },
     Do {
-        muted: Vec<String>,
-        expr: Vec<ExprNodeId>,
+        exprs: Vec<ExprNodeId>,
         span: Span,
-        concrete_type: TyId,
     },
     Let {
         name: String,
         expr: ExprNodeId,
         span: Span,
-        concrete_type: TyId,
-    },
-    LetMut {
-        name: String,
-        expr: ExprNodeId,
-        span: Span,
-        concrete_type: TyId,
+        type_str: TypeNameString,
+        mutable: bool,
     },
     If {
         cond: ExprNodeId,
         then_expr: ExprNodeId,
         elifs: Vec<(ExprNodeId, ExprNodeId)>,
-        else_expr: ExprNodeId,
+        else_expr: Option<ExprNodeId>,
         span: Span,
-        concrete_type: TyId,
     },
+
+    /// parse for match is delay
     Match {
         expr: ExprNodeId,
         cases: Vec<(CaseMode, ExprNodeId)>,
         default_case: ExprNodeId,
         span: Span,
-        concrete_type: TyId,
     }
 }
 

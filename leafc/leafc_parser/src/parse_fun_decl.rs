@@ -83,6 +83,10 @@ impl<'a> Parser<'a> {
 
         while self.current_token().kind != TokenType::Dedent {
             body.push(self.parse_expr()?);
+            if self.current_token().kind == TokenType::NewLine {
+                self.skip_token();
+                self.skip_token_if_newlines()?;
+            }
         }
 
         self.skip_token_only(TokenType::Dedent)?; // dedent
