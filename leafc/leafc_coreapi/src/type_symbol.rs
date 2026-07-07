@@ -1,6 +1,6 @@
 use std::any::TypeId;
+use crate::scope::FieldSymbol;
 use crate::source::Span;
-use crate::symbol_name::SymName;
 
 pub type TyId = usize;
 const INVALID_TYPE_ID: TyId = !0;
@@ -24,7 +24,7 @@ pub enum TypeKind {
         def_span: Span,
     },
     Struct {
-        fields: Vec<Symbol>,
+        fields: Vec<FieldSymbol>,
         def_span: Span,
     },
     Union {
@@ -38,29 +38,6 @@ pub enum TypeKind {
 
 pub struct TypeSymbol {
     kind: TypeKind,
-    name: SymName
 }
 
 pub type TypePool = Vec<TypeSymbol>;
-
-pub enum Symbol {
-    LocalSymbol {
-        name: SymName,
-        ty: TyId,
-        def_span: Span,
-    },
-    FieldSymbol {
-        name: SymName,
-        ty: TyId,
-        def_span: Span,
-    },
-    CtorSymbol {
-        of: TypeId,
-        return_ty: TyId,
-        def_span: Span,
-    }
-}
-
-pub struct SymbolTable {
-    symbols: Vec<Symbol>,
-}

@@ -5,6 +5,7 @@ pub enum HirLowerError {
     
 }
 
-pub trait HirLowerApi {
-    fn lower(file_ast: FileAst) -> Result<(), DiagMsg>;
+pub trait HirLowerApi<'a> {
+    fn new(file_ast: &'a FileAst) -> Self;
+    fn lower() -> Result<(), DiagMsg>;
 }

@@ -1,4 +1,4 @@
-use leafc_coreapi::ast::{DeclNode, Param, TypeNameString, Visibility};
+use leafc_coreapi::ast::{DeclNode, MethodDecl, Param, TypeNameString, Visibility};
 use leafc_coreapi::diagnostic::DiagMsg;
 use leafc_coreapi::lexer::{Token, TokenType};
 use leafc_coreapi::parser::{ParserError, ParserResult};
@@ -40,7 +40,7 @@ impl<'a> Parser<'a> {
         }
 
         self.skip_token_only(TokenType::Indent)?;
-        let mut methods_id = vec![];
+        let mut methods = vec![];
 
         while self.current_token().kind == TokenType::KwFun {
             self.skip_token();
@@ -103,14 +103,13 @@ impl<'a> Parser<'a> {
 
             if self.current_token().kind == TokenType::Semicolon {
                 self.skip_token();
-                self.ast.decl_pool.push( DeclNode::FunDecl {
+                methods.push(MethodDecl {
                     name: fist_name_token.text.clone(),
                     params,
                     return_type_str,
                     span: fist_name_token.span.clone(),
                     visibility: visibility.clone(),
                 });
-                methods_id.push(self.ast.decl_pool.len() - 1);
             }
             self.skip_token_only(TokenType::NewLine)?;
             self.skip_token_if_newlines()?;
@@ -124,7 +123,7 @@ impl<'a> Parser<'a> {
             has_abst: impls,
             generic_vars: generic,
             visibility,
-            methods: methods_id,
+            methods: methods,
             span: name_span,
         });
 

@@ -12,8 +12,7 @@ use crate::type_checker::TypeCheckerApi;
 pub mod lexer;
 pub mod source;
 pub mod parser;
-pub mod symbol;
-pub mod symbol_name;
+pub mod type_symbol;
 pub mod name_pass;
 
 pub mod type_checker;
@@ -27,6 +26,7 @@ pub mod hir;
 
 pub mod tokens_pass;
 pub mod diagnostic;
+pub mod scope;
 
 pub struct CompilerConfig {
     
@@ -44,7 +44,7 @@ pub trait CompilerApi {
         parser: impl ParserApi<'a>,
         name_pass: impl NamePassApi<'a>,
         type_checker: impl TypeCheckerApi,
-        hir_lower: impl HirLowerApi,
+        hir_lower: impl HirLowerApi<'a>,
         hir_pass: impl HirPassApi,
         mir_lower: impl MirLowerApi,
         codegen: impl CodegenApi,

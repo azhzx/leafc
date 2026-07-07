@@ -108,7 +108,7 @@ pub enum TokenType {
     Error,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Token {
     pub kind: TokenType,
     pub span: Span,

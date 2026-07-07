@@ -12,17 +12,10 @@ use leafc_namepass::NamePass;
 
 fn main() {
     let code = r#"
+___definepreprocessor ZERO 0
+___definepreprocessor LET(name) let name = ZERO
 fun main() -> Int
-    let x = #[1+2+4*(-1==0%4), "s", -2, if 1 then 0 else -1]
-    if 1>0
-        0
-    elif 2>0
-        8
-    elif 4>8
-        9
-    else
-        do
-            1
+    LET(m)
 "#;
     let source_pool = SourcePool::new();
     let mut diag = Diagnostician::new(source_pool, DiagTextColor {
@@ -53,22 +46,22 @@ fun main() -> Int
             return;
         }
     };
+
+    let new_tokens = match TokenPass::new(&tokens, source_id).pass() {
+        Ok(new_tokens) => {
+            println!("\n\n== token pass ==\n\n");
     
-    // let new_token = match TokenPass::new(&tokens, source_id).pass() {
-    //     Ok(token_pass) => {
-    //         println!("\n\n== token pass ==\n\n");
-    //
-    //         for token in &token_pass.data {
-    //             println!("{:?}", token);
-    //         }
-    //         println!("== === ==");
-    //         token_pass
-    //     }
-    //     Err(e) => {
-    //         print!("{}", diag.report(e));
-    //         return;
-    //     }
-    // };
+            for token in &new_tokens.data {
+                println!("{:?}", token);
+            }
+            println!("== === ==");
+            return;
+        }
+        Err(e) => {
+            print!("{}", diag.report(e));
+            return;
+        }
+    };
 
     let mut file_ast = match Parser::new(source_id, &tokens).parse() {
         Ok(ParserResult {ast, requires})  => {
@@ -88,16 +81,20 @@ fun main() -> Int
         }
     };
 
-    // let name_passed_ast = match NamePass::new(&mut file_ast).pass() {
-    //     Ok(..)  => {
-    //         println!("=== ast ===");
-    //         println!("{:#?}", file_ast);
-    //         println!("=== === ===");
-    //     },
-    //     Err(e) => {
-    //         println!("{}", diag.report(e));
-    //         return;
-    //     }
-    // };
+    let name_passed_ast = match NamePass::new(&file_ast).pass() {
+        Ok((top_scope, scopes))  => {
+            println!("=== scope ===");
+            println!("{:#?}", top_scope);
+            println!("=== === ===");
+
+            println!("=== scope ===");
+            println!("{:#?}", scopes);
+            println!("=== === ===");
+        },
+        Err(e) => {
+            println!("{}", diag.report(e));
+            return;
+        }
+    };
 }
 

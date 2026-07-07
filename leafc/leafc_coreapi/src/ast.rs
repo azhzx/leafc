@@ -223,6 +223,15 @@ pub struct Ctor {
 }
 
 #[derive(Debug, Clone)]
+pub struct MethodDecl {
+    pub name: String,
+    pub params: Vec<Param>,
+    pub return_type_str: TypeNameString,
+    pub visibility: Visibility,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
 pub enum DeclNode {
     Fun {
         name: String,
@@ -244,7 +253,7 @@ pub enum DeclNode {
         has_abst: Vec<String>,
         generic_vars: Vec<GenericVar>,
         visibility: Visibility,
-        methods: Vec<DeclNodeId>,
+        methods: Vec<MethodDecl>,
         span: Span,
     },
     TypeStruct {

@@ -18,7 +18,6 @@ pub struct Parser<'a> {
     index: usize,
     source: SourceId,
     ast: FileAst,
-    main_fun: Option<DeclNodeId>,
     requires: Vec<Require>
 }
 
@@ -196,7 +195,6 @@ impl<'a> ParserApi<'a> for Parser<'a> {
             tokens,
             index: 0,
             source,
-            main_fun: None,
             ast: FileAst {
                 file: source,
                 atom_expr_pool: vec![],

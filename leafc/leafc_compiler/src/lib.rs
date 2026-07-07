@@ -26,7 +26,7 @@ impl CompilerApi for NativeCompiler {
         parser: impl ParserApi<'a>,
         name_pass: impl NamePassApi<'a>,
         type_checker: impl TypeCheckerApi,
-        hir_lower: impl HirLowerApi,
+        hir_lower: impl HirLowerApi<'a>,
         hir_pass: impl HirPassApi,
         mir_lower: impl MirLowerApi,
         codegen: impl CodegenApi) -> Self::Output {

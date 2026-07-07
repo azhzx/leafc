@@ -4,8 +4,8 @@ use crate::source::SourceId;
 
 #[derive(Debug)]
 pub enum TokenPassError {
-    MissingPreProcessorName,
-    MissingPreProcessorArgument,
+    InvalidPreprocessorParameterDeclare,
+    InvalidPreprocessorArgumentList,
 }
 
 pub trait TokenPassApi<'a> {

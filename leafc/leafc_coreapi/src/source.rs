@@ -8,12 +8,12 @@ pub struct Source {
 
 pub type SourcePool = Vec<Source>;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Pos {
     pub column: usize,
     pub lineno: usize,
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Span {
     pub start: Pos,
     pub end: Pos,
