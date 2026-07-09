@@ -3,222 +3,480 @@ use std::fmt::format;
 use leafc_coreapi::ast::ExprNode;
 use leafc_coreapi::diagnostic::DiagMsg;
 use leafc_coreapi::lexer::{Token, TokenStream, TokenType};
-use leafc_coreapi::lexer::TokenType::{Comma, Eof, Ident, KwAbst, NewLine};
+use leafc_coreapi::lexer::TokenType::{Comma, Eof, Ident, KwAbst, Lparen, NewLine};
 use leafc_coreapi::parser::ParserError;
 use leafc_coreapi::source::{Pos, SourceId, Span};
 use leafc_coreapi::tokens_pass::{TokenPassApi, TokenPassError};
 
-const KEYWORD_PREPROCESS: &str = "___definepreprocessor";
-const KEYWORD_DELETE_PREPROCESS: &str = "___deletepreprocessor";
+const KEYWORD_PREPROCESS: &str = "preprocessor_define";
+const KEYWORD_DELETE_PREPROCESS: &str = "preprocessor_delete";
+const KEYWORD_IF: &str = "preprocessor_if";
+const KEYWORD_ELIF: &str = "preprocessor_elif";
+const KEYWORD_ELSE: &str = "preprocessor_else";
+const KEYWORD_ENDIF: &str = "preprocessor_endif";
+
+const KEYWORD_PANIC: &str = "preprocessor_panic";
+const KEYWORD_WARNING: &str = "preprocessor_warning";
+
+const PP_FUNCTION_IS_DEFINED: &str = "preprocessor_is_defined";
+
+const REST_ARGS_MARKER: &str = "__PreprocessorRestArgs";
 
 #[derive(Debug, Clone)]
-struct PreprocessDef {
+struct PPDef {
     name_token: Token,
     params: Vec<String>,
+    has_rest_args: bool,
     body: Vec<Token>,
 }
 
-pub struct TokenPass<'a> {
+pub struct Preprocessor<'a> {
     tokens: &'a TokenStream,
     source: SourceId,
-    preprocessors: HashMap<String, PreprocessDef>,
-    new_tokens: TokenStream,
+    preprocessors: HashMap<String, PPDef>,
     expanding: HashSet<String>,
-    index: usize,
+    new_tokens: TokenStream,
 }
 
-impl<'a> TokenPass<'a> {
-    fn current_token(&self) -> &Token {
-        match self.tokens.data.get(self.index) {
-            Some(t) => t,
-            None => &self.tokens.data[self.index - 1]
-        }
-    }
-    fn skip_token(&mut self) {
-        if self.index >= self.tokens.data.len() {
-            return;
-        }
-        self.index += 1;
+impl<'a> Preprocessor<'a> {
+    pub fn eval(&self, tokens: Vec<Token>) -> isize {
+        let mut index = 0;
+        self.eval_logic(&tokens, &mut index)
     }
 
-    fn collect_instructions(&mut self) -> Result<Vec<Token>, DiagMsg> {
-        let mut result = Vec::new();
-        while self.current_token().kind != Eof {
-            let name_token = self.current_token().clone();
-
-            if name_token.kind == TokenType::Ident
-                && name_token.text == KEYWORD_PREPROCESS {
-                self.skip_token();
-                let name_token = self.current_token().clone();
-                self.skip_token();
-
-
-                // 解析参数
-                let mut params = Vec::new();
-                if self.current_token().kind == TokenType::Lparen {
-                    self.skip_token();
-
-
-                    let call_span = name_token.span.clone();
-                    while self.current_token().kind != TokenType::Rparen {
-                        params.push(self.current_token().text.clone());
-                        self.skip_token();
-
-
-                        if self.current_token().kind == TokenType::Comma {
-                            self.skip_token();
-                        } else if self.current_token().kind == TokenType::Rparen {
-                            break;
-                        } else {
-                            return Err(DiagMsg {
-                                title: format!("{:?}", TokenPassError::InvalidPreprocessorParameterDeclare),
-                                msg: "invalid call argument list".to_string(),
-                                span: call_span,
-                                source: self.source,
-                            });
-                        }
-                    }
-                    self.skip_token();
+    fn eval_logic(&self, tokens: &[Token], index: &mut usize) -> isize {
+        let left = self.eval_not(tokens, index);
+        while *index < tokens.len() {
+            match tokens[*index].kind {
+                TokenType::KwAnd => {
+                    *index += 1;
+                    let right = self.eval_not(tokens, index);
+                    return (left != 0 && right != 0) as isize;
                 }
-                let mut body = Vec::new();
-
-                while self.current_token().kind != TokenType::NewLine {
-                    body.push(self.current_token().clone());
-                    self.skip_token();
+                TokenType::KwOr => {
+                    *index += 1;
+                    let right = self.eval_not(tokens, index);
+                    return (left != 0 || right != 0) as isize;
                 }
-
-                // 注册预处理器
-                self.preprocessors.entry(name_token.text.clone()).or_insert(
-                    PreprocessDef {
-                        name_token: name_token.clone(),
-                        params,
-                        body
-                    }
-                );
-            }
-            else {
-                result.push(name_token);
-                self.skip_token();
+                _ => break,
             }
         }
-        Ok(result)
+        left
     }
+
+    fn eval_not(&self, tokens: &[Token], index: & mut usize) -> isize {
+        match tokens[*index].kind {
+            TokenType::KwNot => {
+                *index += 1;
+                let val = self.eval_comparison(tokens, index);
+                ! val
+            }
+            _ => self.eval_comparison(tokens, index),
+        }
+    }
+
+    fn eval_comparison(&self, tokens: &[Token], index: &mut usize) -> isize {
+        let left = self.eval_add_sub(tokens, index);
+        while *index < tokens.len() {
+            match tokens[*index].kind {
+                TokenType::EqEq => {
+                    *index += 1;
+                    let right = self.eval_add_sub(tokens, index);
+                    return (left == right) as isize;
+                }
+                TokenType::Ne => {
+                    *index += 1;
+                    let right = self.eval_add_sub(tokens, index);
+                    return (left != right) as isize;
+                }
+                TokenType::Gt => {
+                    *index += 1;
+                    let right = self.eval_add_sub(tokens, index);
+                    return (left > right) as isize;
+                }
+                TokenType::Lt => {
+                    *index += 1;
+                    let right = self.eval_add_sub(tokens, index);
+                    return (left < right) as isize;
+                }
+                TokenType::Ge => {
+                    *index += 1;
+                    let right = self.eval_add_sub(tokens, index);
+                    return (left >= right) as isize;
+                }
+                TokenType::Le => {
+                    *index += 1;
+                    let right = self.eval_add_sub(tokens, index);
+                    return (left <= right) as isize;
+                }
+                _ => break,
+            }
+        }
+        left
+    }
+
+    fn eval_add_sub(&self, tokens: &[Token], index: &mut usize) -> isize {
+        let mut left = self.eval_mul_div(tokens, index);
+        while *index < tokens.len() {
+            match tokens[*index].kind {
+                TokenType::Plus => {
+                    *index += 1;
+                    let right = self.eval_mul_div(tokens, index);
+                    left += right;
+                }
+                TokenType::Minus => {
+                    *index += 1;
+                    let right = self.eval_mul_div(tokens, index);
+                    left -= right;
+                }
+                _ => break,
+            }
+        }
+        left
+    }
+
+    fn eval_mul_div(&self, tokens: &[Token], index: &mut usize) -> isize {
+        let mut left = self.eval_unary(tokens, index);
+        while *index < tokens.len() {
+            match tokens[*index].kind {
+                TokenType::Star => {
+                    *index += 1;
+                    let right = self.eval_unary(tokens, index);
+                    left *= right;
+                }
+                TokenType::Slash => {
+                    *index += 1;
+                    let right = self.eval_unary(tokens, index);
+                    left /= right;
+                }
+                _ => break,
+            }
+        }
+        left
+    }
+
+    fn eval_unary(&self, tokens: &[Token], index: &mut usize) -> isize {
+        match tokens[*index].kind {
+            TokenType::Minus => {
+                *index += 1;
+                let val = self.eval_unary(tokens, index);
+                0 - val
+            }
+            _ => self.eval_primary(tokens, index),
+        }
+    }
+
+    fn eval_primary(&self, tokens: &[Token], index: &mut usize) -> isize {
+        let token = &tokens[*index];
+        match token.kind {
+            TokenType::Int => {
+                *index += 1;
+                token.text.parse::<isize>().unwrap()
+            }
+            _ => {
+                panic!("cannot eval expression");
+            }
+        }
+    }
+
 
     fn expand_all(&mut self, tokens: Vec<Token>) -> Result<Vec<Token>, DiagMsg> {
-        let mut current = tokens;
+        let mut current_tokens = tokens;
         loop {
             let mut result = Vec::new();
             let mut index = 0;
             let mut changed = false;
 
-            while index < current.len() {
-                let token = &current[index];
+            while index < current_tokens.len() {
+                let current_token = &current_tokens[index];
 
-                if token.kind == TokenType::Ident
-                    && self.preprocessors.contains_key(&token.text)
-                    && index + 1 < current.len()
-                    && current[index + 1].kind == TokenType::Lparen
+                if current_token.kind == Ident
+                    && self.preprocessors.contains_key(&current_token.text)
+                    && index + 1 < current_tokens.len()
+                    && current_tokens[index + 1].kind == Lparen
                 {
-                    let macro_name = token.text.clone();
-                    let def = self.preprocessors[&macro_name].clone();
+                    let macro_name = current_token.clone();
+                    let def = self.preprocessors[&macro_name.text].clone();
 
-                    // 跳过宏名和 '('
-                    index += 2;
+                    // 跳过宏名
+                    index += 1;
 
-                    let mut args: Vec<Token> = Vec::new();
-                    loop {
-                        match current.get(index) {
-                            Some(t) if t.kind == TokenType::Comma => {
-                                index += 1; // 跳过逗号
-                            }
-                            Some(t) if t.kind == TokenType::Rparen => {
-                                break;
-                            }
-                            Some(t) => {
-                                args.push(t.clone());
-                                index += 1;
-                            }
-                            None => {
-                                // 括号未闭合，报错
-                                return Err(DiagMsg {
-                                    title: "macro expansion error".to_string(),
-                                    msg: "unclosed argument list".to_string(),
-                                    span: token.span.clone(),
-                                    source: self.source,
-                                });
-                            }
+                    let index_before_args = index;
+
+                    // 跳过'('
+                    index += 1;
+
+                    let mut args: Vec<Vec<Token>> = Vec::new();
+                    let mut current_arg_index = 0;
+
+                    while current_tokens[index].kind != TokenType::Rparen {
+                        args.push(Vec::new());
+                        while current_tokens[index].kind != TokenType::Comma
+                            && current_tokens[index].kind != TokenType::Rparen {
+                            args[current_arg_index].push(current_tokens[index].clone());
+                            index += 1;
+                        }
+
+                        if current_tokens[index].kind == Comma {
+                            index += 1;
+                            current_arg_index += 1;
+                        } else if current_tokens[index].kind == TokenType::Rparen {
+                            break;
+                        } else {
+                            return Err(DiagMsg {
+                                title: format!("{:?}", TokenPassError::InvalidPreprocessorArgumentList),
+                                msg: "invalid call argument list".to_string(),
+                                span: current_token.span.clone(),
+                                source: self.source,
+                            });
                         }
                     }
+
                     // 跳过 ')'
                     index += 1;
 
-                    // 检查形参与实参数量是否匹配
-                    if def.params.len() != args.len() {
-                        return Err(DiagMsg {
-                            title: "macro expansion error".to_string(),
-                            msg: format!(
-                                "macro {} expects {} arguments, got {}",
-                                macro_name,
-                                def.params.len(),
-                                args.len()
-                            ),
-                            span: token.span.clone(),
-                            source: self.source,
-                        });
-                    }
+                    let rest_tokens = if def.has_rest_args {
+                        let current_token_span = current_tokens[index].span.clone();
 
-                    if self.expanding.contains(&macro_name) {
-                        result.push(token.clone());
-                        result.push(current[index - args.len() - 2].clone()); // '(' (简化处理，直接输出整个调用)
-                        // 更好的做法是把整个调用序列原样放回，这里简单跳过本次展开
-                        // 为完整起见，这里选择保留未展开的调用
-                        // 但 index 已经移动，需要回退，复杂。建议改用不同策略：
-                        // 下面改为直接 push 整个未处理的调用序列
-                        // 因为 index 已前进，简单处理：不 push 任何东西，continue
-                        // 但会导致丢失 token。最佳是预先保存调用序列。
-                        // 此处提供简化但安全的做法：在检查 expanding 之前保存调用开始位置，
-                        // 若发现递归，则把保存的序列全部推入 result 并恢复 index。
-                        // 为篇幅，此处展示核心逻辑，省略完整回退实现。
-                        // by deepseek
-                        unreachable!()
+                        if args.len() < def.params.len() {
+                            return Err(DiagMsg {
+                                title: "macro expansion error".to_string(),
+                                msg: format!(
+                                    "macro {} expects at least {} arguments, got {}",
+                                    macro_name.text,
+                                    def.params.len(),
+                                    args.len()
+                                ),
+                                span: current_token.span.clone(),
+                                source: self.source,
+                            });
+                        }
+
+                        let extra_args = &args[def.params.len()..];
+                        let mut rest = Vec::new();
+                        for (i, arg) in extra_args.iter().enumerate() {
+                            if i > 0 {
+                                // 在实参之间插入逗号 token
+                                rest.push(Token {
+                                    kind: Comma,
+                                    span: current_token_span.clone(),
+                                    source: self.source,
+                                    text: ",".to_string(),
+                                });
+                            }
+                            rest.extend(arg.clone());
+                        }
+                        rest
                     } else {
-                        self.expanding.insert(macro_name.clone());
+                        if def.params.len() != args.len() {
+                            return Err(DiagMsg {
+                                title: "macro expansion error".to_string(),
+                                msg: format!(
+                                    "macro {} expects {} arguments, got {}",
+                                    macro_name.text,
+                                    def.params.len(),
+                                    args.len()
+                                ),
+                                span: current_token.span.clone(),
+                                source: self.source,
+                            });
+                        }
+                        Vec::new()
+                    };
 
-                        let arg_map: HashMap<String, &Token> = def
+
+                    // 展开
+                    if self.expanding.contains(&macro_name.text) {
+                        // 不替换
+                        result.push(macro_name.clone());
+                        result.append(&mut current_tokens[index_before_args..index].to_vec());
+                    } else {
+                        self.expanding.insert(macro_name.text.clone());
+
+
+                        let regular_args = &args[..def.params.len()]; // 仅取前 N 个
+                        let mut arg_map: HashMap<String, Vec<Token>> = def
                             .params
                             .iter()
-                            .zip(args.iter())
-                            .map(|(p, a)| (p.clone(), a))
+                            .zip(regular_args.iter())
+                            .map(|(p, a)| (p.clone(), a.clone()))
                             .collect();
 
                         // 展开 body
                         for body_token in &def.body {
-                            if body_token.kind == TokenType::Ident
-                                && arg_map.contains_key(&body_token.text)
-                            {
-                                result.push(arg_map[&body_token.text].clone());
+                            if body_token.kind == Ident
+                                && body_token.text == REST_ARGS_MARKER
+                                && def.has_rest_args {
+                                result.extend(rest_tokens.clone());
+
+                            } else if body_token.kind == Ident
+                                && arg_map.contains_key(&body_token.text) {
+
+                                let mut v = arg_map.remove(&body_token.text).unwrap();
+                                result.append(&mut v);
+
                             } else {
                                 result.push(body_token.clone());
                             }
                         }
 
-                        self.expanding.remove(&macro_name);
+                        self.expanding.remove(&macro_name.text);
                         changed = true;
                     }
-                } else {
-                    let expanded = self.expand_one(token)?;
-                    if expanded.len() != 1 || expanded[0] != *token {
-                        changed = true;
-                    }
-                    result.extend(expanded);
+                } else if current_token.kind == Ident
+                    && current_token.text == KEYWORD_PREPROCESS
+                {
                     index += 1;
-                }
+                    let name_token = current_tokens[index].clone();
+                    index += 1;
+
+
+                    // 解析参数
+                    let mut params = Vec::new();
+                    let mut has_rest_args = false;
+
+                    if current_tokens[index].kind == Lparen {
+                        index += 1;
+
+                        let span = name_token.span.clone();
+
+                        while current_tokens[index].kind != TokenType::Rparen {
+                            if current_tokens[index].kind == TokenType::DotDotDot {
+                                index += 1;
+                                has_rest_args = true;
+                                break
+                            } else {
+                                params.push(current_tokens[index].text.clone());
+                                index += 1;
+                            }
+
+
+                            if current_tokens[index].kind == TokenType::Comma {
+                                index += 1;
+                            } else if current_tokens[index].kind == TokenType::Rparen {
+                                break;
+                            } else {
+                                return Err(DiagMsg {
+                                    title: format!("{:?}", TokenPassError::InvalidPreprocessorParameterDeclare),
+                                    msg: "invalid call argument list".to_string(),
+                                    span,
+                                    source: self.source,
+                                });
+                            }
+                        }
+                        index += 1;
+                    }
+                    let mut body = Vec::new();
+
+                    while current_tokens[index].kind != TokenType::NewLine {
+                        body.push(current_tokens[index].clone());
+                        index += 1;
+                    }
+
+                    // 注册预处理器
+                    self.preprocessors.entry(name_token.text.clone()).or_insert(
+                        PPDef {
+                            name_token: name_token.clone(),
+                            params,
+                            has_rest_args,
+                            body
+                        }
+                    );
+                } else if current_token.kind == TokenType::Ident
+                    && current_token.text == KEYWORD_DELETE_PREPROCESS {
+                    index += 1;
+                    self.preprocessors.remove(&current_token.text);
+                } else if current_token.kind == TokenType::Ident
+                    && current_token.text == KEYWORD_PANIC {
+                    index += 1;
+                    panic!("{}", &current_tokens[index].text);
+                } else if current_token.kind == TokenType::Ident
+                    && current_token.text == KEYWORD_WARNING {
+                    index += 1;
+                    println!("[warning] {}", &current_tokens[index].text);
+                    index += 1;
+                } else if current_token.kind == TokenType::Ident
+                    && current_token.text == KEYWORD_IF {
+
+                    index += 1;
+
+                    let mut if_cond = Vec::new();
+                    while current_tokens[index].kind != TokenType::NewLine {
+                        if_cond.push(current_tokens[index].clone());
+                        index += 1;
+                    }
+                    index += 1;
+
+                    if_cond = self.expand_all(if_cond)?;
+                    let eval_result = self.eval(if_cond);
+
+                    if eval_result <= 0 {
+                        while  current_tokens[index].text != KEYWORD_ELSE
+                            && current_tokens[index].text != KEYWORD_ENDIF
+                        {
+                            index += 1;
+                        }
+
+                        if current_tokens[index].text == KEYWORD_ELSE {
+                            index += 1;
+                            while current_tokens[index].text != KEYWORD_ENDIF  {
+                                result.push(current_tokens[index].clone());
+                                index += 1;
+                            }
+                        }
+
+                        index += 1;
+                        changed = true;
+                    } else {
+                        while index < current_tokens.len()
+                            && current_tokens[index].text != KEYWORD_ELSE
+                            && current_tokens[index].text != KEYWORD_ENDIF
+                        {
+                            result.push(current_tokens[index].clone());
+                            index += 1;
+                        }
+
+                        if current_tokens[index].text == KEYWORD_ELSE {
+                            index += 1;
+                            while current_tokens[index].text != KEYWORD_ENDIF {
+                                index += 1;
+                            }
+                        }
+
+                        // skip endif
+                        index += 1;
+
+                        changed = true;
+                    }
+
+                } else if current_token.kind == TokenType::Ident
+                    && current_token.text == PP_FUNCTION_IS_DEFINED {
+
+                    index += 1;
+
+                    let is_pp = self.preprocessors.contains_key(&current_tokens[index].text.clone());
+
+                    result.push(Token {
+                        kind: TokenType::Int,
+                        span: current_tokens[index].span.clone(),
+                        source: self.source,
+                        text: (if is_pp { 1 } else { 0 }).to_string(),
+                    });
+
+                } else {
+                    let expanded = self.expand_one(current_token)?;
+                        if expanded.len() != 1 || expanded[0] != *current_token {
+                            changed = true;
+                        }
+                        result.extend(expanded);
+                        index += 1;
+                    }
             }
 
-            if !changed || result == current {
+            if !changed || result == current_tokens {
                 return Ok(result);
             }
-            current = result;
+            current_tokens = result;
         }
     }
 
@@ -249,22 +507,39 @@ impl<'a> TokenPass<'a> {
         Ok(expanded)
     }
 
+    pub fn pre_definitions(&mut self, names: Vec<String>) -> &mut Self {
+        for name in names {
+            self.preprocessors.entry(name.clone()).or_insert(PPDef {
+                name_token: Token {
+                    kind: TokenType::Ident,
+                    span: Span { start: Pos { column: 0, lineno: 0 }, end: Pos { column: 0, lineno: 0 } },
+                    source: self.source,
+                    text: name.clone(),
+                },
+                params: vec![],
+                has_rest_args: false,
+                body: vec![],
+            });
+        }
+        self
+    }
+
 }
 
-impl<'a> TokenPassApi<'a> for TokenPass<'a> {
+impl<'a> TokenPassApi<'a> for Preprocessor<'a> {
     fn new(tokens: &'a TokenStream, source: SourceId) -> Self {
-        TokenPass {
+        Preprocessor {
             tokens,
             preprocessors: HashMap::new(),
             source,
-            new_tokens: TokenStream { data: Vec::new() },
             expanding: HashSet::new(),
-            index: 0,
+            new_tokens: TokenStream { data: Vec::new() },
         }
     }
     fn pass(&mut self) -> Result<&TokenStream, DiagMsg> {
-        let first_pass_result =  self.collect_instructions()?;
-        self.new_tokens.data = self.expand_all(first_pass_result)?;
+        self.new_tokens = TokenStream {
+            data: self.expand_all(self.tokens.data.clone())?
+        };
 
         Ok(&self.new_tokens)
     }

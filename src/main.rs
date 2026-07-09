@@ -7,15 +7,15 @@ use leafc_coreapi::tokens_pass::TokenPassApi;
 use leafc_lexer::Lexer;
 use leafc_parser::Parser;
 use leafc_diag::Diagnostician;
-use leafc_tokenpass::TokenPass;
+use leafc_tokenpass::Preprocessor;
 use leafc_namepass::NamePass;
 
 fn main() {
     let code = r#"
-___definepreprocessor ZERO 0
-___definepreprocessor LET(name) let name = ZERO
-fun main() -> Int
-    LET(m)
+preprocessor_define ZERO 0
+preprocessor_define MakeListVar(...) let name = #[__PreprocessorRestArgs]
+fun main()
+    MakeListVar(ZERO)
 "#;
     let source_pool = SourcePool::new();
     let mut diag = Diagnostician::new(source_pool, DiagTextColor {
@@ -47,7 +47,21 @@ fun main() -> Int
         }
     };
 
-    let new_tokens = match TokenPass::new(&tokens, source_id).pass() {
+    let new_tokens = match Preprocessor::new(&tokens, source_id)
+        .pre_definitions(
+            vec![
+                    if cfg!(target_os = "windows") {
+                        "__Windows".to_string()
+                    } else if cfg!(target_os = "macos") {
+                        "__Mac".to_string()
+                    } else if cfg!(target_os = "linux") {
+                        "__Linux".to_string()
+                    } else {
+                        "__Unknown".to_string()
+                    }
+                ]
+        )
+        .pass() {
         Ok(new_tokens) => {
             println!("\n\n== token pass ==\n\n");
     
