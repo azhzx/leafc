@@ -1,4 +1,4 @@
-use leafc_coreapi::ast::{Ctor, DeclNode, Field, Param, TypeNameString, Visibility};
+use leafc_coreapi::ast::{Ctor, DeclNode, DeclNodeKind, Field, Param, TypeNameString, Visibility};
 use leafc_coreapi::diagnostic::DiagMsg;
 use leafc_coreapi::lexer::{Token, TokenType};
 use leafc_coreapi::parser::{ParserError, ParserResult};
@@ -46,13 +46,15 @@ impl<'a> Parser<'a> {
                     generic = self.handle_where(generic)?;
                 }
 
-                self.ast.decl_pool.push(DeclNode::TypeAlias {
+                self.ast.decl_pool.push(DeclNode {
                     name,
-                    ref_to,
-                    has_abst: impls,
-                    generic_vars: generic,
                     visibility,
-                    span: name_span
+                    span: name_span,
+                    kind: DeclNodeKind::TypeAlias {
+                        ref_to,
+                        has_abst: impls,
+                        generic_vars: generic,
+                    },
                 });
                 Ok(())
             }
@@ -85,13 +87,16 @@ impl<'a> Parser<'a> {
 
                     self.skip_token_if_newlines()?;
                     self.skip_token_only(TokenType::Dedent)?;
-                    self.ast.decl_pool.push(DeclNode::TypeStruct {
+                    self.ast.decl_pool.push(DeclNode {
                         name,
-                        fields,
-                        has_abst: impls,
-                        generic_vars: generic,
                         visibility,
                         span: name_span,
+
+                        kind: DeclNodeKind::TypeStruct {
+                            fields,
+                            has_abst: impls,
+                            generic_vars: generic,
+                        }
                     })
                 } else if self.current_token().kind == TokenType::Pipe {
 
@@ -134,13 +139,15 @@ impl<'a> Parser<'a> {
                     }
                     self.skip_token_if_newlines()?;
                     self.skip_token_only(TokenType::Dedent)?;
-                    self.ast.decl_pool.push(DeclNode::ADT {
+                    self.ast.decl_pool.push(DeclNode {
                         name,
-                        ctors,
-                        has_abst: impls,
-                        generic_vars: generic,
                         visibility,
                         span: name_span,
+                        kind: DeclNodeKind::ADT {
+                            ctors,
+                            has_abst: impls,
+                            generic_vars: generic,
+                        }
                     })
                 } else {
                     return Err(DiagMsg{

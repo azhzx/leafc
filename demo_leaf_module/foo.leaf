@@ -1,0 +1,2 @@
+pub fun foo()
+    let m = 0

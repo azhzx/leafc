@@ -1,6 +1,6 @@
 use std::fmt::format;
-use leafc_coreapi::ast::{AtomExprNode, AtomExprNodeId, ExprNode, ExprNodeId, Operator};
-use leafc_coreapi::ast::ExprNode::{Atom, If};
+use leafc_coreapi::ast::{AtomExprNode, DeclNode, ElseIf, ExprNode, ExprNodeId, ExprNodeKind, Operator};
+use leafc_coreapi::ast::ExprNodeKind::{Atom, If};
 use leafc_coreapi::diagnostic::DiagMsg;
 use leafc_coreapi::lexer::TokenType;
 use leafc_coreapi::lexer::TokenType::Pipe;
@@ -30,8 +30,9 @@ impl<'a> Parser<'a> {
 
         self.skip_token_only(TokenType::Dedent)?;
 
-        Ok(self.push_expr(ExprNode::Do {
-            exprs, span
+        Ok(self.push_expr(ExprNode {
+            span,
+            kind: ExprNodeKind::Do { exprs },
         }))
     }
 
@@ -60,8 +61,8 @@ impl<'a> Parser<'a> {
         self.skip_token_only(TokenType::Eq)?;
         let expr = self.parse_expr()?;
 
-        Ok(self.push_expr(ExprNode::Let {
-            name, expr, span, type_str, mutable,
+        Ok(self.push_expr(ExprNode {
+            span, kind: ExprNodeKind::Let { expr, name, type_str, mutable }
         }))
     }
 
@@ -97,7 +98,7 @@ impl<'a> Parser<'a> {
                 if self.current_token().kind == TokenType::NewLine {
                     self.skip_token();
                 }
-                elif_body_exprs.push((cond, body));
+                elif_body_exprs.push(ElseIf{cond, body});
             }
         }
 
@@ -113,17 +114,19 @@ impl<'a> Parser<'a> {
             }
         } else { None };
 
-        Ok(self.push_expr(If {
-            cond,
-            then_expr: if_then_exprs,
-            elifs: elif_body_exprs,
-            else_expr: else_body_exprs,
+        Ok(self.push_expr(ExprNode {
             span,
+            kind: ExprNodeKind::If {
+                cond,
+                then_expr: if_then_exprs,
+                elifs: elif_body_exprs,
+                else_expr: else_body_exprs,
+            },
         }))
 
     }
 
-    pub fn parse_atom_expr(&mut self) -> Result<AtomExprNodeId, DiagMsg> {
+    pub fn parse_atom_expr(&mut self) -> Result<AtomExprNode, DiagMsg> {
         let current_token = self.current_token();
         let current_token_kind = current_token.kind.clone();
         let current_token_text = current_token.text.clone();
@@ -182,9 +185,7 @@ impl<'a> Parser<'a> {
             }
         };
 
-        self.ast.atom_expr_pool.push(expr);
-
-        Ok(self.ast.atom_expr_pool.len() - 1)
+        Ok(expr)
     }
 
     /// 中缀运算符左绑定优先级
@@ -262,10 +263,12 @@ impl<'a> Parser<'a> {
                 let op_span = start_span;
                 self.skip_token();
                 let operand = self.parse_expr_bp(Self::rbp(op_kind.clone()).unwrap())?;
-                self.push_expr(ExprNode::Unary {
-                    op: Self::token_type_to_operator(op_kind).unwrap(), // 已确保 op 是 -/not
-                    right: operand,
+                self.push_expr(ExprNode {
                     span: op_span,
+                    kind: ExprNodeKind::Unary {
+                        op: Self::token_type_to_operator(op_kind).unwrap(),
+                        right: operand,
+                    }
                 })
             }
 
@@ -282,13 +285,13 @@ impl<'a> Parser<'a> {
                 let kw_span = start_span;
                 self.skip_token();
                 let target = self.parse_expr_bp(60)?;
-                let node = match kind {
-                    TokenType::KwMove  => ExprNode::Move  { target, span: kw_span },
-                    TokenType::KwCopy  => ExprNode::Copy  { target, span: kw_span },
-                    TokenType::KwShared => ExprNode::Share { target, span: kw_span },
+                let kind = match kind {
+                    TokenType::KwMove  => ExprNodeKind::Move  { target },
+                    TokenType::KwCopy  => ExprNodeKind::Copy  { target },
+                    TokenType::KwShared => ExprNodeKind::Share { target },
                     _ => unreachable!(),
                 };
-                self.push_expr(node)
+                self.push_expr(ExprNode {span: kw_span, kind })
             }
 
             // ref / ref mut
@@ -298,19 +301,25 @@ impl<'a> Parser<'a> {
                 let target = if self.current_token().kind == TokenType::KwMut {
                     self.skip_token();
                     let t = self.parse_expr_bp(60)?;
-                    self.push_expr(ExprNode::MutRef { target: t, span: ref_span })
+                    self.push_expr(ExprNode {
+                        kind: ExprNodeKind::MutRef { target: t },
+                        span: ref_span
+                    })
                 } else {
                     let t = self.parse_expr_bp(60)?;
-                    self.push_expr(ExprNode::Ref { target: t, span: ref_span })
+                    self.push_expr(ExprNode {
+                        kind: ExprNodeKind::Ref { target: t },
+                        span: ref_span
+                    })
                 };
                 target
             }
 
             // 其余一切视为原子
             _ => {
-                let atom_id = self.parse_atom_expr()?;
-                self.push_expr(ExprNode::Atom {
-                    expr: atom_id,
+                let atom = self.parse_atom_expr()?;
+                self.push_expr(ExprNode {
+                    kind: ExprNodeKind::Atom { expr: atom },
                     span: start_span,
                 })
             }
@@ -329,16 +338,18 @@ impl<'a> Parser<'a> {
                 }
                 self.skip_token();
                 let rhs = self.parse_expr_bp(lbp + 1)?;
-                lhs = self.push_expr(ExprNode::Binary {
-                    left: lhs,
-                    op: Self::token_type_to_operator(kind).ok_or_else(
-                        || DiagMsg {
-                            title: format!("{:?}", ParserError::InvalidOperator),
-                            msg: "invalid operator".to_string(),
-                            span: token_span.clone(),
-                            source: self.source,
-                    })?,
-                    right: rhs,
+                lhs = self.push_expr(ExprNode {
+                    kind: ExprNodeKind::Binary {
+                        left: lhs,
+                        op: Self::token_type_to_operator(kind).ok_or_else(
+                            || DiagMsg {
+                                title: format!("{:?}", ParserError::InvalidOperator),
+                                msg: "invalid operator".to_string(),
+                                span: token_span.clone(),
+                                source: self.source,
+                            })?,
+                        right: rhs,
+                    },
                     span: token_span,
                 });
                 continue;
@@ -366,9 +377,11 @@ impl<'a> Parser<'a> {
                         }
                     }
                     self.skip_token_only(TokenType::Rparen)?;
-                    lhs = self.push_expr(ExprNode::Call {
-                        callee: lhs,
-                        args,
+                    lhs = self.push_expr(ExprNode {
+                        kind: ExprNodeKind::Call {
+                            callee: lhs,
+                            args,
+                        },
                         span: call_span,
                     });
                     continue;
@@ -380,10 +393,13 @@ impl<'a> Parser<'a> {
                     let member = member_token.text.clone();
                     let member_span = member_token.span.clone();
                     self.skip_token_only(TokenType::Ident)?;
-                    lhs = self.push_expr(ExprNode::Member {
-                        left: lhs,
+                    lhs = self.push_expr(ExprNode {
+                        kind: ExprNodeKind::Member {
+                            left: lhs,
+                            right: member,
+                        },
+
                         span: token_span,
-                        right: member,
                     });
                     continue;
                 }

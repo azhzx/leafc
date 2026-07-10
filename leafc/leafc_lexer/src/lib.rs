@@ -2,7 +2,7 @@ use std::fmt::Debug;
 use leafc_coreapi::diagnostic::DiagMsg;
 use leafc_coreapi::lexer::{Document, DocumentString, LexerApi, LexerError, Token, TokenStream, TokenType};
 use leafc_coreapi::lexer::LexerError::{InvalidChar, InvalidString};
-use leafc_coreapi::source::{Pos, SourceId, Span};
+use leafc_coreapi::source::{SourceId, Span};   // 移除了 Pos
 
 pub enum LexerState {
     Start,
@@ -17,6 +17,7 @@ const INDENT_WIDTH: usize = 4;
 
 pub struct Lexer {
     index: usize,
+    byte_index: usize,
     column: usize,
     lineno: usize,
     source: SourceId,
@@ -26,19 +27,18 @@ pub struct Lexer {
 }
 
 impl Lexer {
-    fn current_pos(&self) -> Pos {
-        Pos {
-            column : self.column,
-            lineno : self.lineno
-        }
+    // 原 current_pos 改为返回当前字节偏移
+    fn current_offset(&self) -> usize {
+        self.byte_index
     }
 
     fn eof(&self) -> Token {
+        let off = self.current_offset();
         Token {
             kind: TokenType::Eof,
             span: Span {
-                start: Pos { column: self.column, lineno: self.lineno },
-                end:  Pos { column: self.column, lineno: self.lineno },
+                start_off: off,
+                end_off: off,
             },
             text: "".to_string(),
             source: self.source,
@@ -153,9 +153,11 @@ impl Lexer {
     }
 
     fn next_char(&mut self) -> () {
-        if self.index >= self.code.len() { return; }
-        self.index += 1;
-        self.column += 1;
+        if let Some(&ch) = self.code.get(self.index) {
+            self.index += 1;
+            self.column += 1;
+            self.byte_index += ch.len_utf8();
+        }
     }
 
     fn main_loop(&mut self, tokens: &mut Vec<Token>) -> Result<(), DiagMsg> {
@@ -168,6 +170,10 @@ impl Lexer {
                         None => return Ok(()),
                         Some('\n') => {
                             state = LexerState::LineStart;
+                            continue;
+                        }
+                        Some('\r') => {
+                            self.next_char();
                             continue;
                         }
                         Some(' ') => {
@@ -196,14 +202,14 @@ impl Lexer {
                                     let mut docstring = String::new();
 
                                     self.next_char();
-                                     let start_pos = self.current_pos();
-                                     while self.index < self.code.len()
-                                         && self.code[self.index] != '\n' {
-                                         docstring.push(self.code[self.index]);
-                                         self.next_char();
-                                     }
+                                    let start_offset = self.current_offset();
+                                    while self.index < self.code.len()
+                                        && self.code[self.index] != '\n' {
+                                        docstring.push(self.code[self.index]);
+                                        self.next_char();
+                                    }
                                     self.docstrings.data.push(DocumentString {
-                                        span: Span { start: start_pos, end: self.current_pos(), },
+                                        span: Span { start_off: start_offset, end_off: self.current_offset() },
                                         data: docstring,
                                     })
                                 } else {
@@ -222,10 +228,11 @@ impl Lexer {
                             ) {
                                 state = LexerState::Symbol;
                             } else {
+                                let off = self.current_offset();
                                 return Err(DiagMsg {
                                     title : format!("{:?}", InvalidChar),
                                     msg : format!("Invalid char '{}'", ch),
-                                    span : Span { start: self.current_pos(), end: self.current_pos() },
+                                    span : Span { start_off: off, end_off: off },
                                     source: self.source,
                                 });
                             }
@@ -234,7 +241,7 @@ impl Lexer {
                     };
                 }
                 LexerState::String => {
-                    let start_pos = self.current_pos();
+                    let start_offset = self.current_offset();
                     self.next_char();
                     let mut closed = false;
                     let mut text = String::new();
@@ -252,14 +259,14 @@ impl Lexer {
                         return Err( DiagMsg {
                             title : format!("{:?}", InvalidString),
                             msg : "Unclosed string literal".to_string(),
-                            span : Span { start: start_pos, end: self.current_pos() },
+                            span : Span { start_off: start_offset, end_off: self.current_offset() },
                             source: self.source,
                         });
                     }
                     tokens.push(
                         Token {
                             kind: TokenType::String,
-                            span: Span { start: start_pos, end:  self.current_pos(), },
+                            span: Span { start_off: start_offset, end_off: self.current_offset() },
                             text,
                             source: self.source,
                         }
@@ -267,7 +274,7 @@ impl Lexer {
                     state = LexerState::Start;
                 }
                 LexerState::Number => {
-                    let start_pos = self.current_pos();
+                    let start_offset = self.current_offset();
                     let mut text = String::new();
                     let mut is_float = false;
                     while self.index < self.code.len() {
@@ -285,14 +292,14 @@ impl Lexer {
                         if is_float {
                             Token {
                                 kind: TokenType::Float,
-                                span: Span { start: start_pos, end:  self.current_pos(), },
+                                span: Span { start_off: start_offset, end_off: self.current_offset() },
                                 text: text,
                                 source: self.source,
                             }
                         } else {
                             Token {
                                 kind: TokenType::Int,
-                                span: Span { start: start_pos, end:  self.current_pos(), },
+                                span: Span { start_off: start_offset, end_off: self.current_offset() },
                                 text: text,
                                 source: self.source,
                             }
@@ -302,7 +309,7 @@ impl Lexer {
 
                 }
                 LexerState::Ident => {
-                    let start_pos = self.current_pos();
+                    let start_offset = self.current_offset();
                     let mut text = String::new();
                     while self.index < self.code.len() {
                         let c = self.code.get(self.index).unwrap();
@@ -318,7 +325,7 @@ impl Lexer {
                         tokens.push(
                             Token {
                                 kind: try_keyword,
-                                span: Span { start: start_pos, end:  self.current_pos(), },
+                                span: Span { start_off: start_offset, end_off: self.current_offset() },
                                 text,
                                 source: self.source,
                             });
@@ -327,7 +334,7 @@ impl Lexer {
                         tokens.push(
                             Token {
                                 kind: TokenType::Ident,
-                                span: Span { start: start_pos,  end:  self.current_pos(), },
+                                span: Span { start_off: start_offset, end_off: self.current_offset() },
                                 text,
                                 source: self.source,
                             });
@@ -335,7 +342,7 @@ impl Lexer {
                     }
                 }
                 LexerState::Symbol => {
-                    let start = self.current_pos();
+                    let start_offset = self.current_offset();
                     let mut text = String::new();
                     let mut matched_text = String::new();    // 最后一次成功匹配的符号文本
                     let mut token_type = TokenType::Error;   // 最后一次成功匹配的 Token 类型
@@ -360,7 +367,7 @@ impl Lexer {
                         self.next_char(); // 消费该字符
                         tokens.push(Token {
                             kind: TokenType::Error,
-                            span: Span { start, end: self.current_pos(), },
+                            span: Span { start_off: start_offset, end_off: self.current_offset() },
                             text: err_char.to_string(),
                             source: self.source,
                         });
@@ -369,7 +376,7 @@ impl Lexer {
                         // 生成匹配到的符号 Token
                         tokens.push(Token {
                             kind: token_type,
-                            span: Span { start, end: self.current_pos(), },
+                            span: Span { start_off: start_offset, end_off: self.current_offset() },
                             text: matched_text,
                             source: self.source,
                         });
@@ -377,18 +384,18 @@ impl Lexer {
                     }
                 }
                 LexerState::LineStart => {
-                    let last_line_pos = self.current_pos();
+                    let last_line_byte = self.current_offset();
                     self.next_char(); // consume '\n'
                     self.lineno += 1;
                     self.column = 1;
                     tokens.push(Token {
                         kind: TokenType::NewLine,
-                        span: Span { start: last_line_pos.clone(), end: last_line_pos },
+                        span: Span { start_off: last_line_byte, end_off: last_line_byte },
                         source : self.source,
                         text: "\n".to_string(),
                     });
 
-                    let start_pos = self.current_pos();
+                    let start_offset = self.current_offset();
                     let mut text = String::new();
                     while self.index < self.code.len() {
                         let c = self.code[self.index];
@@ -396,7 +403,7 @@ impl Lexer {
                             text.push(c);
                             self.next_char();
                         } else if c == '\t' {
-                            // 定义制表符宽度，例如替换为4个空格
+                            // 替换为4个空格
                             text.push_str("    ");
                             self.next_char();
                         } else {
@@ -415,7 +422,7 @@ impl Lexer {
                         return Err(DiagMsg {
                             title : format!("{:?}", LexerError::InvalidIndent),
                             msg : "invalid indent".to_string(),
-                            span : Span { start: start_pos, end: self.current_pos() },
+                            span : Span { start_off: start_offset, end_off: self.current_offset() },
                             source: self.source,
                         });
                     }
@@ -426,7 +433,7 @@ impl Lexer {
                         self.indent_level += 1;
                         tokens.push(Token {
                             kind: TokenType::Indent,
-                            span: Span { start: start_pos.clone(), end:  self.current_pos() },
+                            span: Span { start_off: start_offset, end_off: self.current_offset() },
                             source: self.source,
                             text: text.clone(), });
                     }
@@ -434,7 +441,7 @@ impl Lexer {
                         self.indent_level -= 1;
                         tokens.push(Token {
                             kind: TokenType::Dedent,
-                            span: Span { start: start_pos.clone(), end:  self.current_pos() },
+                            span: Span { start_off: start_offset, end_off: self.current_offset() },
                             source: self.source,
                             text: text.clone(),  });
                     }
@@ -447,10 +454,11 @@ impl Lexer {
 }
 
 impl LexerApi for Lexer {
-    fn new(source: SourceId, text: String, ) -> Self {
+    fn new(source: SourceId, text: &String) -> Self {
         let code = text.chars().collect();
         Lexer {
             index: 0,
+            byte_index: 0,
             column: 1,
             lineno: 1,
             source,
@@ -465,12 +473,13 @@ impl LexerApi for Lexer {
 
         self.main_loop(&mut tokens)?;
 
+        let off = self.current_offset();
         for _ in 0 .. self.indent_level {
             tokens.push(Token {
                 kind: TokenType::Dedent,
                 span: Span {
-                    start: self.current_pos(),
-                    end:  self.current_pos(),
+                    start_off: off,
+                    end_off: off,
                 },
                 text: "".to_string(),
                 source: self.source,

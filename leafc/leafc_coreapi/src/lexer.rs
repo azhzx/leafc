@@ -139,7 +139,7 @@ pub enum LexerError {
 }
 
 pub trait LexerApi {
-    fn new(source: SourceId, text: String) -> Self;
+    fn new(source: SourceId, text: &String) -> Self;
     fn tokenize(&mut self)
         -> Result<TokenStream, DiagMsg>;
     fn get_document_strings(&self) -> &Document;

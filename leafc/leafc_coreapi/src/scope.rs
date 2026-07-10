@@ -1,9 +1,10 @@
-use crate::ast::{DeclNode, DeclNodeId, Field};
+use std::collections::HashMap;
+use crate::ast::{DeclNode, DeclNodeId, ExprNodeId, Field};
 use crate::source::Span;
 
 pub type ScopeId = usize;
 
-pub type TopScopePool = Vec<ScopeId>;
+pub type TopScopeIds = Vec<ScopeId>;
 pub type ScopePool = Vec<Scope>;
 
 

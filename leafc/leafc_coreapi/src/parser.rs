@@ -35,7 +35,6 @@ pub struct Require {
 #[derive(Debug)]
 pub struct ParserResult {
     pub ast: FileAst,
-    pub requires: Vec<Require>,
 }
 
 pub trait ParserApi<'a> {

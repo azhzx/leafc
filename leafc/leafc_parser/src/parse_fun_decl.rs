@@ -1,4 +1,4 @@
-use leafc_coreapi::ast::{DeclNode, Param, TypeNameString, Visibility};
+use leafc_coreapi::ast::{DeclNode, DeclNodeKind, Param, TypeNameString, Visibility};
 use leafc_coreapi::diagnostic::DiagMsg;
 use leafc_coreapi::lexer::{Token, TokenType};
 use leafc_coreapi::parser::{ParserError, ParserResult};
@@ -66,12 +66,14 @@ impl<'a> Parser<'a> {
 
         if self.current_token().kind == TokenType::Semicolon {
             self.skip_token();
-            self.ast.decl_pool.push( DeclNode::FunDecl {
+            self.ast.decl_pool.push( DeclNode {
                 name: fist_name_token.text.clone(),
-                params,
-                return_type_str,
                 span: fist_name_token.span.clone(),
-                visibility
+                visibility,
+                kind: DeclNodeKind::FunDecl {
+                    params,
+                    return_type_str,
+                },
             });
             return Ok(())
         }
@@ -91,13 +93,15 @@ impl<'a> Parser<'a> {
 
         self.skip_token_only(TokenType::Dedent)?; // dedent
 
-        self.ast.decl_pool.push(DeclNode::Fun {
+        self.ast.decl_pool.push(DeclNode {
             name: fist_name_token.text.clone(),
-            params,
-            return_type_str,
             span: fist_name_token.span.clone(),
             visibility,
-            block: body,
+            kind: DeclNodeKind::Fun {
+                params,
+                return_type_str,
+                block: body,
+            },
         });
         Ok(())
     }

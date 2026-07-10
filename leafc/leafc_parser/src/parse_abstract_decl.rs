@@ -1,4 +1,4 @@
-use leafc_coreapi::ast::{DeclNode, MethodDecl, Param, TypeNameString, Visibility};
+use leafc_coreapi::ast::{DeclNode, DeclNodeKind, MethodDecl, Param, TypeNameString, Visibility};
 use leafc_coreapi::diagnostic::DiagMsg;
 use leafc_coreapi::lexer::{Token, TokenType};
 use leafc_coreapi::parser::{ParserError, ParserResult};
@@ -118,13 +118,15 @@ impl<'a> Parser<'a> {
         self.skip_token_if_newlines()?;
         self.skip_token_only(TokenType::Dedent)?;
 
-        self.ast.decl_pool.push( DeclNode::Abstract {
-            name: name,
-            has_abst: impls,
-            generic_vars: generic,
+        self.ast.decl_pool.push( DeclNode {
+            name,
             visibility,
-            methods: methods,
             span: name_span,
+            kind: DeclNodeKind::Abstract {
+                has_abst: impls,
+                generic_vars: generic,
+                methods: methods,
+            },
         });
 
         Ok(())

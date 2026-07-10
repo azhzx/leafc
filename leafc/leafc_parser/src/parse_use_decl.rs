@@ -16,13 +16,6 @@ impl<'a> Parser<'a> {
             is_external_module = true;
         }
 
-        // return Err(DiagMsg {
-        //     title: format!("{:?}", ParserError::UseDeclareMissingModuleName),
-        //     msg: "use declare missing module name".to_string(),
-        //     span: self.current_token().span,
-        //     source: self.source
-        // });
-
         // use a.b.c
         while self.current_token().kind == TokenType::Ident{
             let name = self.current_token().text.clone();
@@ -75,7 +68,7 @@ impl<'a> Parser<'a> {
         }
 
 
-        self.requires.push( Require {
+        self.ast.requires.push( Require {
             path: require_paths,
             is_external_module,
             only,

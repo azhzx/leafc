@@ -5,7 +5,7 @@ use leafc_coreapi::diagnostic::DiagMsg;
 use leafc_coreapi::lexer::{Token, TokenStream, TokenType};
 use leafc_coreapi::lexer::TokenType::{Comma, Eof, Ident, KwAbst, Lparen, NewLine};
 use leafc_coreapi::parser::ParserError;
-use leafc_coreapi::source::{Pos, SourceId, Span};
+use leafc_coreapi::source::{SourceId, Span};
 use leafc_coreapi::tokens_pass::{TokenPassApi, TokenPassError};
 
 const KEYWORD_PREPROCESS: &str = "preprocessor_define";
@@ -19,6 +19,8 @@ const KEYWORD_PANIC: &str = "preprocessor_panic";
 const KEYWORD_WARNING: &str = "preprocessor_warning";
 
 const PP_FUNCTION_IS_DEFINED: &str = "preprocessor_is_defined";
+
+const PP_FUNCTION_IS_EVAL: &str = "preprocessor_eval";
 
 const REST_ARGS_MARKER: &str = "__PreprocessorRestArgs";
 
@@ -396,6 +398,25 @@ impl<'a> Preprocessor<'a> {
                     println!("[warning] {}", &current_tokens[index].text);
                     index += 1;
                 } else if current_token.kind == TokenType::Ident
+                    && current_token.text == PP_FUNCTION_IS_EVAL {
+                    index += 1;
+
+                    index += 1;
+                    let mut expr = vec![];
+                    while current_tokens[index].kind != TokenType::Rparen {
+                        expr.push(current_tokens[index].clone());
+                        index += 1;
+                    }
+                    index += 1;
+
+                    let eval = self.eval(expr);
+                    result.push(Token {
+                        kind: TokenType::Int,
+                        span: current_tokens[index].span.clone(),
+                        source: self.source,
+                        text: eval.to_string(),
+                    })
+                } else if current_token.kind == TokenType::Ident
                     && current_token.text == KEYWORD_IF {
 
                     index += 1;
@@ -512,7 +533,7 @@ impl<'a> Preprocessor<'a> {
             self.preprocessors.entry(name.clone()).or_insert(PPDef {
                 name_token: Token {
                     kind: TokenType::Ident,
-                    span: Span { start: Pos { column: 0, lineno: 0 }, end: Pos { column: 0, lineno: 0 } },
+                    span: Span { start_off: 0, end_off: 0 },
                     source: self.source,
                     text: name.clone(),
                 },

@@ -6,8 +6,23 @@ version = 4
 name = "leafc"
 version = "0.1.0"
 dependencies = [
+ "leafc_compiler",
  "leafc_coreapi",
  "leafc_diag",
+ "leafc_hirlower",
+ "leafc_lexer",
+ "leafc_namepass",
+ "leafc_parser",
+ "leafc_tokenpass",
+]
+
+[[package]]
+name = "leafc_compiler"
+version = "0.1.0"
+dependencies = [
+ "leafc_coreapi",
+ "leafc_diag",
+ "leafc_hirlower",
  "leafc_lexer",
  "leafc_namepass",
  "leafc_parser",
@@ -20,6 +35,13 @@ version = "0.1.0"
 
 [[package]]
 name = "leafc_diag"
+version = "0.1.0"
+dependencies = [
+ "leafc_coreapi",
+]
+
+[[package]]
+name = "leafc_hirlower"
 version = "0.1.0"
 dependencies = [
  "leafc_coreapi",

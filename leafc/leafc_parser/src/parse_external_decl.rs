@@ -1,4 +1,4 @@
-use leafc_coreapi::ast::{DeclNode, ExprNodeId, Param, Visibility};
+use leafc_coreapi::ast::{DeclNode, DeclNodeKind, ExprNodeId, Param, Visibility};
 use leafc_coreapi::diagnostic::DiagMsg;
 use leafc_coreapi::lexer::TokenType;
 use leafc_coreapi::parser::ParserError;
@@ -17,10 +17,11 @@ impl<'a> Parser<'a> {
             self.skip_token_only(TokenType::Semicolon)?;
             self.skip_token_only(TokenType::NewLine)?;
 
-            self.ast.decl_pool.push(DeclNode::CType {
+            self.ast.decl_pool.push(DeclNode {
                 name,
                 visibility,
                 span,
+                kind: DeclNodeKind::CType,
             });
 
             return Ok(());
@@ -96,13 +97,15 @@ impl<'a> Parser<'a> {
         self.skip_token_only(TokenType::Semicolon)?;
 
         self.skip_token_only(TokenType::NewLine)?;
-        self.ast.decl_pool.push(DeclNode::External {
+        self.ast.decl_pool.push(DeclNode {
             name: fist_name_token.text,
-            sym_name,
-            params,
-            return_type_str,
             visibility,
             span: fist_name_token.span.clone(),
+            kind: DeclNodeKind::External {
+                sym_name,
+                params,
+                return_type_str,
+            },
         });
         Ok(())
     }

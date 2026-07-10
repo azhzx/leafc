@@ -18,7 +18,6 @@ pub struct Parser<'a> {
     index: usize,
     source: SourceId,
     ast: FileAst,
-    requires: Vec<Require>
 }
 
 impl<'a> Parser<'a> {
@@ -197,12 +196,11 @@ impl<'a> ParserApi<'a> for Parser<'a> {
             source,
             ast: FileAst {
                 file: source,
-                atom_expr_pool: vec![],
+                requires: vec![],
                 expr_pool: vec![],
                 decl_pool: vec![],
                 type_name_pool: vec![],
             },
-            requires: vec![],
         }
     }
 
@@ -242,7 +240,6 @@ impl<'a> ParserApi<'a> for Parser<'a> {
         }
         Ok(ParserResult {
             ast: self.ast.clone(),
-            requires: self.requires.clone(),
         })
     }
 }
