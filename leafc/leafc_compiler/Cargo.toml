@@ -5,9 +5,7 @@ edition = "2024"
 
 [dependencies]
 leafc_coreapi = { path = "../leafc_coreapi" }
-leafc_lexer = { path = "../leafc_lexer" }
 leafc_parser = { path = "../leafc_parser" }
 leafc_namepass = { path = "../leafc_namepass" }
 leafc_hirlower = { path = "../leafc_hirlower" }
 leafc_diag = { path = "../leafc_diag" }
-leafc_tokenpass = { path = "../leafc_tokenpass" }

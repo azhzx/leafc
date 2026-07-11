@@ -557,11 +557,9 @@ impl<'a> TokenPassApi<'a> for Preprocessor<'a> {
             new_tokens: TokenStream { data: Vec::new() },
         }
     }
-    fn pass(&mut self) -> Result<&TokenStream, DiagMsg> {
-        self.new_tokens = TokenStream {
+    fn pass(&mut self) -> Result<TokenStream, DiagMsg> {
+        Ok(TokenStream {
             data: self.expand_all(self.tokens.data.clone())?
-        };
-
-        Ok(&self.new_tokens)
+        })
     }
 }

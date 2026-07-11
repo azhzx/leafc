@@ -10,5 +10,5 @@ pub enum TokenPassError {
 
 pub trait TokenPassApi<'a> {
     fn new(tokens: &'a TokenStream, source: SourceId) -> Self;
-    fn pass(&mut self) -> Result<&TokenStream, DiagMsg>;
+    fn pass(&mut self) -> Result<TokenStream, DiagMsg>;
 }

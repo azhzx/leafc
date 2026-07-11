@@ -164,7 +164,7 @@ impl<'a> Parser<'a> {
                             title: format!("{:?}", ParserError::InvalidTupleLiteral),
                             msg: "invalid tuple literal".to_string(),
                             span: current_token_span,
-                            source: self.source,
+                            source: self.current_source,
                         })
                     }
                 }
@@ -180,7 +180,7 @@ impl<'a> Parser<'a> {
                     title: format!("{:?}", ParserError::InvalidExpression),
                     msg: "invalid expression literal".to_string(),
                     span: current_token_span,
-                    source: self.source,
+                    source: self.current_source,
                 })
             }
         };
@@ -346,7 +346,7 @@ impl<'a> Parser<'a> {
                                 title: format!("{:?}", ParserError::InvalidOperator),
                                 msg: "invalid operator".to_string(),
                                 span: token_span.clone(),
-                                source: self.source,
+                                source: self.current_source,
                             })?,
                         right: rhs,
                     },
@@ -372,7 +372,7 @@ impl<'a> Parser<'a> {
                                 title: format!("{:?}", ParserError::InvalidCallArgumentList),
                                 msg: "invalid call argument list".to_string(),
                                 span: call_span,
-                                source: self.source,
+                                source: self.current_source,
                             });
                         }
                     }

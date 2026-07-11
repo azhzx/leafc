@@ -1,13 +1,13 @@
 use std::collections::HashMap;
-use leafc_coreapi::ast::{DeclNode, FileAst, AstModule, ExprNode, Visibility};
+use leafc_coreapi::ast::{DeclNode, CrateAst, ExprNode, Visibility};
 use leafc_coreapi::diagnostic::DiagMsg;
 use leafc_coreapi::hir::{HirDecl, HirDeclId, HirDeclKind, HirModule, TyId, TypePool};
 use leafc_coreapi::hir_lower::HirLowerApi;
 use leafc_coreapi::name_pass::{DoScopeMap, FunScopeMap, NamePassResult};
-use leafc_coreapi::scope::{Scope, ScopePool, TopScopeIds};
+
 
 pub struct HirLower<'a> {
-    ast_module: &'a AstModule,
+    ast_module: &'a CrateAst,
     name_pass_result: &'a NamePassResult<'a>,
     hir: HirModule,
 }
@@ -20,7 +20,7 @@ impl<'a> HirLower<'a> {
 
 impl<'a> HirLowerApi<'a> for HirLower<'a> {
     fn new(
-        ast_module: &'a AstModule,
+        ast_module: &'a CrateAst,
         name_pass_result: &'a NamePassResult,
 
         module_name: String
@@ -42,14 +42,7 @@ impl<'a> HirLowerApi<'a> for HirLower<'a> {
 
 
     fn lower(&mut self) -> Result<&HirModule, DiagMsg> {
-        for file_ast in &self.ast_module.asts {
-            let decl_pool = &file_ast.decl_pool;
-            for decl in decl_pool {
-                match decl.kind {
-                    _ => todo!(),
-                }
-            }
-        }
+        todo!();
         Ok(&self.hir)
     }
 

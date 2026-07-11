@@ -1,11 +1,11 @@
 use leafc_coreapi::ast::{Ctor, DeclNode, DeclNodeKind, Field, Param, TypeNameString, Visibility};
 use leafc_coreapi::diagnostic::DiagMsg;
 use leafc_coreapi::lexer::{Token, TokenType};
-use leafc_coreapi::parser::{ParserError, ParserResult};
+use leafc_coreapi::parser::{ParserError};
 use crate::Parser;
 
 impl<'a> Parser<'a> {
-    pub fn parse_type_decl(&mut self, visibility: Visibility) -> Result<(), DiagMsg> {
+    pub fn parse_type_decl(&mut self, visibility: Visibility) -> Result<DeclNode, DiagMsg> {
         self.skip_token();
         let name_token = self.current_token();
         let name = name_token.text.clone();
@@ -46,7 +46,7 @@ impl<'a> Parser<'a> {
                     generic = self.handle_where(generic)?;
                 }
 
-                self.ast.decl_pool.push(DeclNode {
+                Ok(DeclNode {
                     name,
                     visibility,
                     span: name_span,
@@ -55,8 +55,8 @@ impl<'a> Parser<'a> {
                         has_abst: impls,
                         generic_vars: generic,
                     },
-                });
-                Ok(())
+                    source_id: self.current_source,
+                })
             }
             TokenType::NewLine => {
                 self.skip_token();
@@ -87,7 +87,7 @@ impl<'a> Parser<'a> {
 
                     self.skip_token_if_newlines()?;
                     self.skip_token_only(TokenType::Dedent)?;
-                    self.ast.decl_pool.push(DeclNode {
+                    return Ok(DeclNode {
                         name,
                         visibility,
                         span: name_span,
@@ -96,7 +96,8 @@ impl<'a> Parser<'a> {
                             fields,
                             has_abst: impls,
                             generic_vars: generic,
-                        }
+                        },
+                        source_id: self.current_source,
                     })
                 } else if self.current_token().kind == TokenType::Pipe {
 
@@ -139,7 +140,7 @@ impl<'a> Parser<'a> {
                     }
                     self.skip_token_if_newlines()?;
                     self.skip_token_only(TokenType::Dedent)?;
-                    self.ast.decl_pool.push(DeclNode {
+                    return Ok(DeclNode {
                         name,
                         visibility,
                         span: name_span,
@@ -147,24 +148,24 @@ impl<'a> Parser<'a> {
                             ctors,
                             has_abst: impls,
                             generic_vars: generic,
-                        }
+                        },
+                        source_id: self.current_source,
                     })
                 } else {
                     return Err(DiagMsg{
                         title: format!("{:?}", ParserError::InvalidTypeDeclaration),
                         msg: "invalid type declaration".to_string(),
                         span: self.current_token().span.clone(),
-                        source: self.source
+                        source: self.current_source
                     })
                 }
-                Ok(())
             }
             _ => {
                 Err(DiagMsg{
                     title: format!("{:?}", ParserError::InvalidTypeDeclaration),
                     msg: "invalid type declaration".to_string(),
                     span: self.current_token().span.clone(),
-                    source: self.source
+                    source: self.current_source
                 })
             }
         }

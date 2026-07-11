@@ -2,12 +2,12 @@ use std::fmt::Write;
 use leafc_coreapi::diagnostic::{DiagTextColor, DiagMsg, DiagnosticianApi};
 use leafc_coreapi::source::{Source, SourceId, SourcePool, Span};
 
-pub struct Diagnostician {
-    source_pool: SourcePool,
+pub struct Diagnostician<'a> {
+    source_pool: &'a SourcePool,
     colors: DiagTextColor,
 }
 
-impl Diagnostician {
+impl<'a> Diagnostician<'a> {
     fn offset_to_line_col(offset: usize, line_starts: &[usize]) -> (usize, usize) {
         let line = line_starts.partition_point(|&x| x <= offset) - 1;
         let col = offset - line_starts[line];
@@ -15,8 +15,8 @@ impl Diagnostician {
     }
 }
 
-impl DiagnosticianApi for Diagnostician {
-    fn new(source_pool: SourcePool, colors: DiagTextColor) -> Self {
+impl<'a> DiagnosticianApi<'a> for Diagnostician<'a> {
+    fn new(source_pool: &'a SourcePool, colors: DiagTextColor) -> Self {
         Diagnostician { source_pool, colors }
     }
 
@@ -24,52 +24,12 @@ impl DiagnosticianApi for Diagnostician {
         self.colors = new_colors;
     }
 
-    fn add_source(&mut self, source_name: String, text: String) -> SourceId {
-        let file_lines = {
-            let mut lines: Vec<String> = text.lines().map(String::from).collect();
-            lines.push(String::new());
-            lines
-        };
-
-        let source_len = text.len();
-
-        let mut line_starts = Vec::with_capacity(file_lines.len());
-        line_starts.push(0);
-        let mut pos = 0;
-        let bytes = text.as_bytes();
-
-
-        for line in &file_lines[..file_lines.len() - 1] {
-            pos += line.len();
-
-            if pos < bytes.len() && bytes[pos] == b'\r' {
-                pos += 1;
-            }
-            if pos < bytes.len() && bytes[pos] == b'\n' {
-                pos += 1;
-            }
-            line_starts.push(pos);
-        }
-
-
-        line_starts.push(source_len);
-
-        self.source_pool.push(Source {
-            file_name: source_name,
-            file_lines,
-            line_starts,
-            source_len,
-        });
-
-        (self.source_pool.len() - 1) as SourceId
-    }
-
     fn report(&self, diag: DiagMsg) -> String {
         let mut out = String::new();
 
         let source_id = diag.source;
-        let source = &self.source_pool[source_id];
-        let source_name = &source.file_name;
+        let source = &self.source_pool.0[source_id];
+        let source_name = &source.file_abs_path;
         let lines = &source.file_lines;
         let line_starts = &source.line_starts;
 

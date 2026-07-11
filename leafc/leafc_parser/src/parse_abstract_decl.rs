@@ -1,11 +1,11 @@
 use leafc_coreapi::ast::{DeclNode, DeclNodeKind, MethodDecl, Param, TypeNameString, Visibility};
 use leafc_coreapi::diagnostic::DiagMsg;
 use leafc_coreapi::lexer::{Token, TokenType};
-use leafc_coreapi::parser::{ParserError, ParserResult};
+use leafc_coreapi::parser::{ParserError};
 use crate::Parser;
 
 impl<'a> Parser<'a> {
-    pub fn parse_abstract_decl(&mut self, visibility: Visibility) -> Result<(), DiagMsg> {
+    pub fn parse_abstract_decl(&mut self, visibility: Visibility) -> Result<DeclNode, DiagMsg> {
         self.skip_token();
         let name_token = self.current_token();
         let name = name_token.text.clone();
@@ -52,7 +52,7 @@ impl<'a> Parser<'a> {
                     title: format!("{:?}", ParserError::FunctionDeclarationMissingParameterList),
                     msg: "function declare missing parameter list".to_string(),
                     span: self.current_token().span.clone(),
-                    source: self.source
+                    source: self.current_source
                 })
             }
             self.skip_token(); // '('
@@ -88,7 +88,7 @@ impl<'a> Parser<'a> {
                         title: format!("{:?}", ParserError::InvalidFunctionParameterList),
                         msg: "invalid function parameter list".to_string(),
                         span: self.current_token().span.clone(),
-                        source: self.source
+                        source: self.current_source
                     })
                 }
             }
@@ -118,17 +118,16 @@ impl<'a> Parser<'a> {
         self.skip_token_if_newlines()?;
         self.skip_token_only(TokenType::Dedent)?;
 
-        self.ast.decl_pool.push( DeclNode {
+        Ok(DeclNode {
             name,
             visibility,
             span: name_span,
             kind: DeclNodeKind::Abstract {
                 has_abst: impls,
                 generic_vars: generic,
-                methods: methods,
+                methods,
             },
-        });
-
-        Ok(())
+            source_id: self.current_source,
+        })
     }
 }

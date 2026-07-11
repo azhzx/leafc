@@ -1,4 +1,3 @@
-use crate::parser::Require;
 use crate::source::{SourceId, Span};
 
 pub type ExprNodeId = usize;
@@ -177,7 +176,8 @@ pub struct DeclNode {
     pub name: String,
     pub visibility: Visibility,
     pub span: Span,
-    pub kind: DeclNodeKind
+    pub kind: DeclNodeKind,
+    pub source_id: SourceId,
 }
 
 #[derive(Debug, Clone)]
@@ -186,6 +186,9 @@ pub enum DeclNodeKind {
         params: Vec<Param>,
         return_type_str: TypeNameString,
         block: Vec<ExprNodeId>,
+    },
+    FileUnit {  // file module
+        top_decls: Vec<DeclNodeId>,
     },
     FunDecl {
         params: Vec<Param>,
@@ -211,7 +214,7 @@ pub enum DeclNodeKind {
         generic_vars: Vec<GenericVar>,
         ctors: Vec<Ctor>,
     },
-    CType ,
+    CType,
     External {
         sym_name: String,
         params: Vec<Param>,
@@ -220,24 +223,26 @@ pub enum DeclNodeKind {
 }
 
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Visibility {
     Private,
     Public,
     PublicExternal
 }
 
+#[derive(Debug, Clone)]
+pub struct Require {
+    pub path: Vec<String>,
+    pub only: Vec<String>,
+    pub is_open: bool, // 将被导入模块的顶层声明塞入当前模块的中(不递归展开)
+    pub span: Span,
+}
+
 
 #[derive(Debug, Clone)]
-pub struct FileAst {
-    pub file: SourceId,
-    pub requires: Vec<Require>,
+pub struct CrateAst {
+    pub external_requires: Vec<Require>,
     pub expr_pool: Vec<ExprNode>,
     pub decl_pool: Vec<DeclNode>,
     pub type_name_pool: Vec<TypeNameString>,
-}
-
-#[derive(Debug, Clone)]
-pub struct AstModule {
-    pub asts: Vec<FileAst>,
 }

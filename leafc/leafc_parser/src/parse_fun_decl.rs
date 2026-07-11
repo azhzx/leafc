@@ -1,11 +1,11 @@
 use leafc_coreapi::ast::{DeclNode, DeclNodeKind, Param, TypeNameString, Visibility};
 use leafc_coreapi::diagnostic::DiagMsg;
 use leafc_coreapi::lexer::{Token, TokenType};
-use leafc_coreapi::parser::{ParserError, ParserResult};
+use leafc_coreapi::parser::{ParserError};
 use crate::Parser;
 
 impl<'a> Parser<'a> {
-    pub fn parse_fun_decl(&mut self, visibility: Visibility) -> Result<(), DiagMsg> {
+    pub fn parse_fun_decl(&mut self, visibility: Visibility) -> Result<DeclNode, DiagMsg> {
         self.skip_token();
         let fist_name_token = self.current_token().clone();
         self.skip_token_only(TokenType::Ident)?;
@@ -15,7 +15,7 @@ impl<'a> Parser<'a> {
                 title: format!("{:?}", ParserError::FunctionDeclarationMissingParameterList),
                 msg: "function declare missing parameter list".to_string(),
                 span: self.current_token().span.clone(),
-                source: self.source
+                source: self.current_source
             })
         }
         self.skip_token(); // '('
@@ -51,7 +51,7 @@ impl<'a> Parser<'a> {
                     title: format!("{:?}", ParserError::InvalidFunctionParameterList),
                     msg: "invalid function parameter list".to_string(),
                     span: self.current_token().span.clone(),
-                    source: self.source
+                    source: self.current_source
                 })
             }
         }
@@ -66,7 +66,7 @@ impl<'a> Parser<'a> {
 
         if self.current_token().kind == TokenType::Semicolon {
             self.skip_token();
-            self.ast.decl_pool.push( DeclNode {
+            return Ok(DeclNode {
                 name: fist_name_token.text.clone(),
                 span: fist_name_token.span.clone(),
                 visibility,
@@ -74,8 +74,8 @@ impl<'a> Parser<'a> {
                     params,
                     return_type_str,
                 },
-            });
-            return Ok(())
+                source_id: self.current_source,
+            })
         }
 
         self.skip_token_only(TokenType::NewLine)?;
@@ -93,7 +93,7 @@ impl<'a> Parser<'a> {
 
         self.skip_token_only(TokenType::Dedent)?; // dedent
 
-        self.ast.decl_pool.push(DeclNode {
+        Ok(DeclNode {
             name: fist_name_token.text.clone(),
             span: fist_name_token.span.clone(),
             visibility,
@@ -102,7 +102,7 @@ impl<'a> Parser<'a> {
                 return_type_str,
                 block: body,
             },
-        });
-        Ok(())
+            source_id: self.current_source,
+        })
     }
 }

@@ -5,7 +5,7 @@ use leafc_coreapi::parser::ParserError;
 use crate::Parser;
 
 impl<'a> Parser<'a> {
-    pub fn parse_external_decl(&mut self, visibility: Visibility) -> Result<(), DiagMsg> {
+    pub fn parse_external_decl(&mut self, visibility: Visibility) -> Result<DeclNode, DiagMsg> {
         self.skip_token();
 
         if self.current_token().kind == TokenType::KwCType {
@@ -17,14 +17,14 @@ impl<'a> Parser<'a> {
             self.skip_token_only(TokenType::Semicolon)?;
             self.skip_token_only(TokenType::NewLine)?;
 
-            self.ast.decl_pool.push(DeclNode {
+
+            return Ok(DeclNode {
                 name,
                 visibility,
                 span,
                 kind: DeclNodeKind::CType,
+                source_id: self.current_source,
             });
-
-            return Ok(());
         }
 
         self.skip_token_only(TokenType::KwFun)?;
@@ -36,7 +36,7 @@ impl<'a> Parser<'a> {
                 title: format!("{:?}", ParserError::FunctionDeclarationMissingParameterList),
                 msg: "function declare missing parameter list".to_string(),
                 span: self.current_token().span.clone(),
-                source: self.source
+                source: self.current_source
             })
         }
         self.skip_token(); // '('
@@ -72,7 +72,7 @@ impl<'a> Parser<'a> {
                     title: format!("{:?}", ParserError::InvalidFunctionParameterList),
                     msg: "invalid function parameter list".to_string(),
                     span: self.current_token().span.clone(),
-                    source: self.source
+                    source: self.current_source
                 })
             }
         }
@@ -97,7 +97,7 @@ impl<'a> Parser<'a> {
         self.skip_token_only(TokenType::Semicolon)?;
 
         self.skip_token_only(TokenType::NewLine)?;
-        self.ast.decl_pool.push(DeclNode {
+        Ok(DeclNode {
             name: fist_name_token.text,
             visibility,
             span: fist_name_token.span.clone(),
@@ -106,7 +106,7 @@ impl<'a> Parser<'a> {
                 params,
                 return_type_str,
             },
-        });
-        Ok(())
+            source_id: self.current_source,
+        })
     }
 }

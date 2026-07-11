@@ -1,396 +1,530 @@
 use std::collections::HashMap;
-use leafc_coreapi::ast::{AstModule, AtomExprNode, DeclNode, DeclNodeId, DeclNodeKind, ElseIf, ExprNode, ExprNodeId, ExprNodeKind, FileAst, Visibility};
 use leafc_coreapi::diagnostic::DiagMsg;
+use leafc_coreapi::ast::{
+    CrateAst, AtomExprNode, DeclNode, DeclNodeId, DeclNodeKind, ExprNode, ExprNodeId,
+    ExprNodeKind, Visibility,
+};
 use leafc_coreapi::name_pass::{DoScopeMap, FunScopeMap, NamePassApi, NamePassError, NamePassResult};
-use leafc_coreapi::scope::{LocalSymbol, Scope, ScopeId, ScopePool, TopScopeIds, FieldSymbol, CtorSymbol, MethodSymbol};
+use leafc_coreapi::scope::{FieldDef, Scope, ScopeId, ScopeKind, ScopePool, Symbol, SymbolKind};
 use leafc_coreapi::source::{SourceId, Span};
 
 pub struct NamePass<'a> {
-    ast_module: &'a AstModule,
+    ast_module: &'a CrateAst,
     scope_pool: ScopePool,
-    file_root_scopes: Vec<ScopeId>,          // 每个文件的根作用域
-    file_top_decl_scopes: Vec<Vec<ScopeId>>, // 每个文件的顶层声明作用域列表
-    file_symbols: Vec<HashMap<String, (usize, DeclNodeId)>>, // 每个文件的符号表，值表示 (file_id, decl_id)
+
+    /// DoExpr => Scope
     do_scope_map: DoScopeMap,
+
+    /// FunDecl => Scope
     fun_scope_map: FunScopeMap,
-    current_file_id: usize, // 当前正在处理的文件索引
+
+    /// source_id => FileUnit
+    source_to_file_unit: HashMap<SourceId, DeclNodeId>,
 }
 
 impl<'a> NamePass<'a> {
-    fn handle_expr(&mut self, expr_id: ExprNodeId, current_scope: ScopeId, file_id: usize) -> Result<(), DiagMsg> {
-        let main_expr = &self.ast_module.asts[file_id].expr_pool[expr_id];
+    fn source_id_from_scope(&self, scope_id: ScopeId) -> SourceId {
+        let mut current = Some(scope_id);
+        while let Some(sid) = current {
+            let scope = self.scope_pool.get_scope(sid);
+            if scope.kind == ScopeKind::File {
+                let file_unit = &self.ast_module.decl_pool[scope.bind_to_ast.unwrap()];
+                return file_unit.source_id;
+            }
+            current = scope.parent;
+        }
+        unreachable!()
+    }
+}
+
+impl<'a> NamePass<'a> {
+    /// 创建作用域并填充符号
+    fn handle_expr(
+        &mut self,
+        expr_id: ExprNodeId,
+        current_scope: ScopeId,
+    ) -> Result<(), DiagMsg> {
+        let main_expr = &self.ast_module.expr_pool[expr_id];
         match &main_expr.kind {
             ExprNodeKind::Atom { .. } => {}
 
             ExprNodeKind::Binary { left, right, .. } => {
-                self.handle_expr(*left, current_scope, file_id)?;
-                self.handle_expr(*right, current_scope, file_id)?;
+                self.handle_expr(*left, current_scope)?;
+                self.handle_expr(*right, current_scope)?;
             }
             ExprNodeKind::Unary { right, .. } => {
-                self.handle_expr(*right, current_scope, file_id)?;
+                self.handle_expr(*right, current_scope)?;
             }
             ExprNodeKind::Call { callee, args, .. } => {
-                self.handle_expr(*callee, current_scope, file_id)?;
+                self.handle_expr(*callee, current_scope)?;
                 for arg in args {
-                    self.handle_expr(*arg, current_scope, file_id)?;
+                    self.handle_expr(*arg, current_scope)?;
                 }
             }
             ExprNodeKind::UnsafeExternalCall { callee, args, .. } => {
-                self.handle_expr(*callee, current_scope, file_id)?;
+                self.handle_expr(*callee, current_scope)?;
                 for arg in args {
-                    self.handle_expr(*arg, current_scope, file_id)?;
+                    self.handle_expr(*arg, current_scope)?;
                 }
             }
             ExprNodeKind::Member { left, .. } => {
-                self.handle_expr(*left, current_scope, file_id)?;
+                self.handle_expr(*left, current_scope)?;
             }
             ExprNodeKind::TypeCast { expr, .. } => {
-                self.handle_expr(*expr, current_scope, file_id)?;
+                self.handle_expr(*expr, current_scope)?;
             }
             ExprNodeKind::Move { target, .. }
             | ExprNodeKind::Copy { target, .. }
             | ExprNodeKind::Ref { target, .. }
             | ExprNodeKind::MutRef { target, .. }
             | ExprNodeKind::Share { target, .. } => {
-                self.handle_expr(*target, current_scope, file_id)?;
+                self.handle_expr(*target, current_scope)?;
             }
 
             ExprNodeKind::Do { exprs, .. } => {
-                let new_scope = Scope::Scope {
-                    parent: Some(current_scope),
-                    symbols: vec![],
-                    children: vec![],
-                    bind_to_ast: 0, // Do 表达式无对应声明，设为0
-                };
-                let new_scope_id = self.scope_pool.len();
-                self.scope_pool.push(new_scope);
-
+                // 为 Do 表达式创建一个新的块作用域
+                let new_scope_id = self.scope_pool.push_scope(
+                    Some(current_scope),
+                    ScopeKind::Block,
+                    Some(expr_id),
+                );
                 self.do_scope_map.insert(expr_id, new_scope_id);
 
-                if let Scope::Scope { children, .. } = &mut self.scope_pool[current_scope] {
-                    children.push(new_scope_id);
-                }
-
                 for e in exprs {
-                    self.handle_expr(*e, new_scope_id, file_id)?;
+                    self.handle_expr(*e, new_scope_id)?;
                 }
             }
 
             ExprNodeKind::Let { name, expr, .. } => {
-                if let Scope::Scope { symbols, .. } = &mut self.scope_pool[current_scope] {
-                    symbols.push(LocalSymbol {
+                // 在当前作用域添加局部符号
+                self.scope_pool.add_symbol(
+                    current_scope,
+                    Symbol {
                         name: name.clone(),
                         def_span: main_expr.span.clone(),
-                    });
-                }
-                self.handle_expr(*expr, current_scope, file_id)?;
+                        kind: SymbolKind::Local,
+                    },
+                );
+                self.handle_expr(*expr, current_scope)?;
             }
 
-            ExprNodeKind::If { cond, then_expr, elifs, else_expr, .. } => {
-                self.handle_expr(*cond, current_scope, file_id)?;
-                self.handle_expr(*then_expr, current_scope, file_id)?;
-                for ElseIf{cond, body} in elifs {
-                    self.handle_expr(*cond, current_scope, file_id)?;
-                    self.handle_expr(*body, current_scope, file_id)?;
+            ExprNodeKind::If {
+                cond,
+                then_expr,
+                elifs,
+                else_expr,
+                ..
+            } => {
+                self.handle_expr(*cond, current_scope)?;
+                self.handle_expr(*then_expr, current_scope)?;
+                for elif in elifs {
+                    self.handle_expr(elif.cond, current_scope)?;
+                    self.handle_expr(elif.body, current_scope)?;
                 }
                 if let Some(else_e) = else_expr {
-                    self.handle_expr(*else_e, current_scope, file_id)?;
+                    self.handle_expr(*else_e, current_scope)?;
                 }
             }
         }
         Ok(())
     }
 
-    /// 遍历表达式，解析所有标识符引用
-    fn resolve_expr(&self, expr_id: ExprNodeId, current_scope: ScopeId, file_id: usize) -> Result<(), DiagMsg> {
-        let expr = &self.ast_module.asts[file_id].expr_pool[expr_id];
+    /// 解析所有标识符引用
+    fn resolve_expr(
+        &self,
+        expr_id: ExprNodeId,
+        current_scope: ScopeId,
+    ) -> Result<(), DiagMsg> {
+        let expr = &self.ast_module.expr_pool[expr_id];
         match &expr.kind {
             ExprNodeKind::Atom { expr: atom_expr } => {
                 if let AtomExprNode::Name { name, span } = atom_expr {
-                    self.resolve_name(name, current_scope, span.clone(), file_id)?;
+                    self.resolve_name(name, current_scope, span.clone())?;
                 }
             }
             ExprNodeKind::Binary { left, right, .. } => {
-                self.resolve_expr(*left, current_scope, file_id)?;
-                self.resolve_expr(*right, current_scope, file_id)?;
+                self.resolve_expr(*left, current_scope)?;
+                self.resolve_expr(*right, current_scope)?;
             }
-            ExprNodeKind::Unary { right, .. } => self.resolve_expr(*right, current_scope, file_id)?,
+            ExprNodeKind::Unary { right, .. } => {
+                self.resolve_expr(*right, current_scope)?;
+            }
             ExprNodeKind::Call { callee, args, .. } => {
-                self.resolve_expr(*callee, current_scope, file_id)?;
+                self.resolve_expr(*callee, current_scope)?;
                 for &arg in args {
-                    self.resolve_expr(arg, current_scope, file_id)?;
+                    self.resolve_expr(arg, current_scope)?;
                 }
             }
-            ExprNodeKind::UnsafeExternalCall { callee, args, .. } => {
+            ExprNodeKind::UnsafeExternalCall { .. } => {
                 // 外部调用不解析名称
             }
-            ExprNodeKind::Member { left, .. } => self.resolve_expr(*left, current_scope, file_id)?,
-            ExprNodeKind::TypeCast { expr, .. } => self.resolve_expr(*expr, current_scope, file_id)?,
+            ExprNodeKind::Member { left, right } => {
+                self.resolve_expr(*left, current_scope)?;
+
+                let left_expr = &self.ast_module.expr_pool[*left];
+                if let ExprNodeKind::Atom {
+                    expr: AtomExprNode::Name { name, .. }
+                } = &left_expr.kind {
+                    if let Some((sym, _scope_id)) = self.scope_pool.lookup(
+                        current_scope, name
+                    ) {
+                        match &sym.kind {
+                            SymbolKind::File { source_id } => {
+                                let file_unit_id = self.source_to_file_unit.get(source_id).ok_or_else(|| {
+                                    DiagMsg {
+                                        title: format!("{:?}", NamePassError::UndefinedModule),
+                                        msg: format!("module `{}` not found", name),
+                                        span: expr.span.clone(),
+                                        source: self.source_id_from_scope(current_scope),
+                                    }
+                                })?;
+                                let file_unit = &self.ast_module.decl_pool[*file_unit_id];
+                                if let DeclNodeKind::FileUnit { top_decls } = &file_unit.kind {
+                                    let has_public_member = top_decls.iter().any(|&decl_id| {
+                                        let decl = &self.ast_module.decl_pool[decl_id];
+                                        decl.name == *right && (decl.visibility == Visibility::Public || decl.visibility == Visibility::PublicExternal)
+                                    });
+                                    if !has_public_member {
+                                        return Err(DiagMsg {
+                                            title: format!("{:?}", NamePassError::UndefinedName),
+                                            msg: format!("module `{}` has no public item `{}`", name, right),
+                                            span: expr.span.clone(),
+                                            source: self.source_id_from_scope(current_scope),
+                                        });
+                                    }
+                                } else {
+                                    return Err(DiagMsg {
+                                        title: format!("{:?}", NamePassError::UndefinedModule),
+                                        msg: format!("`{}` is not a module", name),
+                                        span: expr.span.clone(),
+                                        source: self.source_id_from_scope(current_scope),
+                                    });
+                                }
+                            },
+                            SymbolKind::Struct { fields } => {
+                                // 在结构体字段中查找 right
+                                if !fields.iter().any(|f| f.name == *right) {
+                                    return Err(DiagMsg {
+                                        title: format!("{:?}", NamePassError::UndefinedName),
+                                        msg: format!("struct `{}` has no field `{}`", name, right),
+                                        span: expr.span.clone(),
+                                        source: self.source_id_from_scope(current_scope),
+                                    });
+                                }
+                            },
+                            SymbolKind::ADT => {
+                                todo!()
+                            },
+                            _ => {
+                                return Err(DiagMsg {
+                                    title: format!("{:?}", NamePassError::InvalidMemberAccess),
+                                    msg: format!("invalid member access"),
+                                    span: expr.span.clone(),
+                                    source: self.source_id_from_scope(current_scope),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            ExprNodeKind::TypeCast { expr, .. } => {
+                self.resolve_expr(*expr, current_scope)?;
+            }
             ExprNodeKind::Move { target, .. }
             | ExprNodeKind::Copy { target, .. }
             | ExprNodeKind::Ref { target, .. }
             | ExprNodeKind::MutRef { target, .. }
-            | ExprNodeKind::Share { target, .. } => self.resolve_expr(*target, current_scope, file_id)?,
+            | ExprNodeKind::Share { target, .. } => {
+                self.resolve_expr(*target, current_scope)?;
+            }
             ExprNodeKind::Do { .. } => {
                 if let Some(&do_scope) = self.do_scope_map.get(&expr_id) {
-                    if let ExprNodeKind::Do { exprs, .. } = &self.ast_module.asts[file_id].expr_pool[expr_id].kind {
+                    if let ExprNodeKind::Do { exprs, .. } = &self.ast_module.expr_pool[expr_id].kind
+                    {
                         for &e in exprs {
-                            self.resolve_expr(e, do_scope, file_id)?;
+                            self.resolve_expr(e, do_scope)?;
                         }
                     }
                 } else {
                     unreachable!()
                 }
             }
-            ExprNodeKind::Let { expr, .. } => self.resolve_expr(*expr, current_scope, file_id)?,
-            ExprNodeKind::If { cond, then_expr, elifs, else_expr, .. } => {
-                self.resolve_expr(*cond, current_scope, file_id)?;
-                self.resolve_expr(*then_expr, current_scope, file_id)?;
-                for ElseIf{cond, body} in elifs {
-                    self.resolve_expr(*cond, current_scope, file_id)?;
-                    self.resolve_expr(*body, current_scope, file_id)?;
+            ExprNodeKind::Let { expr, .. } => {
+                self.resolve_expr(*expr, current_scope)?;
+            }
+            ExprNodeKind::If {
+                cond,
+                then_expr,
+                elifs,
+                else_expr,
+                ..
+            } => {
+                self.resolve_expr(*cond, current_scope)?;
+                self.resolve_expr(*then_expr, current_scope)?;
+                for elif in elifs {
+                    self.resolve_expr(elif.cond, current_scope)?;
+                    self.resolve_expr(elif.body, current_scope)?;
                 }
                 if let Some(else_e) = else_expr {
-                    self.resolve_expr(*else_e, current_scope, file_id)?;
+                    self.resolve_expr(*else_e, current_scope)?;
                 }
             }
         }
         Ok(())
     }
 
-    fn resolve_name(&self, name: &str, current_scope: ScopeId, span: Span, file_id: usize) -> Result<(), DiagMsg> {
-        // 1. 查找局部变量（沿作用域链）
-        let mut scope_id = Some(current_scope);
-        while let Some(id) = scope_id {
-            let scope = &self.scope_pool[id];
-            match scope {
-                Scope::Scope { symbols, parent, .. } => {
-                    if symbols.iter().rev().any(|s| s.name == name) {
-                        return Ok(());
-                    }
-                    scope_id = *parent;
-                }
-                _ => break,
-            }
+    /// 解析名称
+    fn resolve_name(
+        &self,
+        name: &str,
+        current_scope: ScopeId,
+        span: Span,
+    ) -> Result<(), DiagMsg> {
+        if self.scope_pool.lookup(current_scope, name).is_some() {
+            Ok(())
+        } else {
+            Err(DiagMsg {
+                title: format!("{:?}", NamePassError::UndefinedName),
+                msg: "undefined name".to_string(),
+                span,
+                source: self.source_id_from_scope(current_scope),
+            })
         }
-
-        // 2. 查找当前文件的顶层符号（本文件声明 + 导入的公开声明）
-        if let Some(&(_src_file, _decl_id)) = self.file_symbols[file_id].get(name) {
-            return Ok(());
-        }
-
-        // 3. 未找到
-        Err(DiagMsg {
-            title: format!("{:?}", NamePassError::UndefinedName),
-            msg: "undefined name".to_string(),
-            span,
-            source: self.ast_module.asts[file_id].file,
-        })
     }
 
-    fn lookup_local_symbol(&self, name: &str, current_scope: ScopeId) -> Option<&LocalSymbol> {
-        let mut scope_id = Some(current_scope);
-        while let Some(id) = scope_id {
-            let scope = &self.scope_pool[id];
-            match scope {
-                Scope::Scope { symbols, parent, .. } => {
-                    // shadow
-                    if let Some(sym) = symbols.iter().rev().find(|s| s.name == name) {
-                        return Some(sym);
-                    }
-                    scope_id = *parent;
-                }
-                _ => break,
-            }
+    fn decl_kind_to_symbol_kind(kind: &DeclNodeKind) -> SymbolKind {
+        match kind {
+            DeclNodeKind::Fun { .. } => SymbolKind::Function,
+            DeclNodeKind::FunDecl { .. } => SymbolKind::Function,
+            DeclNodeKind::TypeStruct { fields, .. } => SymbolKind::Struct {
+                fields: fields.iter().map(|f| FieldDef {
+                    name: f.name.clone(),
+                    def_span: f.span.clone(),
+                }).collect(),
+            },
+            DeclNodeKind::ADT { ctors, .. } => SymbolKind::ADT,
+            DeclNodeKind::TypeAlias { .. } => SymbolKind::TypeAlias,
+            DeclNodeKind::CType => SymbolKind::CTypeDef,
+            DeclNodeKind::External { .. } => SymbolKind::External,
+            DeclNodeKind::Abstract { .. } => SymbolKind::Abstract,
+            _ => SymbolKind::Local, // fallback
         }
-        None
     }
 }
 
 impl<'a> NamePassApi<'a> for NamePass<'a> {
-    fn new(ast_module: &'a AstModule) -> Self {
+    fn new(ast_module: &'a CrateAst) -> Self {
         Self {
             ast_module,
-            scope_pool: vec![],
-            file_root_scopes: vec![],
-            file_top_decl_scopes: vec![],
-            file_symbols: vec![],
+            scope_pool: ScopePool::new(),
             do_scope_map: HashMap::new(),
             fun_scope_map: HashMap::new(),
-            current_file_id: 0,
+            source_to_file_unit: HashMap::new(),
         }
     }
 
     fn pass_scope(&mut self) -> Result<(), DiagMsg> {
-        let num_files = self.ast_module.asts.len();
-        self.file_root_scopes = Vec::with_capacity(num_files);
-        self.file_top_decl_scopes = Vec::with_capacity(num_files);
-        self.file_symbols = Vec::with_capacity(num_files);
-
-        let mut source_to_file = HashMap::new();
-
-        // 第一步：为每个文件建立作用域和符号表
-        for (file_id, file_ast) in self.ast_module.asts.iter().enumerate() {
-            source_to_file.insert(file_ast.file, file_id);
-
-            // 创建根作用域
-            let root_scope = Scope::Scope {
-                parent: None,
-                symbols: vec![],
-                children: vec![],
-                bind_to_ast: usize::MAX, // 特殊值表示文件根
-            };
-            let root_scope_id = self.scope_pool.len();
-            self.scope_pool.push(root_scope);
-            self.file_root_scopes.push(root_scope_id);
-
-            let mut top_decl_scopes = Vec::new();
-            let mut symbol_map = HashMap::new();
-
-            // 处理每个顶层声明
-            for (decl_id, decl) in file_ast.decl_pool.iter().enumerate() {
-                let scope = match &decl.kind {
-                    DeclNodeKind::Fun { params, .. } => {
-                        let symbols = params.iter().map(|p| LocalSymbol {
-                            name: p.name.clone(),
-                            def_span: p.span.clone(),
-                        }).collect();
-                        Scope::Scope {
-                            parent: Some(root_scope_id),
-                            symbols,
-                            children: vec![],
-                            bind_to_ast: decl_id,
-                        }
-                    }
-                    DeclNodeKind::FunDecl { .. } => {
-                        Scope::FunDecl {
-                            name: decl.name.clone(),
-                            bind_to_ast: decl_id,
-                        }
-                    }
-                    DeclNodeKind::TypeStruct { fields, .. } => {
-                        Scope::Struct {
-                            name: decl.name.clone(),
-                            bind_to_ast: decl_id,
-                            fields: fields.iter().map(|f| FieldSymbol {
-                                name: f.name.clone(),
-                                def_span: f.span.clone(),
-                            }).collect(),
-                        }
-                    }
-                    DeclNodeKind::ADT { ctors, .. } => {
-                        Scope::ADT {
-                            name: decl.name.clone(),
-                            bind_to_ast: decl_id,
-                            ctors: ctors.iter().map(|c| CtorSymbol {
-                                name: c.name.clone(),
-                                def_span: c.span.clone(),
-                            }).collect(),
-                        }
-                    }
-                    DeclNodeKind::TypeAlias { .. } => {
-                        Scope::TypeAlias {
-                            name: decl.name.clone(),
-                            bind_to_ast: decl_id,
-                        }
-                    }
-                    DeclNodeKind::CType => {
-                        Scope::CTypeDef {
-                            name: decl.name.clone(),
-                            bind_to_ast: decl_id,
-                        }
-                    }
-                    DeclNodeKind::External { .. } => {
-                        Scope::External {
-                            name: decl.name.clone(),
-                            bind_to_ast: decl_id,
-                        }
-                    }
-                    DeclNodeKind::Abstract { methods, .. } => {
-                        Scope::Abstract {
-                            name: decl.name.clone(),
-                            bind_to_ast: decl_id,
-                            methods: methods.iter().map(|m| MethodSymbol {
-                                name: m.name.clone(),
-                                def_span: m.span.clone(),
-                            }).collect(),
-                        }
-                    }
-                    _ => continue,
-                };
-
-                let scope_id = self.scope_pool.len();
-                self.scope_pool.push(scope);
-
-                if let DeclNodeKind::Fun { .. } = &decl.kind {
-                    self.fun_scope_map.insert(decl_id, scope_id);
-                }
-
-                if let Scope::Scope { children, .. } = &mut self.scope_pool[root_scope_id] {
-                    children.push(scope_id);
-                }
-
-                top_decl_scopes.push(scope_id);
-                symbol_map.insert(decl.name.clone(), (file_id, decl_id));
-
-                if let DeclNodeKind::Fun { block, .. } = &decl.kind {
-                    for &expr_id in block {
-                        self.handle_expr(expr_id, scope_id, file_id)?;
-                    }
-                }
-            }
-
-            self.file_top_decl_scopes.push(top_decl_scopes);
-            self.file_symbols.push(symbol_map);
-        }
-
-        // 处理 require，导入公开声明
-        for (file_id, file_ast) in self.ast_module.asts.iter().enumerate() {
-            for require in &file_ast.requires {
-                // if require.is_open {
-                //     if let Some(&target_file_id) = source_to_file.get(&require.target_source_id) {
-                //         let target_decls = &self.ast_module.asts[target_file_id].decl_pool;
-                //         for (decl_id, decl) in target_decls.iter().enumerate() {
-                //             if let Visibility::Public | Visibility::PublicExternal = decl.visibility {
-                //                 let name = &decl.name;
-                //                 if self.file_symbols[file_id].contains_key(name) {
-                //                     return Err(DiagMsg {
-                //                         title: format!("{:?}", NamePassError::DuplicateDefinition),
-                //                         msg: format!("duplicate definition of `{}`", name),
-                //                         span: require.span.clone(),
-                //                         source: file_ast.file,
-                //                     });
-                //                 }
-                //                 self.file_symbols[file_id].insert(name.clone(), (target_file_id, decl_id));
-                //             }
-                //         }
-                //     } else {
-                //         return Err(DiagMsg {
-                //             title: format!("{:?}", NamePassError::UndefinedModule),
-                //             msg: "module not found".to_string(),
-                //             span: require.span.clone(),
-                //             source: file_ast.file,
-                //         });
-                //     }
-                // }
-                todo!()
+        // 建立 source_id -> FileUnit 声明的映射
+        for (decl_id, decl) in self.ast_module.decl_pool.iter().enumerate() {
+            if let DeclNodeKind::FileUnit { .. } = &decl.kind {
+                self.source_to_file_unit.insert(decl.source_id, decl_id);
             }
         }
 
+        let crate_scope_id = self.scope_pool.push_scope(
+            None,
+            ScopeKind::Crate,
+            None,
+        );
+
+        for (decl_id, decl) in self.ast_module.decl_pool.iter().enumerate() {
+            if let DeclNodeKind::FileUnit { top_decls } = &decl.kind {
+                let file_scope_id = self.scope_pool.push_scope(
+                    Some(crate_scope_id),
+                    ScopeKind::File,
+                    Some(decl_id),
+                );
+
+                self.scope_pool.add_symbol(
+                    crate_scope_id,
+                    Symbol {
+                        name: decl.name.clone(),
+                        def_span: decl.span.clone(),
+                        kind: SymbolKind::File { source_id: decl.source_id },
+                    },
+                );
+
+                // 处理该文件内的顶层声明
+                for &inner_decl_id in top_decls {
+                    let inner_decl = &self.ast_module.decl_pool[inner_decl_id];
+                    let decl_span = inner_decl.span.clone();
+                    let decl_name = inner_decl.name.clone();
+                    let visibility = inner_decl.visibility.clone();
+
+                    match &inner_decl.kind {
+                        DeclNodeKind::Fun { params, block, .. } => {
+                            self.scope_pool.add_symbol(
+                                file_scope_id,
+                                Symbol {
+                                    name: decl_name.clone(),
+                                    def_span: decl_span.clone(),
+                                    kind: SymbolKind::Function,
+                                },
+                            );
+
+                            let fun_scope_id = self.scope_pool.push_scope(
+                                Some(file_scope_id),
+                                ScopeKind::Function,
+                                Some(inner_decl_id),
+                            );
+                            self.fun_scope_map.insert(inner_decl_id, fun_scope_id);
+
+                            // 添加参数符号
+                            for param in params {
+                                self.scope_pool.add_symbol(
+                                    fun_scope_id,
+                                    Symbol {
+                                        name: param.name.clone(),
+                                        def_span: param.span.clone(),
+                                        kind: SymbolKind::Local,
+                                    },
+                                );
+                            }
+
+                            // 处理函数体
+                            for &expr_id in block {
+                                self.handle_expr(expr_id, fun_scope_id)?;
+                            }
+                        }
+
+                        DeclNodeKind::TypeStruct { fields, .. } => {
+                            self.scope_pool.add_symbol(
+                                file_scope_id,
+                                Symbol {
+                                    name: decl_name.clone(),
+                                    def_span: decl_span.clone(),
+                                    kind: SymbolKind::Struct {
+                                        fields: fields.iter().map(|f| FieldDef {
+                                            name: f.name.clone(),
+                                            def_span: f.span.clone(),
+                                        }).collect(),
+                                    },
+                                },
+                            );
+                        }
+
+                        DeclNodeKind::ADT { ctors, .. } => {
+                            self.scope_pool.add_symbol(
+                                file_scope_id,
+                                Symbol {
+                                    name: decl_name.clone(),
+                                    def_span: decl_span.clone(),
+                                    kind: SymbolKind::ADT,
+                                },
+                            );
+                            let adt_scope_id = self.scope_pool.push_scope(
+                                Some(file_scope_id),
+                                ScopeKind::Adt,
+                                Some(inner_decl_id),
+                            );
+                            for ctor in ctors {
+                                self.scope_pool.add_symbol(
+                                    adt_scope_id,
+                                    Symbol {
+                                        name: ctor.name.clone(),
+                                        def_span: ctor.span.clone(),
+                                        kind: SymbolKind::Constructor,
+                                    },
+                                );
+                            }
+                        }
+
+                        DeclNodeKind::TypeAlias { .. } => {
+                            self.scope_pool.add_symbol(
+                                file_scope_id,
+                                Symbol {
+                                    name: decl_name.clone(),
+                                    def_span: decl_span.clone(),
+                                    kind: SymbolKind::TypeAlias,
+                                },
+                            );
+                        }
+
+                        DeclNodeKind::CType => {
+                            self.scope_pool.add_symbol(
+                                file_scope_id,
+                                Symbol {
+                                    name: decl_name.clone(),
+                                    def_span: decl_span.clone(),
+                                    kind: SymbolKind::CTypeDef,
+                                },
+                            );
+                        }
+
+                        DeclNodeKind::External { .. } => {
+                            self.scope_pool.add_symbol(
+                                file_scope_id,
+                                Symbol {
+                                    name: decl_name.clone(),
+                                    def_span: decl_span.clone(),
+                                    kind: SymbolKind::External,
+                                },
+                            );
+                        }
+
+                        DeclNodeKind::FunDecl { .. } => {
+                            self.scope_pool.add_symbol(
+                                file_scope_id,
+                                Symbol {
+                                    name: decl_name.clone(),
+                                    def_span: decl_span.clone(),
+                                    kind: SymbolKind::Function,
+                                },
+                            );
+                        }
+
+                        DeclNodeKind::Abstract { methods, .. } => {
+                            self.scope_pool.add_symbol(
+                                file_scope_id,
+                                Symbol {
+                                    name: decl_name.clone(),
+                                    def_span: decl_span.clone(),
+                                    kind: SymbolKind::Abstract,
+                                },
+                            );
+                            let abs_scope_id = self.scope_pool.push_scope(
+                                Some(file_scope_id),
+                                ScopeKind::Abstract,
+                                Some(inner_decl_id),
+                            );
+                            for method in methods {
+                                self.scope_pool.add_symbol(
+                                    abs_scope_id,
+                                    Symbol {
+                                        name: method.name.clone(),
+                                        def_span: method.span.clone(),
+                                        kind: SymbolKind::Method,
+                                    },
+                                );
+                            }
+                        }
+
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        // 外部 require在后续阶段处理
         Ok(())
     }
 
     fn pass_name(&mut self) -> Result<(), DiagMsg> {
-        for file_id in 0..self.ast_module.asts.len() {
-            self.current_file_id = file_id;
-            let file_ast = &self.ast_module.asts[file_id];
-            for (decl_id, decl) in file_ast.decl_pool.iter().enumerate() {
-                if let DeclNodeKind::Fun { block, .. } = &decl.kind {
-                    // 获取该函数的作用域 ID
-                    let scope_id = *self.fun_scope_map.get(&decl_id)
-                        .expect("Function scope should have been recorded");
+        for (decl_id, decl) in self.ast_module.decl_pool.iter().enumerate() {
+            if let DeclNodeKind::Fun { block, .. } = &decl.kind {
+                if let Some(&fun_scope) = self.fun_scope_map.get(&decl_id) {
                     for &expr_id in block {
-                        self.resolve_expr(expr_id, scope_id, file_id)?;
+                        self.resolve_expr(expr_id, fun_scope)?;
                     }
                 }
             }
@@ -402,8 +536,7 @@ impl<'a> NamePassApi<'a> for NamePass<'a> {
         self.pass_scope()?;
         self.pass_name()?;
         Ok(NamePassResult {
-            top_scope_ids: &self.file_root_scopes,
-            scope_pool: &self.scope_pool,
+            tree: &self.scope_pool,
             do_scope_map: &self.do_scope_map,
             fun_scope_map: &self.fun_scope_map,
         })

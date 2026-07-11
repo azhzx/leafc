@@ -5,20 +5,29 @@ mod parse_external_decl;
 mod parse_type_decl;
 mod parse_abstract_decl;
 
+use std::fs;
+use std::path::PathBuf;
 use leafc_coreapi;
-use leafc_coreapi::ast::{AtomExprNode, DeclNode, DeclNodeId, ExprNode, FileAst, GenericVar, Param, TypeNameString, Visibility};
+use leafc_coreapi::ast::{AtomExprNode, DeclNode, DeclNodeId, ExprNode, CrateAst, GenericVar, Param, TypeNameString, Visibility, DeclNodeKind};
 use leafc_coreapi::diagnostic::DiagMsg;
-use leafc_coreapi::lexer::{Token, TokenStream, TokenType};
+use leafc_coreapi::lexer::{LexerApi, Token, TokenStream, TokenType};
 use leafc_coreapi::lexer::TokenType::Lparen;
-use leafc_coreapi::parser::{ParserApi, ParserError, ParserResult, Require};
-use leafc_coreapi::source::SourceId;
+use leafc_coreapi::parser::{ParserApi, ParserError};
+use leafc_coreapi::scope::ScopePool;
+use leafc_coreapi::source::{SourceId, SourcePool};
+use leafc_coreapi::tokens_pass::TokenPassApi;
+use leafc_lexer::Lexer;
+use leafc_tokenpass::Preprocessor;
 
 pub struct Parser<'a> {
-    tokens: &'a TokenStream,
+    dir_abs_path: PathBuf,
+    tokens: TokenStream,
     index: usize,
-    source: SourceId,
-    ast: FileAst,
+    source_pool: &'a mut SourcePool,
+    current_source: SourceId,
+    ast: CrateAst,
 }
+
 
 impl<'a> Parser<'a> {
     fn current_token(&self) -> &Token {
@@ -48,7 +57,7 @@ impl<'a> Parser<'a> {
             title: format!("{:?}", ParserError::TokenExpect),
             msg: format!("expected <token \"{:?}\"> but got <token \"{:?}\">", expected, tok.kind),
             span: tok.span.clone(),
-            source: self.source,
+            source: self.current_source,
         })
     }
 
@@ -86,7 +95,7 @@ impl<'a> Parser<'a> {
                         title: format!("{:?}", ParserError::InvalidGenericList),
                         msg: "invalid generic list".to_string(),
                         span: self.current_token().span.clone(),
-                        source: self.source
+                        source: self.current_source
                     })
                 }
             }
@@ -94,7 +103,7 @@ impl<'a> Parser<'a> {
         }
         Ok(TypeNameString {
             name: start_token.text.clone(),
-            generics: generics,
+            generics,
             span: start_token.span.clone(),
         })
     }
@@ -121,7 +130,7 @@ impl<'a> Parser<'a> {
                     title: format!("{:?}", ParserError::InvalidGenericParameterList),
                     msg: "invalid generic parameter list".to_string(),
                     span: self.current_token().span.clone(),
-                    source: self.source
+                    source: self.current_source
                 })
             }
         }
@@ -156,7 +165,7 @@ impl<'a> Parser<'a> {
                         title: format!("{:?}", ParserError::WhereBodyGenericMissingMatchGenericParameterList),
                         msg: "where body generic missing generic parameter list".to_string(),
                         span: self.current_token().span.clone(),
-                        source: self.source
+                        source: self.current_source
                     })
                 }
 
@@ -168,7 +177,7 @@ impl<'a> Parser<'a> {
                         title: format!("{:?}", ParserError::WhereBodyGenericMissingMatchGenericParameterList),
                         msg: "where body generic missing generic parameter list".to_string(),
                         span: self.current_token().span.clone(),
-                        source: self.source
+                        source: self.current_source
                     })
                 }
 
@@ -179,34 +188,52 @@ impl<'a> Parser<'a> {
                     title: format!("{:?}", ParserError::InvalidWhereBody),
                     msg: "invalid where body".to_string(),
                     span: self.current_token().span.clone(),
-                    source: self.source
+                    source: self.current_source
                 })
             }
             current_generic_index += 1;
         }
         Ok(generics)
     }
-}
 
-impl<'a> ParserApi<'a> for Parser<'a> {
-    fn new(source: SourceId, tokens: &'a TokenStream) -> Self {
-        Parser {
-            tokens,
-            index: 0,
-            source,
-            ast: FileAst {
-                file: source,
-                requires: vec![],
-                expr_pool: vec![],
-                decl_pool: vec![],
-                type_name_pool: vec![],
-            },
+    fn lexer(source_id: SourceId, code: &String) -> Result<TokenStream, DiagMsg> {
+        let mut lex = Lexer::new(source_id, &code);
+        let tokens = lex.tokenize()?;
+        for token in &tokens.data {
+            println!("{:?}", token);
         }
+        Ok(tokens)
     }
 
+    fn pp(source_id: SourceId, token_stream: &TokenStream) -> Result<TokenStream, DiagMsg> {
+        // 预处理
+        let mut pp = Preprocessor::new(&token_stream, source_id);
+        let new_tokens = pp.pre_definitions(
+            vec![
+                if cfg!(target_os = "windows") {
+                    "__Windows".to_string()
+                } else if cfg!(target_os = "macos") {
+                    "__Mac".to_string()
+                } else if cfg!(target_os = "linux") {
+                    "__Linux".to_string()
+                } else {
+                    "__Unknown".to_string()
+                }
+            ]
+        ).pass()?;
 
-    /// main dispatcher
-    fn parse(&mut self) -> Result<ParserResult, DiagMsg> {
+        println!("\n\n== token pass ==\n\n");
+
+        for token in &new_tokens.data {
+            println!("{:?}", token);
+        }
+        println!("== === ==");
+        Ok(new_tokens)
+    }
+
+    fn parse_top(&mut self, module_name: String) -> Result<DeclNode, DiagMsg> {
+        let mut top_decls = vec![];
+
         while self.current_token().kind != TokenType::Eof {
             let mut visibility = Visibility::Private;
             if self.current_token().kind == TokenType::KwPub {
@@ -223,23 +250,86 @@ impl<'a> ParserApi<'a> for Parser<'a> {
 
             match self.current_token().kind {
                 TokenType::KwUse => self.parse_use_decl()?,
-                TokenType::KwFun => self.parse_fun_decl(visibility)?,
-                TokenType::KwExternal => self.parse_external_decl(visibility)?,
-                TokenType::KwType => self.parse_type_decl(visibility)?,
-                TokenType::KwAbst => self.parse_abstract_decl(visibility)?,
+                TokenType::KwFun => {
+                    let decl_node = self.parse_fun_decl(visibility)?;
+                    self.ast.decl_pool.push(decl_node);
+                    top_decls.push(self.ast.decl_pool.len() - 1);
+                },
+                TokenType::KwExternal => {
+                    let decl_node =self.parse_external_decl(visibility)?;
+                    self.ast.decl_pool.push(decl_node);
+                    top_decls.push(self.ast.decl_pool.len() - 1);
+                },
+                TokenType::KwType => {
+                    let decl_node =self.parse_type_decl(visibility)?;
+                    self.ast.decl_pool.push(decl_node);
+                    top_decls.push(self.ast.decl_pool.len() - 1);
+                },
+                TokenType::KwAbst => {
+                    let decl_node =self.parse_abstract_decl(visibility)?;
+                    self.ast.decl_pool.push(decl_node);
+                    top_decls.push(self.ast.decl_pool.len() - 1);
+                },
                 TokenType::NewLine => self.skip_token(),
                 _ => {
                     return Err(DiagMsg{
                         title: format!("{:?}", ParserError::InvalidTopDeclaration),
                         msg: "invalid top declare".to_string(),
                         span: self.current_token().span.clone(),
-                        source: self.source
+                        source: self.current_source
                     })
                 }
             }
         }
-        Ok(ParserResult {
-            ast: self.ast.clone(),
+
+        Ok(DeclNode {
+            name: module_name,
+            visibility: Visibility::Public,
+            span: self.current_token().span.clone(),
+            kind: DeclNodeKind::FileUnit {
+                top_decls,
+            },
+            source_id: self.current_source,
         })
+    }
+
+}
+
+impl<'a> ParserApi<'a> for Parser<'a> {
+    fn new(dir_abs_path: PathBuf, source_pool: &'a mut SourcePool) -> Self {
+        Parser {
+            dir_abs_path,
+            tokens: TokenStream { data: vec![] },
+            index: 0,
+            source_pool,
+            current_source: 0,
+            ast: CrateAst {
+                external_requires: vec![],
+                expr_pool: vec![],
+                decl_pool: vec![],
+                type_name_pool: vec![],
+            },
+        }
+    }
+
+
+    /// main dispatcher
+    fn parse(&mut self) -> Result<&CrateAst, DiagMsg> {
+        let main_file_path = self.dir_abs_path.join("main.leaf");
+        let content = fs::read_to_string(&main_file_path).unwrap();
+
+        let source_id = self.source_pool.add_source(
+            main_file_path.to_str().unwrap().to_string(), content.clone());
+
+        let token = Self::lexer(source_id, &content)?;
+        self.tokens = Self::pp(source_id, &token)?;
+        self.index = 0;
+        self.current_source = source_id;
+
+        let main_module = self.parse_top("main".to_string())?;
+
+        self.ast.decl_pool.push(main_module);
+
+        Ok(&self.ast)
     }
 }

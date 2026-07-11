@@ -1,4 +1,4 @@
-use crate::ast::{FileAst, AstModule};
+use crate::ast::{CrateAst};
 use crate::diagnostic::DiagMsg;
 use crate::hir::{HirModule};
 use crate::name_pass::NamePassResult;
@@ -11,10 +11,10 @@ pub enum HirLowerError {
 
 pub trait HirLowerApi<'a> {
     fn new(
-        ast_module: &'a AstModule,
+        crate_ast: &'a CrateAst,
         name_pass_result: &'a NamePassResult,
 
-        module_name: String
+        crate_name: String
     ) -> Self;
 
     fn lower(&mut self) -> Result<&HirModule, DiagMsg>;

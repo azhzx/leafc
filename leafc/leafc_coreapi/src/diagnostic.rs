@@ -16,9 +16,8 @@ pub struct DiagTextColor {
     pub diag_source_name: &'static str,
 }
 
-pub trait DiagnosticianApi {
-    fn new(source_pool: SourcePool, colors: DiagTextColor) -> Self;
+pub trait DiagnosticianApi<'a> {
+    fn new(source_pool: &'a SourcePool, colors: DiagTextColor) -> Self;
     fn reset_colors(&mut self, new_colors: DiagTextColor);
-    fn add_source(&mut self, source_name: String, text: String) -> SourceId;
     fn report(&self, diag: DiagMsg) -> String;
 }

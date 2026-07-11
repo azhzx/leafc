@@ -1,4 +1,4 @@
-use crate::ast::FileAst;
+use crate::ast::CrateAst;
 use crate::diagnostic::DiagMsg;
 
 pub enum TypeCheckerError {
