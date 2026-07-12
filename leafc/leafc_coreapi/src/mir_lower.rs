@@ -1,5 +1,5 @@
 use crate::diagnostic::DiagMsg;
-use crate::hir::HirModule;
+use crate::hir::HirCrate;
 
 pub enum MirLowerError {
 

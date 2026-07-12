@@ -99,11 +99,9 @@ impl<'a> NamePass<'a> {
                 // 在当前作用域添加局部符号
                 self.scope_pool.add_symbol(
                     current_scope,
-                    Symbol {
-                        name: name.clone(),
-                        def_span: main_expr.span.clone(),
-                        kind: SymbolKind::Local,
-                    },
+                    name.clone(),
+                    main_expr.span.clone(),
+                    SymbolKind::Local,
                 );
                 self.handle_expr(*expr, current_scope)?;
             }
@@ -347,11 +345,9 @@ impl<'a> NamePassApi<'a> for NamePass<'a> {
 
                 self.scope_pool.add_symbol(
                     crate_scope_id,
-                    Symbol {
-                        name: decl.name.clone(),
-                        def_span: decl.span.clone(),
-                        kind: SymbolKind::File { source_id: decl.source_id },
-                    },
+                    decl.name.clone(),
+                    decl.span.clone(),
+                   SymbolKind::File { source_id: decl.source_id },
                 );
 
                 // 处理该文件内的顶层声明
@@ -365,11 +361,9 @@ impl<'a> NamePassApi<'a> for NamePass<'a> {
                         DeclNodeKind::Fun { params, block, .. } => {
                             self.scope_pool.add_symbol(
                                 file_scope_id,
-                                Symbol {
-                                    name: decl_name.clone(),
-                                    def_span: decl_span.clone(),
-                                    kind: SymbolKind::Function,
-                                },
+                                decl_name.clone(),
+                                decl_span.clone(),
+                                SymbolKind::Function
                             );
 
                             let fun_scope_id = self.scope_pool.push_scope(
@@ -383,11 +377,9 @@ impl<'a> NamePassApi<'a> for NamePass<'a> {
                             for param in params {
                                 self.scope_pool.add_symbol(
                                     fun_scope_id,
-                                    Symbol {
-                                        name: param.name.clone(),
-                                        def_span: param.span.clone(),
-                                        kind: SymbolKind::Local,
-                                    },
+                                    param.name.clone(),
+                                    param.span.clone(),
+                                    SymbolKind::Local,
                                 );
                             }
 
@@ -400,15 +392,13 @@ impl<'a> NamePassApi<'a> for NamePass<'a> {
                         DeclNodeKind::TypeStruct { fields, .. } => {
                             self.scope_pool.add_symbol(
                                 file_scope_id,
-                                Symbol {
-                                    name: decl_name.clone(),
-                                    def_span: decl_span.clone(),
-                                    kind: SymbolKind::Struct {
+                                decl_name.clone(),
+                                decl_span.clone(),
+                                SymbolKind::Struct {
                                         fields: fields.iter().map(|f| FieldDef {
                                             name: f.name.clone(),
                                             def_span: f.span.clone(),
                                         }).collect(),
-                                    },
                                 },
                             );
                         }
@@ -416,11 +406,9 @@ impl<'a> NamePassApi<'a> for NamePass<'a> {
                         DeclNodeKind::ADT { ctors, .. } => {
                             self.scope_pool.add_symbol(
                                 file_scope_id,
-                                Symbol {
-                                    name: decl_name.clone(),
-                                    def_span: decl_span.clone(),
-                                    kind: SymbolKind::ADT,
-                                },
+                                decl_name.clone(),
+                                decl_span.clone(),
+                               SymbolKind::ADT,
                             );
                             let adt_scope_id = self.scope_pool.push_scope(
                                 Some(file_scope_id),
@@ -430,11 +418,9 @@ impl<'a> NamePassApi<'a> for NamePass<'a> {
                             for ctor in ctors {
                                 self.scope_pool.add_symbol(
                                     adt_scope_id,
-                                    Symbol {
-                                        name: ctor.name.clone(),
-                                        def_span: ctor.span.clone(),
-                                        kind: SymbolKind::Constructor,
-                                    },
+                                    ctor.name.clone(),
+                                    ctor.span.clone(),
+                                    SymbolKind::Constructor,
                                 );
                             }
                         }
@@ -442,55 +428,45 @@ impl<'a> NamePassApi<'a> for NamePass<'a> {
                         DeclNodeKind::TypeAlias { .. } => {
                             self.scope_pool.add_symbol(
                                 file_scope_id,
-                                Symbol {
-                                    name: decl_name.clone(),
-                                    def_span: decl_span.clone(),
-                                    kind: SymbolKind::TypeAlias,
-                                },
+                                decl_name.clone(),
+                                decl_span.clone(),
+                                SymbolKind::TypeAlias
                             );
                         }
 
                         DeclNodeKind::CType => {
                             self.scope_pool.add_symbol(
                                 file_scope_id,
-                                Symbol {
-                                    name: decl_name.clone(),
-                                    def_span: decl_span.clone(),
-                                    kind: SymbolKind::CTypeDef,
-                                },
+                                decl_name.clone(),
+                                decl_span.clone(),
+                                SymbolKind::CTypeDef
                             );
                         }
 
                         DeclNodeKind::External { .. } => {
                             self.scope_pool.add_symbol(
                                 file_scope_id,
-                                Symbol {
-                                    name: decl_name.clone(),
-                                    def_span: decl_span.clone(),
-                                    kind: SymbolKind::External,
-                                },
+                                decl_name.clone(),
+                                decl_span.clone(),
+                                SymbolKind::External,
                             );
                         }
 
                         DeclNodeKind::FunDecl { .. } => {
                             self.scope_pool.add_symbol(
                                 file_scope_id,
-                                Symbol {
-                                    name: decl_name.clone(),
-                                    def_span: decl_span.clone(),
-                                    kind: SymbolKind::Function,
-                                },
+                                decl_name.clone(),
+                                decl_span.clone(),
+                                SymbolKind::Function,
                             );
                         }
 
                         DeclNodeKind::Abstract { methods, .. } => {
                             self.scope_pool.add_symbol(
                                 file_scope_id,
-                                Symbol {
-                                    name: decl_name.clone(),
-                                    def_span: decl_span.clone(),
-                                    kind: SymbolKind::Abstract,
-                                },
+                                decl_name.clone(),
+                                decl_span.clone(),
+                                SymbolKind::Abstract,
                             );
                             let abs_scope_id = self.scope_pool.push_scope(
                                 Some(file_scope_id),
@@ -500,11 +476,9 @@ impl<'a> NamePassApi<'a> for NamePass<'a> {
                             for method in methods {
                                 self.scope_pool.add_symbol(
                                     abs_scope_id,
-                                    Symbol {
-                                        name: method.name.clone(),
-                                        def_span: method.span.clone(),
-                                        kind: SymbolKind::Method,
-                                    },
+                                    method.name.clone(),
+                                    method.span.clone(),
+                                    SymbolKind::Method,
                                 );
                             }
                         }
@@ -536,7 +510,7 @@ impl<'a> NamePassApi<'a> for NamePass<'a> {
         self.pass_scope()?;
         self.pass_name()?;
         Ok(NamePassResult {
-            tree: &self.scope_pool,
+            pool: &self.scope_pool,
             do_scope_map: &self.do_scope_map,
             fun_scope_map: &self.fun_scope_map,
         })

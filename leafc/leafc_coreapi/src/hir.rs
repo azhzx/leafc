@@ -1,41 +1,39 @@
 use std::collections::HashMap;
+use crate::scope::{ScopeId, SymId};
 use crate::source::Span;
 
-pub struct HirModule {
+
+#[derive(Debug, Clone)]
+pub struct HirCrate {
     pub name: String,
     pub main_fun: Option<HirDeclId>,
     pub hir_expr_pool: Vec<HirExpr>,
     pub hir_decl_pool: Vec<HirDecl>,
-    /// 模块中对外公开的声明
+    /// 模块中对外公开的声明(PublicExternal)
     pub pub_decl_ids: Vec<HirDeclId>,
-    pub name_type_id_map: HashMap<String, TyId>,
-    pub type_pool: TypePool
 }
 
-/// 将声明 id 映射到其推导出的或标注的类型 id
+/// 将声明 id 映射到其推导出的或标注的类型 id(HirLower阶段只做标记, 推导和检查留给TypeChecker)
 pub type HirTypeMap = HashMap<HirDeclId, TyId>;
 
+pub type TyId = usize;
 
 pub type HirDeclId = usize;
 pub type HirExprId = usize;
 
 
 #[derive(Debug, Clone)]
-pub enum QPath {
-    Builtin {
-        item: BuiltinItemKind,
-        span: Span,
-    },
-    Resolved {
-        ty: Option<TyId>,
-        concrete: Vec<String>,
-    },
+pub struct HirName { // 具体的SymbolId
+    pub name: String,
+    pub sym_id: SymId,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BuiltinItemKind {
-
+#[derive(Debug, Clone)]
+pub struct HirTypeName {
+    pub name: HirName,
+    pub args: Vec<HirTypeName>,
 }
+
 
 #[derive(Debug, Clone)]
 pub struct HirDecl {
@@ -47,78 +45,77 @@ pub struct HirDecl {
 }
 
 #[derive(Debug, Clone)]
+pub struct HirGenericParam {
+    pub name: HirName,
+    pub constraints: Vec<HirTypeName>,
+}
+
+#[derive(Debug, Clone)]
 pub enum HirDeclKind {
     Fun {
         generic_params: Vec<HirGenericParam>,
         params: Vec<HirParam>,
-        return_type: Option<QPath>,
+        return_type: Option<HirTypeName>,
         body: Vec<HirExprId>,
     },
     Struct {
         generic_params: Vec<HirGenericParam>,
         fields: Vec<HirFieldDef>,
-        implemented_absts: Vec<QPath>,
+        implemented_absts: Vec<HirTypeName>,
     },
     TypeAlias {
         generic_params: Vec<HirGenericParam>,
-        alias_for: QPath,
+        alias_for: HirTypeName,
     },
     ADT {
         generic_params: Vec<HirGenericParam>,
         ctors: Vec<HirCtorDef>,
-        implemented_absts: Vec<QPath>,
+        implemented_absts: Vec<HirTypeName>,
     },
     Abstract {
         generic_params: Vec<HirGenericParam>,
         methods: Vec<HirMethodDecl>,
-        super_absts: Vec<QPath>,
+        super_absts: Vec<HirTypeName>,
     },
     CType,
     External {
         sym_name: String,
         params: Vec<HirParam>,
-        return_type: Option<QPath>,
+        return_type: HirTypeName,
     },
 }
 
 
-
-#[derive(Debug, Clone)]
-pub struct HirGenericParam {
-    pub name: String,
-    pub constraints: Vec<QPath>,
-}
-
 #[derive(Debug, Clone)]
 pub struct HirFieldDef {
     pub name: String,
-    pub type_ann: QPath,
+    pub type_ann: HirTypeName,
     pub span: Span,
 }
 
 #[derive(Debug, Clone)]
 pub struct HirParam {
-    pub name: String,
-    pub type_ann: QPath,
+    pub name: HirName,
+    pub type_ann: Option<HirTypeName>,
     pub span: Span,
 }
 
 #[derive(Debug, Clone)]
 pub struct HirMethodDecl {
-    pub name: String,
+    pub name: HirName,
     pub generic_params: Vec<HirGenericParam>,
     pub params: Vec<HirParam>,
-    pub return_type: Option<QPath>,
+    pub return_type: Option<HirTypeName>,
     pub is_pub_external: bool,
     pub span: Span,
 }
 
 #[derive(Debug, Clone)]
 pub struct HirCtorDef {
-    pub name: String,
+    pub name: HirName,
     pub generic_params: Vec<HirGenericParam>,
-    pub from_type: QPath,
-    pub return_type: QPath,
+    pub from_type: HirTypeName,
+    pub return_type: HirTypeName,
     pub is_pub_external: bool,
     pub span: Span,
 }
@@ -134,8 +131,7 @@ pub struct HirExpr {
 #[derive(Debug, Clone)]
 pub enum HirExprKind {
     Lit(HirLit),
-    /// 路径引用
-    Path(QPath),
+    Ident(HirName),
     Binary {
         left: HirExprId,
         right: HirExprId,
@@ -174,14 +170,14 @@ pub enum HirExprKind {
     },
     TypeCast {
         expr: HirExprId,
-        type_ann: QPath,
+        type_ann: HirTypeName,
     },
     Block {
         stmts: Vec<HirExprId>,
     },
     Let {
-        name: String,
-        type_ann: Option<QPath>,
+        name: HirName,
+        type_ann: Option<HirTypeName>,
         init: HirExprId,
         mutable: bool,
     },
@@ -228,7 +224,6 @@ pub enum HirUnaryOp {
     Neg,
 }
 
-pub type TyId = usize;
 pub enum TypeKind {
     Int8,
     Int16,
@@ -241,9 +236,15 @@ pub enum TypeKind {
     Float32,
     Float64,
     Never,
-    Ptr { ref_to: TyId },
-    Ref { ref_to: TyId },
-    MutRef { ref_to: TyId },
+    Ptr {
+        ref_to: TyId
+    },
+    Ref {
+        ref_to: TyId
+    },
+    MutRef {
+        ref_to: TyId
+    },
 
     Alias {
         ref_to: TyId,
@@ -260,9 +261,3 @@ pub enum TypeKind {
         members: Vec<TyId>,
     }
 }
-
-pub struct TypeSymbol {
-    kind: TypeKind,
-}
-
-pub type TypePool = Vec<TypeSymbol>;

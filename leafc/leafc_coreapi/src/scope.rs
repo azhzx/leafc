@@ -4,23 +4,6 @@ use crate::source::{SourceId, Span};
 pub type ScopeId = usize;
 
 
-#[derive(Debug)]
-pub struct ScopePool {
-    scopes: Vec<Scope>,
-    top_scopes: Vec<ScopeId>,
-}
-
-/// A single scope in the tree.
-#[derive(Debug)]
-pub struct Scope {
-    pub parent: Option<ScopeId>,
-    pub children: Vec<ScopeId>,
-    pub kind: ScopeKind,
-    pub symbols: Vec<Symbol>,
-    pub bind_to_ast: Option<DeclNodeId>,
-}
-
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScopeKind {
     File,
@@ -31,6 +14,7 @@ pub enum ScopeKind {
     Crate,
 }
 
+pub type SymId = usize;
 
 
 /// A single symbol definition stored inside a scope.
@@ -39,6 +23,7 @@ pub struct Symbol {
     pub name: String,
     pub def_span: Span,
     pub kind: SymbolKind,
+    pub sym_id: SymId,
 }
 
 #[derive(Debug, Clone)]
@@ -83,11 +68,30 @@ pub enum SymbolKind {
     }
 }
 
+#[derive(Debug)]
+pub struct Scope {
+    pub parent: Option<ScopeId>,
+    pub children: Vec<ScopeId>,
+    pub kind: ScopeKind,
+    pub symbols: Vec<SymId>,
+    pub bind_to_ast: Option<DeclNodeId>,
+}
+
+#[derive(Debug)]
+pub struct ScopePool {
+    scopes: Vec<Scope>,
+    top_scopes: Vec<ScopeId>,
+    sym_counter: usize,
+    symbols: Vec<Symbol>,
+}
+
 impl ScopePool {
     pub fn new() -> Self {
         Self {
             scopes: Vec::new(),
             top_scopes: Vec::new(),
+            sym_counter: 0,
+            symbols: vec![],
         }
     }
 
@@ -103,7 +107,7 @@ impl ScopePool {
             children: Vec::new(),
             kind,
             symbols: Vec::new(),
-            bind_to_ast: bind_to_ast,
+            bind_to_ast,
         };
         self.scopes.push(scope);
 
@@ -115,15 +119,30 @@ impl ScopePool {
 
         id
     }
-    pub fn add_symbol(&mut self, scope: ScopeId, symbol: Symbol) {
-        self.scopes[scope].symbols.push(symbol);
+    pub fn add_symbol(
+        &mut self,
+        scope: ScopeId,
+        name: String,
+        def_span: Span,
+        kind: SymbolKind,
+    ) {
+        let sym = Symbol {
+            name,
+            def_span,
+            kind,
+            sym_id: self.sym_counter,
+        };
+        self.symbols.push(sym);
+        self.scopes[scope].symbols.push(self.sym_counter);
+        self.sym_counter += 1;
     }
 
     pub fn lookup(&self, scope: ScopeId, name: &str) -> Option<(&Symbol, ScopeId)> {
         let mut current = Some(scope);
         while let Some(sid) = current {
             let s = &self.scopes[sid];
-            for sym in &s.symbols {
+            for sym_id in &s.symbols {
+                let sym = &self.symbols[*sym_id];
                 if sym.name == name {
                     return Some((sym, sid));
                 }
@@ -143,5 +162,9 @@ impl ScopePool {
 
     pub fn top_scopes(&self) -> &[ScopeId] {
         &self.top_scopes
+    }
+
+    pub fn get_symbol_by_id(&self, id: SymId) -> Option<&Symbol> {
+        self.symbols.get(id)
     }
 }

@@ -16,7 +16,7 @@ pub enum NamePassError {
 
 
 pub struct NamePassResult<'a> {
-    pub tree: &'a ScopePool,
+    pub pool: &'a ScopePool,
     pub do_scope_map: &'a DoScopeMap,
     pub fun_scope_map: &'a FunScopeMap,
 }

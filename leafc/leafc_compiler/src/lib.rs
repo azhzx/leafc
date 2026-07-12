@@ -11,6 +11,7 @@ use leafc_coreapi::source::{Source, SourceId, SourcePool};
 use leafc_coreapi::tokens_pass::TokenPassApi;
 use leafc_diag::Diagnostician;
 use leafc_parser::Parser;
+use leafc_hirlower::HirLower;
 use leafc_namepass::NamePass;
 
 const COMPILER_VERSION: &'static str = env!("CARGO_PKG_VERSION");
@@ -47,7 +48,7 @@ impl CompilerApi for NativeCompiler {
 
 
         // 解析
-        let mut parser = Parser::new(dir_path_buf, &mut self.source_pool);
+        let mut parser = Parser::new(dir_path_buf.clone(), &mut self.source_pool);
         let ast = match parser.parse() {
             Ok( ast ) => {
                 println!("=== ast ===");
@@ -67,7 +68,7 @@ impl CompilerApi for NativeCompiler {
             Ok(res @ NamePassResult {
                 do_scope_map,
                 fun_scope_map,
-                tree
+                pool: tree
             })  => {
                 println!("=== scope tree ===");
                 println!("{:#?}", tree);
@@ -88,6 +89,24 @@ impl CompilerApi for NativeCompiler {
                 return None;
             }
         };
+
+        let crate_name = dir_path_buf.file_stem().unwrap().to_str().unwrap().to_string();
+        let mut hir_lower = HirLower::new(ast, &name_pass_result, crate_name);
+
+        let hir = match hir_lower.lower() {
+            Ok(hir) => {
+                println!("=== hir ===");
+                println!("{:#?}", hir);
+                println!("=== === ===");
+                hir
+            }
+            Err(e) => {
+                let diag = Diagnostician::new(&self.source_pool, DIAG_COLORS);
+                println!("{}", diag.report(e));
+                return None;
+            }
+        };
+
 
         Some(())
     }
