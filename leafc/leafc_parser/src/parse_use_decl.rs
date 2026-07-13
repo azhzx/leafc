@@ -51,7 +51,6 @@ impl<'a> Parser<'a> {
                     title: format!("{:?}", ParserError::InvalidOnlyList),
                     msg: "invalid only list".to_string(),
                     span: self.current_token().span.clone(),
-                    source: self.current_source
                 });
             }
         }
@@ -61,7 +60,6 @@ impl<'a> Parser<'a> {
                 title: format!("{:?}", ParserError::InvalidImportList),
                 msg: "invalid import list".to_string(),
                 span: self.current_token().span.clone(),
-                source: self.current_source
             });
         }
 
@@ -87,19 +85,17 @@ impl<'a> Parser<'a> {
 
             file_path = file_path.with_extension("leaf");
 
-            let content = fs::read_to_string(&file_path).unwrap();
+            let source_id = self.abs_path_sources.get(
+                &file_path.to_str().unwrap().to_string()).unwrap();
 
-            let source_id = self.source_pool.add_source(
-                file_path.to_str().unwrap().to_string(), content.clone());
+            let content = &self.source_pool.0[*source_id];
 
             let old_tokens = self.tokens.clone();
             let old_index = self.index;
-            let old_current_source = self.current_source;
 
-            let token = Self::lexer(source_id, &content)?;
-            self.tokens = Self::pp(source_id, &token)?;
+            let token = Self::lexer(*source_id, &content.file_content)?;
+            self.tokens = Self::pp(*source_id, &token)?;
             self.index = 0;
-            self.current_source = source_id;
 
             let module = self.parse_top(
                 require_paths[require_paths.len() - 1].clone())?;
@@ -108,7 +104,6 @@ impl<'a> Parser<'a> {
 
             self.tokens = old_tokens;
             self.index = old_index;
-            self.current_source = old_current_source;
 
         }
 
@@ -117,7 +112,6 @@ impl<'a> Parser<'a> {
                 title: format!("{:?}", ParserError::InvalidUseDeclaration),
                 msg: "invalid use declare".to_string(),
                 span: self.current_token().span.clone(),
-                source: self.current_source
             });
         }
 

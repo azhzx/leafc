@@ -1,9 +1,6 @@
 use std::collections::HashMap;
 
-use leafc_coreapi::ast::{
-    AtomExprNode, CrateAst, DeclNode, DeclNodeKind, ElseIf, ExprNode, ExprNodeKind,
-    Field, GenericVar, MethodDecl, Operator, Param, TypeNameString, Visibility,
-};
+use leafc_coreapi::ast::{AtomExprNode, CrateAst, DeclNode, DeclNodeId, DeclNodeKind, ElseIf, ExprNode, ExprNodeKind, Field, GenericVar, MethodDecl, Operator, Param, TypeNameString, Visibility};
 use leafc_coreapi::diagnostic::DiagMsg;
 use leafc_coreapi::hir::{
     HirBinOp, HirCtorDef, HirDecl, HirDeclId, HirDeclKind, HirCrate, HirExpr,
@@ -18,8 +15,6 @@ pub struct HirLower<'a> {
     ast_crate: &'a CrateAst,
     name_pass_result: &'a NamePassResult<'a>,
     hir: HirCrate,
-    /// 从 DeclNodeId 映射到其定义所在的作用域（用于查找泛型参数等）
-    decl_scope_map: HashMap<usize, ScopeId>,
 }
 
 impl<'a> HirLower<'a> {
@@ -79,7 +74,10 @@ impl<'a> HirLower<'a> {
 
     /// 获取声明自身的作用域
     fn get_decl_scope(&self, decl_id: usize) -> Option<ScopeId> {
-        self.decl_scope_map.get(&decl_id).copied()
+        self.name_pass_result.pool
+            .decl_node_scope_map
+            .get(&decl_id)
+            .copied()
     }
 
     fn lower_decl(&mut self, decl_id: usize) -> Result<HirDeclId, DiagMsg> {
@@ -266,8 +264,13 @@ impl<'a> HirLower<'a> {
 
     fn lower_field_def(&self, field: &Field, scope_id: ScopeId) -> Result<HirFieldDef, DiagMsg> {
         let type_ann = self.type_name_to_path(&field.type_str, scope_id)?;
+        let sym = self.lookup_symbol(scope_id, &field.name).unwrap();
+        let name = HirName {
+            name: sym.name.clone(),
+            sym_id: sym.sym_id,
+        };
         Ok(HirFieldDef {
-            name: field.name.clone(),
+            name,
             type_ann,
             span: field.span.clone(),
         })
@@ -314,8 +317,19 @@ impl<'a> HirLower<'a> {
             sym_id: sym.sym_id,
         };
         let generic_params = self.lower_generic_params(&ctor.generic_vars, scope_id)?;
-        let from_type = self.type_name_to_path(&ctor.from_type_str, scope_id)?;
-        let return_type = self.type_name_to_path(&ctor.return_type_str, scope_id)?;
+
+        let from_type = if ctor.from_type_str.name.is_empty() {
+            None
+        } else {
+            Some(self.type_name_to_path(&ctor.from_type_str, scope_id)?)
+        };
+
+        let return_type = if ctor.return_type_str.name.is_empty() {
+            None
+        } else {
+            Some(self.type_name_to_path(&ctor.return_type_str, scope_id)?)
+        };
+
         Ok(HirCtorDef {
             name,
             generic_params,
@@ -523,6 +537,17 @@ impl<'a> HirLower<'a> {
                     elifs: elifs_ids,
                     else_opt,
                 }
+            },
+            ExprNodeKind::Return { expr } => {
+                if expr.is_none() {
+                    HirExprKind::Return {
+                        expr: None,
+                    }
+                } else {
+                    HirExprKind::Return {
+                        expr: Some(self.lower_expr(expr.unwrap(), scope_id)?),
+                    }
+                }
             }
         };
 
@@ -569,22 +594,7 @@ impl<'a> HirLowerApi<'a> for HirLower<'a> {
         name_pass_result: &'a NamePassResult,
         module_name: String,
     ) -> Self {
-        let mut decl_scope_map = HashMap::new();
-        let pool = name_pass_result.pool;
-        // todo: 这里不太优雅, 可能要把bind_to_ast改为侧表 by azhz
-        fn collect_scopes(pool: &ScopePool, scope_id: ScopeId, map: &mut HashMap<usize, ScopeId>) {
-            if let Some(bind) = pool.get_scope(scope_id).bind_to_ast {
-                map.insert(bind, scope_id);
-            }
-            let children = pool.get_scope(scope_id).children.clone();
-            for child in children {
-                collect_scopes(pool, child, map);
-            }
-        }
 
-        for &top_id in name_pass_result.pool.top_scopes() {
-            collect_scopes(name_pass_result.pool, top_id, &mut decl_scope_map);
-        }
 
         Self {
             ast_crate: ast_module,
@@ -596,7 +606,6 @@ impl<'a> HirLowerApi<'a> for HirLower<'a> {
                 hir_decl_pool: vec![],
                 pub_decl_ids: vec![],
             },
-            decl_scope_map,
         }
     }
 

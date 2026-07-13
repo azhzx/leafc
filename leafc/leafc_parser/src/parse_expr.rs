@@ -78,6 +78,7 @@ impl<'a> Parser<'a> {
         let span = self.current_token().span.clone();
         self.skip_token_only(TokenType::KwIf)?;
         let cond = self.parse_expr()?;
+
         let if_then_exprs = if self.current_token().kind == TokenType::KwThen {
             self.skip_token();
             self.parse_expr()?
@@ -126,6 +127,25 @@ impl<'a> Parser<'a> {
 
     }
 
+    pub fn parse_return_expr(&mut self) -> Result<ExprNodeId, DiagMsg> {
+        let span = self.current_token().span.clone();
+        self.skip_token_only(TokenType::KwReturn)?;
+        let expr = if self.current_token().kind == TokenType::NewLine {
+            None
+        } else {
+            let expr = self.parse_expr()?;
+            self.skip_token_only(TokenType::NewLine);
+            Some(expr)
+        };
+
+        Ok(self.push_expr(ExprNode {
+            span,
+            kind: ExprNodeKind::Return {
+                expr,
+            },
+        }))
+    }
+
     pub fn parse_atom_expr(&mut self) -> Result<AtomExprNode, DiagMsg> {
         let current_token = self.current_token();
         let current_token_kind = current_token.kind.clone();
@@ -164,7 +184,6 @@ impl<'a> Parser<'a> {
                             title: format!("{:?}", ParserError::InvalidTupleLiteral),
                             msg: "invalid tuple literal".to_string(),
                             span: current_token_span,
-                            source: self.current_source,
                         })
                     }
                 }
@@ -180,7 +199,6 @@ impl<'a> Parser<'a> {
                     title: format!("{:?}", ParserError::InvalidExpression),
                     msg: "invalid expression literal".to_string(),
                     span: current_token_span,
-                    source: self.current_source,
                 })
             }
         };
@@ -222,6 +240,7 @@ impl<'a> Parser<'a> {
             TokenType::KwIf  => return self.parse_if_expr(),
             TokenType::KwDo  => return self.parse_do_expr(),
             TokenType::KwLet => return self.parse_let_expr(),
+            TokenType::KwReturn => return self.parse_return_expr(),
             _ => {}
         }
 
@@ -346,7 +365,6 @@ impl<'a> Parser<'a> {
                                 title: format!("{:?}", ParserError::InvalidOperator),
                                 msg: "invalid operator".to_string(),
                                 span: token_span.clone(),
-                                source: self.current_source,
                             })?,
                         right: rhs,
                     },
@@ -372,7 +390,6 @@ impl<'a> Parser<'a> {
                                 title: format!("{:?}", ParserError::InvalidCallArgumentList),
                                 msg: "invalid call argument list".to_string(),
                                 span: call_span,
-                                source: self.current_source,
                             });
                         }
                     }

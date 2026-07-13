@@ -1,3 +1,5 @@
+extern crate core;
+
 use std::collections::HashMap;
 use leafc_coreapi::diagnostic::DiagMsg;
 use leafc_coreapi::ast::{
@@ -5,7 +7,7 @@ use leafc_coreapi::ast::{
     ExprNodeKind, Visibility,
 };
 use leafc_coreapi::name_pass::{DoScopeMap, FunScopeMap, NamePassApi, NamePassError, NamePassResult};
-use leafc_coreapi::scope::{FieldDef, Scope, ScopeId, ScopeKind, ScopePool, Symbol, SymbolKind};
+use leafc_coreapi::scope::{Scope, ScopeId, ScopeKind, ScopePool, Symbol, SymbolKind};
 use leafc_coreapi::source::{SourceId, Span};
 
 pub struct NamePass<'a> {
@@ -23,23 +25,8 @@ pub struct NamePass<'a> {
 }
 
 impl<'a> NamePass<'a> {
-    fn source_id_from_scope(&self, scope_id: ScopeId) -> SourceId {
-        let mut current = Some(scope_id);
-        while let Some(sid) = current {
-            let scope = self.scope_pool.get_scope(sid);
-            if scope.kind == ScopeKind::File {
-                let file_unit = &self.ast_module.decl_pool[scope.bind_to_ast.unwrap()];
-                return file_unit.source_id;
-            }
-            current = scope.parent;
-        }
-        unreachable!()
-    }
-}
-
-impl<'a> NamePass<'a> {
     /// 创建作用域并填充符号
-    fn handle_expr(
+    fn pass_expr(
         &mut self,
         expr_id: ExprNodeId,
         current_scope: ScopeId,
@@ -49,36 +36,36 @@ impl<'a> NamePass<'a> {
             ExprNodeKind::Atom { .. } => {}
 
             ExprNodeKind::Binary { left, right, .. } => {
-                self.handle_expr(*left, current_scope)?;
-                self.handle_expr(*right, current_scope)?;
+                self.pass_expr(*left, current_scope)?;
+                self.pass_expr(*right, current_scope)?;
             }
             ExprNodeKind::Unary { right, .. } => {
-                self.handle_expr(*right, current_scope)?;
+                self.pass_expr(*right, current_scope)?;
             }
             ExprNodeKind::Call { callee, args, .. } => {
-                self.handle_expr(*callee, current_scope)?;
+                self.pass_expr(*callee, current_scope)?;
                 for arg in args {
-                    self.handle_expr(*arg, current_scope)?;
+                    self.pass_expr(*arg, current_scope)?;
                 }
             }
             ExprNodeKind::UnsafeExternalCall { callee, args, .. } => {
-                self.handle_expr(*callee, current_scope)?;
+                self.pass_expr(*callee, current_scope)?;
                 for arg in args {
-                    self.handle_expr(*arg, current_scope)?;
+                    self.pass_expr(*arg, current_scope)?;
                 }
             }
             ExprNodeKind::Member { left, .. } => {
-                self.handle_expr(*left, current_scope)?;
+                self.pass_expr(*left, current_scope)?;
             }
             ExprNodeKind::TypeCast { expr, .. } => {
-                self.handle_expr(*expr, current_scope)?;
+                self.pass_expr(*expr, current_scope)?;
             }
             ExprNodeKind::Move { target, .. }
             | ExprNodeKind::Copy { target, .. }
             | ExprNodeKind::Ref { target, .. }
             | ExprNodeKind::MutRef { target, .. }
             | ExprNodeKind::Share { target, .. } => {
-                self.handle_expr(*target, current_scope)?;
+                self.pass_expr(*target, current_scope)?;
             }
 
             ExprNodeKind::Do { exprs, .. } => {
@@ -91,7 +78,7 @@ impl<'a> NamePass<'a> {
                 self.do_scope_map.insert(expr_id, new_scope_id);
 
                 for e in exprs {
-                    self.handle_expr(*e, new_scope_id)?;
+                    self.pass_expr(*e, new_scope_id)?;
                 }
             }
 
@@ -103,7 +90,7 @@ impl<'a> NamePass<'a> {
                     main_expr.span.clone(),
                     SymbolKind::Local,
                 );
-                self.handle_expr(*expr, current_scope)?;
+                self.pass_expr(*expr, current_scope)?;
             }
 
             ExprNodeKind::If {
@@ -113,14 +100,19 @@ impl<'a> NamePass<'a> {
                 else_expr,
                 ..
             } => {
-                self.handle_expr(*cond, current_scope)?;
-                self.handle_expr(*then_expr, current_scope)?;
+                self.pass_expr(*cond, current_scope)?;
+                self.pass_expr(*then_expr, current_scope)?;
                 for elif in elifs {
-                    self.handle_expr(elif.cond, current_scope)?;
-                    self.handle_expr(elif.body, current_scope)?;
+                    self.pass_expr(elif.cond, current_scope)?;
+                    self.pass_expr(elif.body, current_scope)?;
                 }
                 if let Some(else_e) = else_expr {
-                    self.handle_expr(*else_e, current_scope)?;
+                    self.pass_expr(*else_e, current_scope)?;
+                }
+            },
+            ExprNodeKind::Return { expr } => {
+                if expr.is_some() {
+                    self.pass_expr(expr.unwrap(), current_scope)?;
                 }
             }
         }
@@ -173,7 +165,6 @@ impl<'a> NamePass<'a> {
                                         title: format!("{:?}", NamePassError::UndefinedModule),
                                         msg: format!("module `{}` not found", name),
                                         span: expr.span.clone(),
-                                        source: self.source_id_from_scope(current_scope),
                                     }
                                 })?;
                                 let file_unit = &self.ast_module.decl_pool[*file_unit_id];
@@ -187,7 +178,6 @@ impl<'a> NamePass<'a> {
                                             title: format!("{:?}", NamePassError::UndefinedName),
                                             msg: format!("module `{}` has no public item `{}`", name, right),
                                             span: expr.span.clone(),
-                                            source: self.source_id_from_scope(current_scope),
                                         });
                                     }
                                 } else {
@@ -195,30 +185,49 @@ impl<'a> NamePass<'a> {
                                         title: format!("{:?}", NamePassError::UndefinedModule),
                                         msg: format!("`{}` is not a module", name),
                                         span: expr.span.clone(),
-                                        source: self.source_id_from_scope(current_scope),
                                     });
                                 }
                             },
                             SymbolKind::Struct { fields } => {
-                                // 在结构体字段中查找 right
-                                if !fields.iter().any(|f| f.name == *right) {
+                                let field_exists = fields.iter().any(|&sym_id| {
+                                    if let Some(sym, ..)
+                                        = self.scope_pool.get_symbol_by_id(sym_id) {
+                                        sym.name == *right
+                                    } else {
+                                        false
+                                    }
+                                });
+
+                                if !field_exists {
                                     return Err(DiagMsg {
                                         title: format!("{:?}", NamePassError::UndefinedName),
                                         msg: format!("struct `{}` has no field `{}`", name, right),
                                         span: expr.span.clone(),
-                                        source: self.source_id_from_scope(current_scope),
                                     });
                                 }
-                            },
-                            SymbolKind::ADT => {
-                                todo!()
+                            }
+                            SymbolKind::ADT { constructors } => {
+                                let ctor_exists = constructors.iter().any(|&sym_id| {
+                                    if let Some(sym) = self.scope_pool.get_symbol_by_id(sym_id) {
+                                        sym.name == *right
+                                    } else {
+                                        false
+                                    }
+                                });
+
+                                if !ctor_exists {
+                                    return Err(DiagMsg {
+                                        title: format!("{:?}", NamePassError::InvalidADTConstructor),
+                                        msg: format!("ADT `{}` has no constructor named `{}`", name, right),
+                                        span: expr.span.clone(),
+                                    });
+                                }
                             },
                             _ => {
                                 return Err(DiagMsg {
                                     title: format!("{:?}", NamePassError::InvalidMemberAccess),
                                     msg: format!("invalid member access"),
                                     span: expr.span.clone(),
-                                    source: self.source_id_from_scope(current_scope),
                                 });
                             }
                         }
@@ -266,6 +275,11 @@ impl<'a> NamePass<'a> {
                 if let Some(else_e) = else_expr {
                     self.resolve_expr(*else_e, current_scope)?;
                 }
+            },
+            ExprNodeKind::Return { expr } => {
+                if expr.is_some() {
+                    self.resolve_expr(expr.unwrap(), current_scope)?;
+                }
             }
         }
         Ok(())
@@ -285,27 +299,7 @@ impl<'a> NamePass<'a> {
                 title: format!("{:?}", NamePassError::UndefinedName),
                 msg: "undefined name".to_string(),
                 span,
-                source: self.source_id_from_scope(current_scope),
             })
-        }
-    }
-
-    fn decl_kind_to_symbol_kind(kind: &DeclNodeKind) -> SymbolKind {
-        match kind {
-            DeclNodeKind::Fun { .. } => SymbolKind::Function,
-            DeclNodeKind::FunDecl { .. } => SymbolKind::Function,
-            DeclNodeKind::TypeStruct { fields, .. } => SymbolKind::Struct {
-                fields: fields.iter().map(|f| FieldDef {
-                    name: f.name.clone(),
-                    def_span: f.span.clone(),
-                }).collect(),
-            },
-            DeclNodeKind::ADT { ctors, .. } => SymbolKind::ADT,
-            DeclNodeKind::TypeAlias { .. } => SymbolKind::TypeAlias,
-            DeclNodeKind::CType => SymbolKind::CTypeDef,
-            DeclNodeKind::External { .. } => SymbolKind::External,
-            DeclNodeKind::Abstract { .. } => SymbolKind::Abstract,
-            _ => SymbolKind::Local, // fallback
         }
     }
 }
@@ -325,7 +319,7 @@ impl<'a> NamePassApi<'a> for NamePass<'a> {
         // 建立 source_id -> FileUnit 声明的映射
         for (decl_id, decl) in self.ast_module.decl_pool.iter().enumerate() {
             if let DeclNodeKind::FileUnit { .. } = &decl.kind {
-                self.source_to_file_unit.insert(decl.source_id, decl_id);
+                self.source_to_file_unit.insert(decl.span.source_id, decl_id);
             }
         }
 
@@ -347,7 +341,7 @@ impl<'a> NamePassApi<'a> for NamePass<'a> {
                     crate_scope_id,
                     decl.name.clone(),
                     decl.span.clone(),
-                   SymbolKind::File { source_id: decl.source_id },
+                   SymbolKind::File { source_id: decl.span.source_id },
                 );
 
                 // 处理该文件内的顶层声明
@@ -385,44 +379,80 @@ impl<'a> NamePassApi<'a> for NamePass<'a> {
 
                             // 处理函数体
                             for &expr_id in block {
-                                self.handle_expr(expr_id, fun_scope_id)?;
+                                self.pass_expr(expr_id, fun_scope_id)?;
                             }
                         }
 
-                        DeclNodeKind::TypeStruct { fields, .. } => {
+                        DeclNodeKind::TypeStruct { fields, generic_vars, .. } => {
+
+                            let struct_scope_id = self.scope_pool.push_scope(
+                                Some(file_scope_id),
+                                ScopeKind::Struct,
+                                Some(inner_decl_id),
+                            );
+
+                            for gv in generic_vars {
+                                self.scope_pool.add_symbol(
+                                    struct_scope_id,
+                                    gv.name.clone(),
+                                    decl_span.clone(),
+                                    SymbolKind::Generic,
+                                );
+                            }
+
+                            let mut field_ids = vec![];
+                            for field in fields {
+                                field_ids.push(self.scope_pool.add_symbol_and_get_sym_id(
+                                    struct_scope_id,
+                                    field.name.clone(),
+                                    field.span.clone(),
+                                    SymbolKind::Field,
+                                ));
+                            }
+
                             self.scope_pool.add_symbol(
                                 file_scope_id,
                                 decl_name.clone(),
                                 decl_span.clone(),
                                 SymbolKind::Struct {
-                                        fields: fields.iter().map(|f| FieldDef {
-                                            name: f.name.clone(),
-                                            def_span: f.span.clone(),
-                                        }).collect(),
+                                    fields: field_ids,
                                 },
                             );
                         }
 
-                        DeclNodeKind::ADT { ctors, .. } => {
-                            self.scope_pool.add_symbol(
-                                file_scope_id,
-                                decl_name.clone(),
-                                decl_span.clone(),
-                               SymbolKind::ADT,
-                            );
+                        DeclNodeKind::ADT { ctors, generic_vars, .. } => {
                             let adt_scope_id = self.scope_pool.push_scope(
                                 Some(file_scope_id),
                                 ScopeKind::Adt,
                                 Some(inner_decl_id),
                             );
-                            for ctor in ctors {
+
+                            for gv in generic_vars {
                                 self.scope_pool.add_symbol(
                                     adt_scope_id,
+                                    gv.name.clone(),
+                                    decl_span.clone(),
+                                    SymbolKind::Generic,
+                                );
+                            }
+
+                            let mut constructors = vec![];
+                            for ctor in ctors {
+                                constructors.push(self.scope_pool.add_symbol_and_get_sym_id(
+                                    file_scope_id,
                                     ctor.name.clone(),
                                     ctor.span.clone(),
                                     SymbolKind::Constructor,
-                                );
+                                ));
                             }
+                            self.scope_pool.add_symbol(
+                                file_scope_id,
+                                decl_name.clone(),
+                                decl_span.clone(),
+                                SymbolKind::ADT {
+                                    constructors,
+                                },
+                            );
                         }
 
                         DeclNodeKind::TypeAlias { .. } => {

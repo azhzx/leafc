@@ -112,7 +112,6 @@ pub enum TokenType {
 pub struct Token {
     pub kind: TokenType,
     pub span: Span,
-    pub source: SourceId,
     pub text: String
 }
 

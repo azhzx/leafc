@@ -8,21 +8,28 @@ use leafc_coreapi::parser::ParserError;
 use leafc_coreapi::source::{SourceId, Span};
 use leafc_coreapi::tokens_pass::{TokenPassApi, TokenPassError};
 
-const KEYWORD_PREPROCESS: &str = "preprocessor_define";
-const KEYWORD_DELETE_PREPROCESS: &str = "preprocessor_delete";
-const KEYWORD_IF: &str = "preprocessor_if";
-const KEYWORD_ELIF: &str = "preprocessor_elif";
-const KEYWORD_ELSE: &str = "preprocessor_else";
-const KEYWORD_ENDIF: &str = "preprocessor_endif";
+const KEYWORD_PREPROCESS: &str = "__define";
+const KEYWORD_DELETE_PREPROCESS: &str = "__delete";
+const KEYWORD_IF: &str = "__if";
+const KEYWORD_ELIF: &str = "__elif";
+const KEYWORD_ELSE: &str = "__else";
+const KEYWORD_ENDIF: &str = "__endif";
 
-const KEYWORD_PANIC: &str = "preprocessor_panic";
-const KEYWORD_WARNING: &str = "preprocessor_warning";
+const KEYWORD_PANIC: &str = "__panic";
+const KEYWORD_WARNING: &str = "__warning";
 
-const PP_FUNCTION_IS_DEFINED: &str = "preprocessor_is_defined";
+const PP_FUNCTION_IS_DEFINED: &str = "__is_defined";
 
-const PP_FUNCTION_IS_EVAL: &str = "preprocessor_eval";
+const PP_FUNCTION_IS_EVAL: &str = "__eval";
 
-const REST_ARGS_MARKER: &str = "__PreprocessorRestArgs";
+const REST_ARGS_MARKER: &str = "__rest_args";
+
+#[derive(PartialEq)]
+enum IfKeyword {
+    Elif,
+    Else,
+    Endif,
+}
 
 #[derive(Debug, Clone)]
 struct PPDef {
@@ -181,6 +188,221 @@ impl<'a> Preprocessor<'a> {
         }
     }
 
+    fn process_if_construct(
+        &mut self,
+        current_tokens: &[Token],
+        index: &mut usize,
+        result: &mut Vec<Token>,
+        emit: bool,
+    ) -> Result<(), DiagMsg> {
+        let mut cond_tokens = Vec::new();
+        while *index < current_tokens.len()
+            && current_tokens[*index].kind != TokenType::NewLine
+        {
+            cond_tokens.push(current_tokens[*index].clone());
+            *index += 1;
+        }
+
+        if *index < current_tokens.len() {
+            *index += 1;
+        } else {
+            return Err(DiagMsg {
+                title: format!("{:?}", TokenPassError::InvalidPreprocessorArgumentList),
+                msg: "expected newline after __if condition".to_string(),
+                span: if *index > 0 {
+                    current_tokens[*index - 1].span.clone()
+                } else {
+                    Span {
+                        source_id: self.source,
+                        start_off: 0,
+                        end_off: 0,
+                    }
+                },
+            });
+        }
+
+        cond_tokens = self.expand_all(cond_tokens)?;
+        let mut cond_true = self.eval(cond_tokens) > 0;
+
+        if !emit {
+            self.skip_to_matching_endif(current_tokens, index);
+            return Ok(());
+        }
+
+        // 根据条件值输出或跳过分支
+        loop {
+            if cond_true {
+                let stopped_at = self.copy_until_keyword(current_tokens, index, result)?;
+                return match stopped_at {
+                    IfKeyword::Endif => {
+                        *index += 1;
+                        Ok(())
+                    }
+                    IfKeyword::Elif | IfKeyword::Else => {
+                        self.skip_to_matching_endif(current_tokens, index);
+                        Ok(())
+                    }
+                }
+            } else {
+                let stopped_at = self.skip_until_keyword(current_tokens, index)?;
+                match stopped_at {
+                    IfKeyword::Endif => {
+                        *index += 1;
+                        return Ok(());
+                    }
+                    IfKeyword::Elif => {
+                        *index += 1;
+
+                        let mut elif_cond = Vec::new();
+                        while *index < current_tokens.len()
+                            && current_tokens[*index].kind != TokenType::NewLine
+                        {
+                            elif_cond.push(current_tokens[*index].clone());
+                            *index += 1;
+                        }
+                        if *index < current_tokens.len() {
+                            *index += 1;
+                        } else {
+                            return Err(DiagMsg {
+                                title: format!("{:?}", TokenPassError::InvalidPreprocessorArgumentList),
+                                msg: "expected newline after __elif condition".to_string(),
+                                span: if *index > 0 {
+                                    current_tokens[*index - 1].span.clone()
+                                } else {
+                                    Span {
+                                        source_id: self.source,
+                                        start_off: 0,
+                                        end_off: 0,
+                                    }
+                                },
+                            });
+                        }
+
+                        elif_cond = self.expand_all(elif_cond)?;
+                        cond_true = self.eval(elif_cond) > 0;
+                    }
+                    IfKeyword::Else => {
+                        *index += 1;
+                        cond_true = true;
+                    }
+                }
+            }
+        }
+    }
+
+
+    fn copy_until_keyword(
+        &mut self,
+        current_tokens: &[Token],
+        index: &mut usize,
+        result: &mut Vec<Token>,
+    ) -> Result<IfKeyword, DiagMsg> {
+        let mut depth = 0; // 当前所处的 if 嵌套深度, 0是最外层
+        while *index < current_tokens.len() {
+            let tok = &current_tokens[*index];
+            if tok.kind == TokenType::Ident {
+                match tok.text.as_str() {
+                    KEYWORD_IF => {
+                        if depth == 0 {
+                            *index += 1;
+                            self.process_if_construct(current_tokens, index, result, true)?;
+                            continue;
+                        } else {
+                            depth += 1;
+                        }
+                    }
+                    KEYWORD_ENDIF => {
+                        if depth == 0 {
+                            return Ok(IfKeyword::Endif);
+                        } else {
+                            depth -= 1;
+                        }
+                    }
+                    KEYWORD_ELIF => {
+                        if depth == 0 {
+                            return Ok(IfKeyword::Elif);
+                        }
+                    }
+                    KEYWORD_ELSE => {
+                        if depth == 0 {
+                            return Ok(IfKeyword::Else);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            result.push(current_tokens[*index].clone());
+            *index += 1;
+        }
+        unreachable!()
+    }
+
+    fn skip_until_keyword(
+        &mut self,
+        current_tokens: &[Token],
+        index: &mut usize,
+    ) -> Result<IfKeyword, DiagMsg> {
+        let mut depth = 0;
+        while *index < current_tokens.len() {
+            let tok = &current_tokens[*index];
+            if tok.kind == TokenType::Ident {
+                match tok.text.as_str() {
+                    KEYWORD_IF => {
+                        if depth == 0 {
+                            *index += 1;
+                            self.process_if_construct(current_tokens, index, &mut Vec::new(), false)?;
+                            continue;
+                        } else {
+                            depth += 1;
+                        }
+                    }
+                    KEYWORD_ENDIF => {
+                        if depth == 0 {
+                            return Ok(IfKeyword::Endif);
+                        } else {
+                            depth -= 1;
+                        }
+                    }
+                    KEYWORD_ELIF => {
+                        if depth == 0 {
+                            return Ok(IfKeyword::Elif);
+                        }
+                    }
+                    KEYWORD_ELSE => {
+                        if depth == 0 {
+                            return Ok(IfKeyword::Else);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            *index += 1;
+        }
+        unreachable!()
+    }
+
+    fn skip_to_matching_endif(&mut self, current_tokens: &[Token], index: &mut usize) {
+        let mut depth = 0;
+        while *index < current_tokens.len() {
+            let tok = &current_tokens[*index];
+            if tok.kind == TokenType::Ident {
+                match tok.text.as_str() {
+                    KEYWORD_IF => depth += 1,
+                    KEYWORD_ENDIF => {
+                        if depth == 0 {
+                            *index += 1;
+                            return;
+                        } else {
+                            depth -= 1;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            *index += 1;
+        }
+    }
+
 
     fn expand_all(&mut self, tokens: Vec<Token>) -> Result<Vec<Token>, DiagMsg> {
         let mut current_tokens = tokens;
@@ -205,34 +427,53 @@ impl<'a> Preprocessor<'a> {
 
                     let index_before_args = index;
 
-                    // 跳过'('
+                    // 跳过 '('
                     index += 1;
 
                     let mut args: Vec<Vec<Token>> = Vec::new();
-                    let mut current_arg_index = 0;
+                    let mut current_arg: Vec<Token> = Vec::new();
+                    let mut depth = 1; // 最外层'('是'1'
 
-                    while current_tokens[index].kind != TokenType::Rparen {
-                        args.push(Vec::new());
-                        while current_tokens[index].kind != TokenType::Comma
-                            && current_tokens[index].kind != TokenType::Rparen {
-                            args[current_arg_index].push(current_tokens[index].clone());
-                            index += 1;
-                        }
-
-                        if current_tokens[index].kind == Comma {
-                            index += 1;
-                            current_arg_index += 1;
-                        } else if current_tokens[index].kind == TokenType::Rparen {
-                            break;
-                        } else {
-                            return Err(DiagMsg {
-                                title: format!("{:?}", TokenPassError::InvalidPreprocessorArgumentList),
-                                msg: "invalid call argument list".to_string(),
-                                span: current_token.span.clone(),
-                                source: self.source,
-                            });
-                        }
+                    if index >= current_tokens.len() {
+                        unreachable!()
                     }
+
+                    while depth > 0 && index < current_tokens.len() {
+                        match current_tokens[index].kind {
+                            Lparen => {
+                                depth += 1;
+                                current_arg.push(current_tokens[index].clone());
+                            }
+                            TokenType::Rparen => {
+                                depth -= 1;
+                                if depth == 0 {
+                                    // 这是最外层的右括号
+                                    index += 1;
+                                    break;
+                                } else {
+                                    current_arg.push(current_tokens[index].clone());
+                                }
+                            }
+                            TokenType::Comma => {
+                                if depth == 1 {
+                                    args.push(current_arg.clone());
+                                    current_arg.clear();
+                                } else {
+                                    current_arg.push(current_tokens[index].clone());
+                                }
+                            }
+                            _ => {
+                                current_arg.push(current_tokens[index].clone());
+                            }
+                        }
+                        index += 1;
+                    }
+
+                    if !args.is_empty() || !current_arg.is_empty() {
+                        args.push(current_arg);
+                    }
+
+                    if depth != 0 { unreachable!() }
 
                     // 跳过 ')'
                     index += 1;
@@ -250,7 +491,6 @@ impl<'a> Preprocessor<'a> {
                                     args.len()
                                 ),
                                 span: current_token.span.clone(),
-                                source: self.source,
                             });
                         }
 
@@ -262,7 +502,6 @@ impl<'a> Preprocessor<'a> {
                                 rest.push(Token {
                                     kind: Comma,
                                     span: current_token_span.clone(),
-                                    source: self.source,
                                     text: ",".to_string(),
                                 });
                             }
@@ -280,7 +519,6 @@ impl<'a> Preprocessor<'a> {
                                     args.len()
                                 ),
                                 span: current_token.span.clone(),
-                                source: self.source,
                             });
                         }
                         Vec::new()
@@ -325,7 +563,9 @@ impl<'a> Preprocessor<'a> {
                         self.expanding.remove(&macro_name.text);
                         changed = true;
                     }
-                } else if current_token.kind == Ident
+                }
+
+                else if current_token.kind == Ident
                     && current_token.text == KEYWORD_PREPROCESS
                 {
                     index += 1;
@@ -362,7 +602,6 @@ impl<'a> Preprocessor<'a> {
                                     title: format!("{:?}", TokenPassError::InvalidPreprocessorParameterDeclare),
                                     msg: "invalid call argument list".to_string(),
                                     span,
-                                    source: self.source,
                                 });
                             }
                         }
@@ -384,25 +623,38 @@ impl<'a> Preprocessor<'a> {
                             body
                         }
                     );
-                } else if current_token.kind == TokenType::Ident
+                }
+
+                else if current_token.kind == TokenType::Ident
                     && current_token.text == KEYWORD_DELETE_PREPROCESS {
                     index += 1;
                     self.preprocessors.remove(&current_token.text);
-                } else if current_token.kind == TokenType::Ident
+                }
+
+                else if current_token.kind == TokenType::Ident
                     && current_token.text == KEYWORD_PANIC {
                     index += 1;
-                    panic!("{}", &current_tokens[index].text);
-                } else if current_token.kind == TokenType::Ident
+                    return Err(DiagMsg {
+                        title: format!("{:?}", TokenPassError::UserPreprocessorPanic),
+                        msg: current_tokens[index].text.clone(),
+                        span: current_tokens[index].span.clone(),
+                    });
+                }
+
+                else if current_token.kind == TokenType::Ident
                     && current_token.text == KEYWORD_WARNING {
                     index += 1;
                     println!("[warning] {}", &current_tokens[index].text);
                     index += 1;
-                } else if current_token.kind == TokenType::Ident
+                }
+
+                else if current_token.kind == TokenType::Ident
                     && current_token.text == PP_FUNCTION_IS_EVAL {
                     index += 1;
 
                     index += 1;
                     let mut expr = vec![];
+                    let current_span = current_tokens[index].span.clone();
                     while current_tokens[index].kind != TokenType::Rparen {
                         expr.push(current_tokens[index].clone());
                         index += 1;
@@ -412,65 +664,23 @@ impl<'a> Preprocessor<'a> {
                     let eval = self.eval(expr);
                     result.push(Token {
                         kind: TokenType::Int,
-                        span: current_tokens[index].span.clone(),
-                        source: self.source,
+                        span: current_span,
                         text: eval.to_string(),
                     })
-                } else if current_token.kind == TokenType::Ident
+                }
+
+                else if current_token.kind == TokenType::Ident
                     && current_token.text == KEYWORD_IF {
 
                     index += 1;
 
-                    let mut if_cond = Vec::new();
-                    while current_tokens[index].kind != TokenType::NewLine {
-                        if_cond.push(current_tokens[index].clone());
-                        index += 1;
-                    }
-                    index += 1;
+                    self.process_if_construct(&current_tokens, &mut index, &mut result, true)?;
 
-                    if_cond = self.expand_all(if_cond)?;
-                    let eval_result = self.eval(if_cond);
+                    changed = true;
 
-                    if eval_result <= 0 {
-                        while  current_tokens[index].text != KEYWORD_ELSE
-                            && current_tokens[index].text != KEYWORD_ENDIF
-                        {
-                            index += 1;
-                        }
+                }
 
-                        if current_tokens[index].text == KEYWORD_ELSE {
-                            index += 1;
-                            while current_tokens[index].text != KEYWORD_ENDIF  {
-                                result.push(current_tokens[index].clone());
-                                index += 1;
-                            }
-                        }
-
-                        index += 1;
-                        changed = true;
-                    } else {
-                        while index < current_tokens.len()
-                            && current_tokens[index].text != KEYWORD_ELSE
-                            && current_tokens[index].text != KEYWORD_ENDIF
-                        {
-                            result.push(current_tokens[index].clone());
-                            index += 1;
-                        }
-
-                        if current_tokens[index].text == KEYWORD_ELSE {
-                            index += 1;
-                            while current_tokens[index].text != KEYWORD_ENDIF {
-                                index += 1;
-                            }
-                        }
-
-                        // skip endif
-                        index += 1;
-
-                        changed = true;
-                    }
-
-                } else if current_token.kind == TokenType::Ident
+                else if current_token.kind == TokenType::Ident
                     && current_token.text == PP_FUNCTION_IS_DEFINED {
 
                     index += 1;
@@ -480,11 +690,12 @@ impl<'a> Preprocessor<'a> {
                     result.push(Token {
                         kind: TokenType::Int,
                         span: current_tokens[index].span.clone(),
-                        source: self.source,
                         text: (if is_pp { 1 } else { 0 }).to_string(),
                     });
 
-                } else {
+                }
+
+                else {
                     let expanded = self.expand_one(current_token)?;
                         if expanded.len() != 1 || expanded[0] != *current_token {
                             changed = true;
@@ -533,8 +744,10 @@ impl<'a> Preprocessor<'a> {
             self.preprocessors.entry(name.clone()).or_insert(PPDef {
                 name_token: Token {
                     kind: TokenType::Ident,
-                    span: Span { start_off: 0, end_off: 0 },
-                    source: self.source,
+                    span: Span {
+                        source_id: self.source,
+                        start_off: 0,
+                        end_off: 0 },
                     text: name.clone(),
                 },
                 params: vec![],

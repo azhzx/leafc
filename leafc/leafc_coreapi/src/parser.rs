@@ -3,7 +3,7 @@ use crate::ast::CrateAst;
 use crate::diagnostic::DiagMsg;
 use crate::lexer::{Token, TokenStream};
 use crate::scope::ScopePool;
-use crate::source::{Source, SourceId, SourcePool, Span};
+use crate::source::{AbsPathSourceMap, Source, SourceId, SourcePool, Span};
 
 #[derive(Debug)]
 pub enum ParserError {
@@ -28,7 +28,11 @@ pub enum ParserError {
 
 
 pub trait ParserApi<'a> {
-    fn new(dir_abs_path: PathBuf, source_pool: &'a mut SourcePool) -> Self;
+    fn new(
+        dir_abs_path: PathBuf,
+        source_pool: &'a mut SourcePool,
+        abs_path_source_map: &'a AbsPathSourceMap
+    ) -> Self;
     fn parse(&mut self)
         -> Result<&CrateAst, DiagMsg>;
 }

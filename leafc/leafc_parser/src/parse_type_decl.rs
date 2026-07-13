@@ -55,7 +55,6 @@ impl<'a> Parser<'a> {
                         has_abst: impls,
                         generic_vars: generic,
                     },
-                    source_id: self.current_source,
                 })
             }
             TokenType::NewLine => {
@@ -97,7 +96,6 @@ impl<'a> Parser<'a> {
                             has_abst: impls,
                             generic_vars: generic,
                         },
-                        source_id: self.current_source,
                     })
                 } else if self.current_token().kind == TokenType::Pipe {
 
@@ -149,14 +147,12 @@ impl<'a> Parser<'a> {
                             has_abst: impls,
                             generic_vars: generic,
                         },
-                        source_id: self.current_source,
                     })
                 } else {
                     return Err(DiagMsg{
                         title: format!("{:?}", ParserError::InvalidTypeDeclaration),
                         msg: "invalid type declaration".to_string(),
                         span: self.current_token().span.clone(),
-                        source: self.current_source
                     })
                 }
             }
@@ -165,7 +161,6 @@ impl<'a> Parser<'a> {
                     title: format!("{:?}", ParserError::InvalidTypeDeclaration),
                     msg: "invalid type declaration".to_string(),
                     span: self.current_token().span.clone(),
-                    source: self.current_source
                 })
             }
         }

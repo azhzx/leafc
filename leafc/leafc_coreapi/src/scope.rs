@@ -1,7 +1,9 @@
+use std::collections::HashMap;
 use crate::ast::{DeclNodeId, ExprNodeId, Field};
 use crate::source::{SourceId, Span};
 
 pub type ScopeId = usize;
+pub type DeclNodeScopeMap = HashMap<DeclNodeId, ScopeId>;
 
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -11,6 +13,7 @@ pub enum ScopeKind {
     Adt,
     Abstract,
     Block,
+    Struct,
     Crate,
 }
 
@@ -27,12 +30,6 @@ pub struct Symbol {
 }
 
 #[derive(Debug, Clone)]
-pub struct FieldDef {
-    pub name: String,
-    pub def_span: Span,
-}
-
-#[derive(Debug, Clone)]
 pub enum SymbolKind {
     Local,
 
@@ -40,10 +37,12 @@ pub enum SymbolKind {
     Function,
 
     Struct {
-        fields: Vec<FieldDef>
+        fields: Vec<SymId>
     },
 
-    ADT,
+    ADT {
+        constructors: Vec<SymId>,
+    },
 
     /// A type alias
     TypeAlias,
@@ -54,13 +53,15 @@ pub enum SymbolKind {
 
     Abstract,
 
-    /// A constructor
+    Generic,
+
+    /// A ADT Constructor
     Constructor,
 
-    /// A field of a struct or a variant.
+    /// A field of a struct
     Field,
 
-    /// A method signature inside an abstract type.
+    /// A method signature inside an abstract type
     Method,
 
     File {
@@ -74,7 +75,6 @@ pub struct Scope {
     pub children: Vec<ScopeId>,
     pub kind: ScopeKind,
     pub symbols: Vec<SymId>,
-    pub bind_to_ast: Option<DeclNodeId>,
 }
 
 #[derive(Debug)]
@@ -83,6 +83,7 @@ pub struct ScopePool {
     top_scopes: Vec<ScopeId>,
     sym_counter: usize,
     symbols: Vec<Symbol>,
+    pub decl_node_scope_map: DeclNodeScopeMap,
 }
 
 impl ScopePool {
@@ -92,6 +93,7 @@ impl ScopePool {
             top_scopes: Vec::new(),
             sym_counter: 0,
             symbols: vec![],
+            decl_node_scope_map: HashMap::new(),
         }
     }
 
@@ -102,12 +104,16 @@ impl ScopePool {
         bind_to_ast: Option<DeclNodeId>,
     ) -> ScopeId {
         let id = self.scopes.len();
+
+        if bind_to_ast.is_some() {
+            self.decl_node_scope_map.insert(bind_to_ast.unwrap(), id);
+        }
+
         let scope = Scope {
             parent,
             children: Vec::new(),
             kind,
             symbols: Vec::new(),
-            bind_to_ast,
         };
         self.scopes.push(scope);
 
@@ -137,6 +143,27 @@ impl ScopePool {
         self.sym_counter += 1;
     }
 
+    pub fn add_symbol_and_get_sym_id(
+        &mut self,
+        scope: ScopeId,
+        name: String,
+        def_span: Span,
+        kind: SymbolKind,
+    ) -> SymId {
+        let sym_id = self.sym_counter;
+        let sym = Symbol {
+            name,
+            def_span,
+            kind,
+            sym_id,
+        };
+        self.symbols.push(sym);
+        self.scopes[scope].symbols.push(self.sym_counter);
+        self.sym_counter += 1;
+
+        sym_id
+    }
+
     pub fn lookup(&self, scope: ScopeId, name: &str) -> Option<(&Symbol, ScopeId)> {
         let mut current = Some(scope);
         while let Some(sid) = current {
@@ -151,6 +178,7 @@ impl ScopePool {
         }
         None
     }
+
 
     pub fn get_scope(&self, id: ScopeId) -> &Scope {
         &self.scopes[id]

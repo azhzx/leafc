@@ -1,18 +1,18 @@
-use std::fs;
-use std::path::{Path, PathBuf};
-use leafc_coreapi::codegen::CodegenApi;
-use leafc_coreapi::compiler::{CompilerApi, CompilerConfig};
-use leafc_coreapi::diagnostic::{DiagMsg, DiagTextColor, DiagnosticianApi};
+use std::collections::HashMap;
+use leafc_coreapi::compiler::CompilerApi;
+use leafc_coreapi::diagnostic::{DiagTextColor, DiagnosticianApi};
 use leafc_coreapi::hir_lower::HirLowerApi;
-use leafc_coreapi::lexer::{LexerApi, TokenStream};
+use leafc_coreapi::lexer::LexerApi;
 use leafc_coreapi::name_pass::{NamePassApi, NamePassResult};
-use leafc_coreapi::parser::{ParserApi};
-use leafc_coreapi::source::{Source, SourceId, SourcePool};
+use leafc_coreapi::parser::ParserApi;
+use leafc_coreapi::source::{AbsPathSourceMap, SourcePool};
 use leafc_coreapi::tokens_pass::TokenPassApi;
 use leafc_diag::Diagnostician;
-use leafc_parser::Parser;
 use leafc_hirlower::HirLower;
 use leafc_namepass::NamePass;
+use leafc_parser::Parser;
+use std::fs;
+use std::path::PathBuf;
 
 const COMPILER_VERSION: &'static str = env!("CARGO_PKG_VERSION");
 
@@ -26,6 +26,32 @@ const DIAG_COLORS: DiagTextColor = DiagTextColor {
 
 pub struct NativeCompiler {
     source_pool: SourcePool,
+    abs_path_source_map: AbsPathSourceMap
+}
+
+impl NativeCompiler {
+    fn collect_sources(&mut self, dir: &PathBuf) -> std::io::Result<()> {
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+
+            if path.is_dir() {
+                self.collect_sources(&path)?;
+            } else if path.is_file() {
+                if path.extension().and_then(|s| s.to_str()) == Some("leaf") {
+                    let abs_path = fs::canonicalize(&path)?
+                        .to_string_lossy()
+                        .to_string();
+
+                    let content = fs::read_to_string(&path)?;
+                    let source_id = self.source_pool.add_source(abs_path.clone(), content);
+
+                    self.abs_path_source_map.insert(abs_path, source_id);
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 impl CompilerApi for NativeCompiler {
@@ -33,7 +59,8 @@ impl CompilerApi for NativeCompiler {
 
     fn new() -> Self {
         Self {
-            source_pool: SourcePool(Vec::new())
+            source_pool: SourcePool(Vec::new()),
+            abs_path_source_map: HashMap::new(),
         }
     }
 
@@ -44,11 +71,19 @@ impl CompilerApi for NativeCompiler {
 
     fn compile_a_crate(&mut self, dir_path: &str) -> Option<Self::Output> {
 
-        let dir_path_buf = fs::canonicalize(PathBuf::from(dir_path)).unwrap();
+        let dir_path_buf = fs::canonicalize(PathBuf::from(dir_path)).ok()?;
 
+        if let Err(e) = self.collect_sources(&dir_path_buf) {
+            eprintln!("Failed to collect sources: {}", e);
+            return None;
+        }
 
         // 解析
-        let mut parser = Parser::new(dir_path_buf.clone(), &mut self.source_pool);
+        let mut parser = Parser::new(
+            dir_path_buf.clone(),
+            &mut self.source_pool,
+            &self.abs_path_source_map,
+        );
         let ast = match parser.parse() {
             Ok( ast ) => {
                 println!("=== ast ===");

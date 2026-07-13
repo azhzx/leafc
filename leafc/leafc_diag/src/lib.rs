@@ -8,11 +8,6 @@ pub struct Diagnostician<'a> {
 }
 
 impl<'a> Diagnostician<'a> {
-    fn offset_to_line_col(offset: usize, line_starts: &[usize]) -> (usize, usize) {
-        let line = line_starts.partition_point(|&x| x <= offset) - 1;
-        let col = offset - line_starts[line];
-        (line, col)
-    }
 }
 
 impl<'a> DiagnosticianApi<'a> for Diagnostician<'a> {
@@ -27,21 +22,37 @@ impl<'a> DiagnosticianApi<'a> for Diagnostician<'a> {
     fn report(&self, diag: DiagMsg) -> String {
         let mut out = String::new();
 
-        let source_id = diag.source;
+        let source_id = diag.span.source_id;
         let source = &self.source_pool.0[source_id];
         let source_name = &source.file_abs_path;
-        let lines = &source.file_lines;
+
         let line_starts = &source.line_starts;
 
+        // 二分定位行号（1‑based）
+        let start_line = match line_starts.binary_search(&diag.span.start_off) {
+            Ok(idx) => idx + 1,
+            Err(idx) => idx,
+        };
+        let end_line = match line_starts.binary_search(&diag.span.end_off.saturating_sub(1)) {
+            Ok(idx) => idx + 1,
+            Err(idx) => idx,
+        };
 
-        let (start_line0, start_col) = Self::offset_to_line_col(diag.span.start_off, line_starts);
-        let (end_line0, end_col) = Self::offset_to_line_col(diag.span.end_off, line_starts);
-        let start_line = start_line0 + 1; // 转为 1‑based
-        let end_line = end_line0 + 1;
+        let line_start_off = line_starts[start_line - 1];
+        let start_col = source.file_content[line_start_off..diag.span.start_off]
+            .chars()
+            .count();
+        let line_start_off_end = line_starts[end_line - 1];
+        let end_col = source.file_content[line_start_off_end..diag.span.end_off]
+            .chars()
+            .count();
 
-        writeln!(&mut out, "{}  -->    {}{}",
+        writeln!(
+            &mut out,
+            "{}  -->    {}{}",
             self.colors.diag_source_name, source_name, self.colors.diag_reset
-        ).unwrap();
+        )
+            .unwrap();
 
         let first = if start_line > 1 {
             start_line - 1
@@ -49,29 +60,49 @@ impl<'a> DiagnosticianApi<'a> for Diagnostician<'a> {
             start_line
         };
 
-
-        let last = if end_line < lines.len() {
+        let last = if end_line < line_starts.len() {
             end_line + 1
         } else {
             end_line
         };
 
+        let lines: Vec<&str> = (first..=last)
+            .map(|lineno| {
+                let line_idx = lineno - 1;
+                let start = line_starts[line_idx];
+                let end = if line_idx + 1 < line_starts.len() {
+                    line_starts[line_idx + 1]
+                } else {
+                    source.source_len
+                };
+                source.file_content[start..end].trim_end_matches(|c| c == '\n' || c == '\r')
+            })
+            .collect();
+
         let indicator_prefix = format!(
-            "{}{}{}", self.colors.diag_bar, "  ╭─➜  |", self.colors.diag_reset
+            "{}{}{}",
+            self.colors.diag_bar, "  ╭─➜  |", self.colors.diag_reset
         );
         let indicator_len = indicator_prefix.chars().count();
 
         for lineno in first..=last {
-            let line_idx = lineno - 1;
-            let line = &lines[line_idx];
+            let line = &lines[lineno - first];
 
             let prefix = if lineno < start_line {
-                format!("{}  {:>4} | {}", self.colors.diag_bar, lineno, self.colors.diag_reset)
+                format!(
+                    "{}  {:>4} | {}",
+                    self.colors.diag_bar, lineno, self.colors.diag_reset
+                )
             } else if lineno == start_line {
                 format!(
-                    "{}  {:>4} | {}", self.colors.diag_bar, lineno, self.colors.diag_reset)
+                    "{}  {:>4} | {}",
+                    self.colors.diag_bar, lineno, self.colors.diag_reset
+                )
             } else {
-                format!("{}  |  {} | {}", self.colors.diag_bar, lineno, self.colors.diag_reset)
+                format!(
+                    "{}  |  {} | {}",
+                    self.colors.diag_bar, lineno, self.colors.diag_reset
+                )
             };
 
             writeln!(&mut out, "{}{}", prefix, line).unwrap();

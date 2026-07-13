@@ -1,11 +1,10 @@
-use crate::source::{SourceId, SourcePool, Span};
+use crate::source::{SourcePool, Span};
 
 #[derive(Debug, Clone)]
 pub struct DiagMsg {
     pub title: String,
     pub msg: String,
     pub span: Span,
-    pub source: SourceId
 }
 
 pub struct DiagTextColor {

@@ -12,6 +12,7 @@ pub enum NamePassError {
     DuplicateDefinition,
     UndefinedModule,
     InvalidMemberAccess,
+    InvalidADTConstructor
 }
 
 

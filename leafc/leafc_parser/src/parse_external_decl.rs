@@ -23,7 +23,6 @@ impl<'a> Parser<'a> {
                 visibility,
                 span,
                 kind: DeclNodeKind::CType,
-                source_id: self.current_source,
             });
         }
 
@@ -36,7 +35,6 @@ impl<'a> Parser<'a> {
                 title: format!("{:?}", ParserError::FunctionDeclarationMissingParameterList),
                 msg: "function declare missing parameter list".to_string(),
                 span: self.current_token().span.clone(),
-                source: self.current_source
             })
         }
         self.skip_token(); // '('
@@ -72,7 +70,6 @@ impl<'a> Parser<'a> {
                     title: format!("{:?}", ParserError::InvalidFunctionParameterList),
                     msg: "invalid function parameter list".to_string(),
                     span: self.current_token().span.clone(),
-                    source: self.current_source
                 })
             }
         }
@@ -106,7 +103,6 @@ impl<'a> Parser<'a> {
                 params,
                 return_type_str,
             },
-            source_id: self.current_source,
         })
     }
 }

@@ -1,4 +1,4 @@
-use crate::source::{SourceId, Span};
+use crate::source::{Span};
 
 pub type ExprNodeId = usize;
 pub type DeclNodeId = usize;
@@ -130,6 +130,9 @@ pub enum ExprNodeKind {
         elifs: Vec<ElseIf>,
         else_expr: Option<ExprNodeId>,
     },
+    Return {
+        expr: Option<ExprNodeId>,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -177,7 +180,6 @@ pub struct DeclNode {
     pub visibility: Visibility,
     pub span: Span,
     pub kind: DeclNodeKind,
-    pub source_id: SourceId,
 }
 
 #[derive(Debug, Clone)]

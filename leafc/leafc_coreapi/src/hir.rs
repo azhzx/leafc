@@ -88,7 +88,7 @@ pub enum HirDeclKind {
 
 #[derive(Debug, Clone)]
 pub struct HirFieldDef {
-    pub name: String,
+    pub name: HirName,
     pub type_ann: HirTypeName,
     pub span: Span,
 }
@@ -114,8 +114,8 @@ pub struct HirMethodDecl {
 pub struct HirCtorDef {
     pub name: HirName,
     pub generic_params: Vec<HirGenericParam>,
-    pub from_type: HirTypeName,
-    pub return_type: HirTypeName,
+    pub from_type: Option<HirTypeName>,
+    pub return_type: Option<HirTypeName>,
     pub is_pub_external: bool,
     pub span: Span,
 }
@@ -189,6 +189,9 @@ pub enum HirExprKind {
     },
     Tuple {
         elements: Vec<HirExprId>,
+    },
+    Return {
+        expr: Option<HirExprId>,
     },
     Ellipsis,
 }
