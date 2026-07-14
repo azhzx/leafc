@@ -1,0 +1,18 @@
+__define NUM __eval(1+1+1)
+__if NUM == 1
+    __warning "case 1"
+__elif NUM == 2
+    __warning "case 2"
+__elif NUM == 3
+    __warning "case 3"
+
+    __define OTHER_NUM 7
+    __if OTHER_NUM == 7
+        __warning "other num is 7"
+    __else
+        __warning "other num isn't 7"
+    __endif
+
+__else
+    __warning "other case"
+__endif

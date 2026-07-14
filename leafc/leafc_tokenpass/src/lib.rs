@@ -3,7 +3,7 @@ use std::fmt::format;
 use leafc_coreapi::ast::ExprNode;
 use leafc_coreapi::diagnostic::DiagMsg;
 use leafc_coreapi::lexer::{Token, TokenStream, TokenType};
-use leafc_coreapi::lexer::TokenType::{Comma, Eof, Ident, KwAbst, Lparen, NewLine};
+use leafc_coreapi::lexer::TokenType::{Comma, Eof, Ident, KwAbst, Lparen, Rparen, NewLine};
 use leafc_coreapi::parser::ParserError;
 use leafc_coreapi::source::{SourceId, Span};
 use leafc_coreapi::tokens_pass::{TokenPassApi, TokenPassError};
@@ -18,11 +18,34 @@ const KEYWORD_ENDIF: &str = "__endif";
 const KEYWORD_PANIC: &str = "__panic";
 const KEYWORD_WARNING: &str = "__warning";
 
+const KEYWORD_COUNTER: &str = "__counter";
+
 const PP_FUNCTION_IS_DEFINED: &str = "__is_defined";
 
-const PP_FUNCTION_IS_EVAL: &str = "__eval";
+const PP_FUNCTION_EVAL: &str = "__eval";
+
+const PP_FUNCTION_REPEAT: &str = "__repeat";
+
+const PP_FUNCTION_IDENT_TO_STRING: &str = "__ident_to_string";
+
+const PP_FUNCTION_IDENT_CONCAT: &str = "__ident_concat";
+
+const PP_FUNCTION_ARGS_OPTION: &str = "__only_has_rest_args";
 
 const REST_ARGS_MARKER: &str = "__rest_args";
+
+const PRE_DEFINES: [(&str, isize); 2] = [
+    if cfg!(target_os = "windows") {
+        ("__windows", 1)
+    } else if cfg!(target_os = "macos") {
+        ("__mac", 1)
+    } else if cfg!(target_os = "linux") {
+        ("__linux", 1)
+    } else {
+        ("__unknown", 1)
+    },
+    ("version", 1),
+];
 
 #[derive(PartialEq)]
 enum IfKeyword {
@@ -44,6 +67,7 @@ pub struct Preprocessor<'a> {
     source: SourceId,
     preprocessors: HashMap<String, PPDef>,
     expanding: HashSet<String>,
+    counter: usize,
     new_tokens: TokenStream,
 }
 
@@ -188,14 +212,14 @@ impl<'a> Preprocessor<'a> {
         }
     }
 
-    fn process_if_construct(
+    fn process_if(
         &mut self,
-        current_tokens: &[Token],
+        current_tokens: &Vec<Token>,
         index: &mut usize,
         result: &mut Vec<Token>,
-        emit: bool,
     ) -> Result<(), DiagMsg> {
         let mut cond_tokens = Vec::new();
+
         while *index < current_tokens.len()
             && current_tokens[*index].kind != TokenType::NewLine
         {
@@ -203,204 +227,109 @@ impl<'a> Preprocessor<'a> {
             *index += 1;
         }
 
-        if *index < current_tokens.len() {
-            *index += 1;
-        } else {
-            return Err(DiagMsg {
-                title: format!("{:?}", TokenPassError::InvalidPreprocessorArgumentList),
-                msg: "expected newline after __if condition".to_string(),
-                span: if *index > 0 {
-                    current_tokens[*index - 1].span.clone()
-                } else {
-                    Span {
-                        source_id: self.source,
-                        start_off: 0,
-                        end_off: 0,
-                    }
-                },
-            });
-        }
+        *index += 1; // newline
 
         cond_tokens = self.expand_all(cond_tokens)?;
         let mut cond_true = self.eval(cond_tokens) > 0;
 
-        if !emit {
-            self.skip_to_matching_endif(current_tokens, index);
-            return Ok(());
-        }
+        if cond_true {
 
-        // 根据条件值输出或跳过分支
-        loop {
-            if cond_true {
-                let stopped_at = self.copy_until_keyword(current_tokens, index, result)?;
-                return match stopped_at {
-                    IfKeyword::Endif => {
-                        *index += 1;
-                        Ok(())
-                    }
-                    IfKeyword::Elif | IfKeyword::Else => {
-                        self.skip_to_matching_endif(current_tokens, index);
-                        Ok(())
-                    }
-                }
-            } else {
-                let stopped_at = self.skip_until_keyword(current_tokens, index)?;
-                match stopped_at {
-                    IfKeyword::Endif => {
-                        *index += 1;
-                        return Ok(());
-                    }
-                    IfKeyword::Elif => {
-                        *index += 1;
-
-                        let mut elif_cond = Vec::new();
-                        while *index < current_tokens.len()
-                            && current_tokens[*index].kind != TokenType::NewLine
-                        {
-                            elif_cond.push(current_tokens[*index].clone());
-                            *index += 1;
-                        }
-                        if *index < current_tokens.len() {
-                            *index += 1;
-                        } else {
-                            return Err(DiagMsg {
-                                title: format!("{:?}", TokenPassError::InvalidPreprocessorArgumentList),
-                                msg: "expected newline after __elif condition".to_string(),
-                                span: if *index > 0 {
-                                    current_tokens[*index - 1].span.clone()
-                                } else {
-                                    Span {
-                                        source_id: self.source,
-                                        start_off: 0,
-                                        end_off: 0,
-                                    }
-                                },
-                            });
-                        }
-
-                        elif_cond = self.expand_all(elif_cond)?;
-                        cond_true = self.eval(elif_cond) > 0;
-                    }
-                    IfKeyword::Else => {
-                        *index += 1;
-                        cond_true = true;
-                    }
-                }
-            }
-        }
-    }
-
-
-    fn copy_until_keyword(
-        &mut self,
-        current_tokens: &[Token],
-        index: &mut usize,
-        result: &mut Vec<Token>,
-    ) -> Result<IfKeyword, DiagMsg> {
-        let mut depth = 0; // 当前所处的 if 嵌套深度, 0是最外层
-        while *index < current_tokens.len() {
-            let tok = &current_tokens[*index];
-            if tok.kind == TokenType::Ident {
-                match tok.text.as_str() {
-                    KEYWORD_IF => {
-                        if depth == 0 {
-                            *index += 1;
-                            self.process_if_construct(current_tokens, index, result, true)?;
-                            continue;
-                        } else {
-                            depth += 1;
-                        }
-                    }
-                    KEYWORD_ENDIF => {
-                        if depth == 0 {
-                            return Ok(IfKeyword::Endif);
-                        } else {
-                            depth -= 1;
-                        }
-                    }
-                    KEYWORD_ELIF => {
-                        if depth == 0 {
-                            return Ok(IfKeyword::Elif);
-                        }
-                    }
-                    KEYWORD_ELSE => {
-                        if depth == 0 {
-                            return Ok(IfKeyword::Else);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            result.push(current_tokens[*index].clone());
-            *index += 1;
-        }
-        unreachable!()
-    }
-
-    fn skip_until_keyword(
-        &mut self,
-        current_tokens: &[Token],
-        index: &mut usize,
-    ) -> Result<IfKeyword, DiagMsg> {
-        let mut depth = 0;
-        while *index < current_tokens.len() {
-            let tok = &current_tokens[*index];
-            if tok.kind == TokenType::Ident {
-                match tok.text.as_str() {
-                    KEYWORD_IF => {
-                        if depth == 0 {
-                            *index += 1;
-                            self.process_if_construct(current_tokens, index, &mut Vec::new(), false)?;
-                            continue;
-                        } else {
-                            depth += 1;
-                        }
-                    }
-                    KEYWORD_ENDIF => {
-                        if depth == 0 {
-                            return Ok(IfKeyword::Endif);
-                        } else {
-                            depth -= 1;
-                        }
-                    }
-                    KEYWORD_ELIF => {
-                        if depth == 0 {
-                            return Ok(IfKeyword::Elif);
-                        }
-                    }
-                    KEYWORD_ELSE => {
-                        if depth == 0 {
-                            return Ok(IfKeyword::Else);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            *index += 1;
-        }
-        unreachable!()
-    }
-
-    fn skip_to_matching_endif(&mut self, current_tokens: &[Token], index: &mut usize) {
-        let mut depth = 0;
-        while *index < current_tokens.len() {
-            let tok = &current_tokens[*index];
-            if tok.kind == TokenType::Ident {
-                match tok.text.as_str() {
+            let mut depth = 0;
+            while *index < current_tokens.len() {
+                let token = &current_tokens[*index];
+                match token.text.as_str() {
                     KEYWORD_IF => depth += 1,
                     KEYWORD_ENDIF => {
                         if depth == 0 {
-                            *index += 1;
-                            return;
-                        } else {
-                            depth -= 1;
+                            break;
+                        }
+                        depth -= 1;
+                    }
+                    KEYWORD_ELIF | KEYWORD_ELSE => {
+                        if depth == 0 {
+                            break;
                         }
                     }
                     _ => {}
                 }
+                result.push(token.clone());
+                *index += 1;
             }
-            *index += 1;
+
+            let mut depth = 0;
+            loop {
+                if *index >= current_tokens.len() { break; }
+                match current_tokens[*index].text.as_str() {
+                    KEYWORD_IF => depth += 1,
+                    KEYWORD_ENDIF => {
+                        if depth == 0 {
+                            *index += 1; // endif
+                            break;
+                        }
+                        depth -= 1;
+                    }
+                    _ => {}
+                }
+                *index += 1;
+            }
+        } else {
+            let mut depth = 0;
+            loop {
+                if *index >= current_tokens.len() {
+                    panic!()
+                }
+
+                match current_tokens[*index].text.as_str() {
+                    KEYWORD_IF => depth += 1,
+
+                    KEYWORD_ENDIF => {
+                        if depth == 0 {
+                            // 同级的 endif：整个 if 没有 elif/else，直接结束
+                            *index += 1;  // 跳过 endif 本身
+                            break;
+                        }
+                        depth -= 1;
+                    }
+
+                    KEYWORD_ELIF => {
+                        if depth == 0 {
+                            *index += 1;
+                            // 将这个 elif 当成 if 递归处理
+                            self.process_if(current_tokens, index, result)?;
+                            break;
+                        }
+                    }
+
+                    KEYWORD_ELSE => {
+                        if depth == 0 {
+                            *index += 1;  // 跳过 else 关键字
+                            let mut depth2 = 0;
+                            while *index < current_tokens.len() {
+                                let t = &current_tokens[*index];
+                                match t.text.as_str() {
+                                    KEYWORD_IF => depth2 += 1,
+                                    KEYWORD_ENDIF => {
+                                        if depth2 == 0 {
+                                            break;
+                                        }
+                                        depth2 -= 1;
+                                    }
+                                    _ => {}
+                                }
+                                result.push(t.clone());
+                                *index += 1;
+                            }
+                            *index += 1;
+                            break;
+                        }
+                    }
+
+                    _ => {}
+                }
+                *index += 1;
+            }
         }
+        Ok(())
     }
 
 
@@ -475,9 +404,6 @@ impl<'a> Preprocessor<'a> {
 
                     if depth != 0 { unreachable!() }
 
-                    // 跳过 ')'
-                    index += 1;
-
                     let rest_tokens = if def.has_rest_args {
                         let current_token_span = current_tokens[index].span.clone();
 
@@ -542,21 +468,67 @@ impl<'a> Preprocessor<'a> {
                             .map(|(p, a)| (p.clone(), a.clone()))
                             .collect();
 
+
                         // 展开 body
-                        for body_token in &def.body {
+                        let mut body_idx = 0;
+                        while body_idx < def.body.len() {
+                            let body_token = &def.body[body_idx];
+
                             if body_token.kind == Ident
                                 && body_token.text == REST_ARGS_MARKER
-                                && def.has_rest_args {
+                                && def.has_rest_args
+                            {
                                 result.extend(rest_tokens.clone());
+                                body_idx += 1;
 
                             } else if body_token.kind == Ident
-                                && arg_map.contains_key(&body_token.text) {
-
+                                && arg_map.contains_key(&body_token.text)
+                            {
                                 let mut v = arg_map.remove(&body_token.text).unwrap();
                                 result.append(&mut v);
+                                body_idx += 1;
 
+                            } else if body_token.kind == Ident
+                                && body_token.text == PP_FUNCTION_ARGS_OPTION
+                            {
+                                // 就地处理 __only_has_rest_args(...)
+                                body_idx += 1;
+
+                                if body_idx >= def.body.len() || def.body[body_idx].kind != Lparen {
+                                    continue;
+                                }
+                                body_idx += 1; // '('
+
+                                let mut va_content = Vec::new();
+                                let mut depth = 1;
+                                while body_idx < def.body.len() && depth > 0 {
+                                    match def.body[body_idx].kind {
+                                        Lparen => {
+                                            depth += 1;
+                                            va_content.push(def.body[body_idx].clone());
+                                        }
+                                        Rparen => {
+                                            depth -= 1;
+                                            if depth == 0 {
+                                                body_idx += 1; // 跳过 ')' 本身
+                                                break;
+                                            } else {
+                                                va_content.push(def.body[body_idx].clone());
+                                            }
+                                        }
+                                        _ => {
+                                            va_content.push(def.body[body_idx].clone());
+                                        }
+                                    }
+                                    body_idx += 1;
+                                }
+
+                                if !rest_tokens.is_empty() {
+                                    result.extend(va_content);
+                                }
                             } else {
                                 result.push(body_token.clone());
+                                body_idx += 1;
                             }
                         }
 
@@ -649,24 +621,159 @@ impl<'a> Preprocessor<'a> {
                 }
 
                 else if current_token.kind == TokenType::Ident
-                    && current_token.text == PP_FUNCTION_IS_EVAL {
+                    && current_token.text == KEYWORD_COUNTER {
+
+                    let current_span = current_tokens[index].span.clone();
                     index += 1;
+                    result.push(Token {
+                        kind: TokenType::Int,
+                        span: current_span,
+                        text: self.counter.to_string(),
+                    });
+                    self.counter += 1;
+                }
+
+                else if current_token.kind == TokenType::Ident
+                    && current_token.text == PP_FUNCTION_EVAL
+                {
 
                     index += 1;
-                    let mut expr = vec![];
+                    index += 1;                     // '('
+
+                    let mut expr = Vec::new();
                     let current_span = current_tokens[index].span.clone();
-                    while current_tokens[index].kind != TokenType::Rparen {
+                    let mut depth = 1;              // 已进入最外层 '('
+                    while index < current_tokens.len() && depth > 0 {
+                        match current_tokens[index].kind {
+                            Lparen => depth += 1,
+                            TokenType::Rparen => {
+                                depth -= 1;
+                                if depth == 0 {
+                                    index += 1;     // ')'
+                                    break;
+                                }
+                            }
+                            _ => {}
+                        }
                         expr.push(current_tokens[index].clone());
                         index += 1;
                     }
-                    index += 1;
 
                     let eval = self.eval(expr);
                     result.push(Token {
                         kind: TokenType::Int,
                         span: current_span,
                         text: eval.to_string(),
-                    })
+                    });
+                }
+
+                else if current_token.kind == TokenType::Ident
+                    && current_token.text == PP_FUNCTION_IDENT_TO_STRING
+                {
+                    index += 1; // __ident_to_string
+                    index += 1; // '('
+
+                    let mut arg_tokens = Vec::new();
+                    let mut depth = 1;
+                    while index < current_tokens.len() && depth > 0 {
+                        match current_tokens[index].kind {
+                            Lparen => {
+                                depth += 1;
+                                arg_tokens.push(current_tokens[index].clone());
+                            }
+                            Rparen => {
+                                depth -= 1;
+                                if depth == 0 {
+                                    index += 1; // ')'
+                                    break;
+                                }
+                                arg_tokens.push(current_tokens[index].clone());
+                            }
+                            _ => {
+                                arg_tokens.push(current_tokens[index].clone());
+                            }
+                        }
+                        index += 1;
+                    }
+
+                    if arg_tokens.len() != 1 || arg_tokens[0].kind != Ident {
+                        return Err(DiagMsg {
+                            title: format!("{:?}", TokenPassError::InvalidIdentToString),
+                            msg: "ident to string expects exactly one identifier argument".to_string(),
+                            span: current_token.span.clone(),
+                        });
+                    }
+
+                    let ident_text = arg_tokens[0].text.clone();
+                    result.push(Token {
+                        kind: TokenType::String,
+                        span: current_token.span.clone(),
+                        text: ident_text,
+                    });
+                    changed = true;
+                }
+
+                else if current_token.kind == TokenType::Ident
+                    && current_token.text == PP_FUNCTION_IDENT_CONCAT
+                {
+                    index += 1; // __ident_concat
+                    index += 1; // '('
+
+                    let mut concat_parts = Vec::new();
+                    let mut current_arg = Vec::new();
+                    let mut depth = 1;
+
+                    while index < current_tokens.len() && depth > 0 {
+                        match current_tokens[index].kind {
+                            Lparen => {
+                                depth += 1;
+                                current_arg.push(current_tokens[index].clone());
+                            }
+                            Rparen => {
+                                depth -= 1;
+                                if depth == 0 {
+                                    if !current_arg.is_empty() {
+                                        concat_parts.push(current_arg);
+                                    }
+                                    index += 1; // ')'
+                                    break;
+                                }
+                                current_arg.push(current_tokens[index].clone());
+                            }
+                            TokenType::Comma => {
+                                if depth == 1 {
+                                    // 外层逗号，分隔参数
+                                    concat_parts.push(current_arg.clone());
+                                    current_arg.clear();
+                                } else {
+                                    current_arg.push(current_tokens[index].clone());
+                                }
+                            }
+                            _ => {
+                                current_arg.push(current_tokens[index].clone());
+                            }
+                        }
+                        index += 1;
+                    }
+
+                    let mut final_ident = String::new();
+                    for arg in concat_parts {
+                        if arg.len() != 1 || arg[0].kind != Ident {
+                            return Err(DiagMsg {
+                                title: format!("{:?}", TokenPassError::InvalidIdentConcat),
+                                msg: "ident concat expects only identifier arguments".to_string(),
+                                span: current_token.span.clone(),
+                            });
+                        }
+                        final_ident.push_str(&arg[0].text);
+                    }
+
+                    result.push(Token {
+                        kind: Ident,
+                        span: current_token.span.clone(),
+                        text: final_ident,
+                    });
+                    changed = true;
                 }
 
                 else if current_token.kind == TokenType::Ident
@@ -674,10 +781,85 @@ impl<'a> Preprocessor<'a> {
 
                     index += 1;
 
-                    self.process_if_construct(&current_tokens, &mut index, &mut result, true)?;
+                    self.process_if(&current_tokens, &mut index, &mut result)?;
 
                     changed = true;
 
+                }
+
+                else if current_token.kind == TokenType::Ident
+                    && current_token.text == PP_FUNCTION_REPEAT
+                {
+                    // __repeat(times_expr, body)
+                    index += 1; // __repeat
+                    index += 1; // '('
+
+                    let mut times_tokens = Vec::new();
+                    let mut depth = 1;
+                    while index < current_tokens.len() && depth > 0 {
+                        match current_tokens[index].kind {
+                            Lparen => {
+                                depth += 1;
+                                times_tokens.push(current_tokens[index].clone());
+                            }
+                            Rparen => {
+                                depth -= 1;
+                                if depth == 0 {
+                                    break;
+                                }
+                                times_tokens.push(current_tokens[index].clone());
+                            }
+                            Comma => {
+                                if depth == 1 {
+                                    index += 1; // ','
+                                    break;
+                                } else {
+                                    times_tokens.push(current_tokens[index].clone());
+                                }
+                            }
+                            _ => {
+                                times_tokens.push(current_tokens[index].clone());
+                            }
+                        }
+                        index += 1;
+                    }
+
+                    // 展开并求值times
+                    let expanded_times = self.expand_all(times_tokens)?;
+                    let times_val = self.eval(expanded_times);
+                    if times_val < 0 {
+                        return Err(DiagMsg {
+                            title: "repeat count error".to_string(),
+                            msg: "repeat count must be non-negative".to_string(),
+                            span: current_token.span.clone(),
+                        });
+                    }
+                    let times = times_val as usize;
+
+                    let mut body_tokens = Vec::new();
+                    let mut depth = 0;
+                    while index < current_tokens.len() {
+                        match current_tokens[index].kind {
+                            Lparen => depth += 1,
+                            Rparen => {
+                                if depth == 0 {
+                                    index += 1; // ')'
+                                    break;
+                                }
+                                depth -= 1;
+                            }
+                            _ => {}
+                        }
+                        body_tokens.push(current_tokens[index].clone());
+                        index += 1;
+                    }
+
+                    for _ in 0..times {
+                        let expanded_body = self.expand_all(body_tokens.clone())?;
+                        result.extend(expanded_body);
+                    }
+
+                    changed = true;
                 }
 
                 else if current_token.kind == TokenType::Ident
@@ -739,23 +921,33 @@ impl<'a> Preprocessor<'a> {
         Ok(expanded)
     }
 
-    pub fn pre_definitions(&mut self, names: Vec<String>) -> &mut Self {
-        for name in names {
+    fn pre_definitions(&mut self, names: &[(String, isize)]) {
+        for (name, value) in names {
             self.preprocessors.entry(name.clone()).or_insert(PPDef {
                 name_token: Token {
                     kind: TokenType::Ident,
                     span: Span {
                         source_id: self.source,
                         start_off: 0,
-                        end_off: 0 },
+                        end_off: 0
+                    },
                     text: name.clone(),
                 },
                 params: vec![],
                 has_rest_args: false,
-                body: vec![],
+                body: vec![
+                    Token {
+                        kind: TokenType::Int,
+                        span: Span {
+                            source_id: self.source,
+                            start_off: 0,
+                            end_off: 0
+                        },
+                        text: value.to_string(),
+                    }
+                ],
             });
         }
-        self
     }
 
 }
@@ -767,10 +959,16 @@ impl<'a> TokenPassApi<'a> for Preprocessor<'a> {
             preprocessors: HashMap::new(),
             source,
             expanding: HashSet::new(),
+            counter: 0,
             new_tokens: TokenStream { data: Vec::new() },
         }
     }
     fn pass(&mut self) -> Result<TokenStream, DiagMsg> {
+        let defines: Vec<(String, isize)> = PRE_DEFINES
+            .iter()
+            .map(|(name, val)| (name.to_string(), *val))
+            .collect();
+        self.pre_definitions(&defines);
         Ok(TokenStream {
             data: self.expand_all(self.tokens.data.clone())?
         })

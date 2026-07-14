@@ -1,8 +1,2 @@
-__define NUM __eval(1+2)
-__if NUM == 1
-__panic "case 1"
-__elif NUM == 2
-__panic "case 2"
-__else
-__panic "case 3"
-__endif
+__define PRINT(fmt, ...) println(fmt __only_has_rest_args(,) __rest_args)
+PRINT("x", "t", "y")

@@ -6,7 +6,9 @@ use crate::source::SourceId;
 pub enum TokenPassError {
     InvalidPreprocessorParameterDeclare,
     InvalidPreprocessorArgumentList,
-    UserPreprocessorPanic
+    UserPreprocessorPanic,
+    InvalidIdentToString,
+    InvalidIdentConcat
 }
 
 pub trait TokenPassApi<'a> {

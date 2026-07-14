@@ -203,19 +203,7 @@ impl<'a> Parser<'a> {
     fn pp(source_id: SourceId, token_stream: &TokenStream) -> Result<TokenStream, DiagMsg> {
         // 预处理
         let mut pp = Preprocessor::new(&token_stream, source_id);
-        let new_tokens = pp.pre_definitions(
-            vec![
-                if cfg!(target_os = "windows") {
-                    "__windows".to_string()
-                } else if cfg!(target_os = "macos") {
-                    "__mac".to_string()
-                } else if cfg!(target_os = "linux") {
-                    "__linux".to_string()
-                } else {
-                    "__unknown".to_string()
-                }
-            ]
-        ).pass()?;
+        let new_tokens = pp.pass()?;
 
         println!("\n\n== token pass ==\n\n");
 
