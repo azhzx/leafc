@@ -13,6 +13,7 @@ use leafc_namepass::NamePass;
 use leafc_parser::Parser;
 use std::fs;
 use std::path::PathBuf;
+use realworld_io_api::RealWorldIOApi;
 
 const COMPILER_VERSION: &'static str = env!("CARGO_PKG_VERSION");
 
@@ -23,6 +24,19 @@ const DIAG_COLORS: DiagTextColor = DiagTextColor {
     diag_source_name: "\x1b[35m",
     diag_reset: "\x1b[0m",
 };
+
+pub struct RealWorld {}
+impl RealWorldIOApi for RealWorld {
+    fn println(text: &String) {
+        println!("{}", text);
+    }
+    fn print(text: &String) {
+        print!("{}", text);
+    }
+    fn read_file(path: &PathBuf) -> std::io::Result<String> {
+        fs::read_to_string(&path)
+    }
+}
 
 pub struct NativeCompiler {
     source_pool: SourcePool,
@@ -43,7 +57,7 @@ impl NativeCompiler {
                         .to_string_lossy()
                         .to_string();
 
-                    let content = fs::read_to_string(&path)?;
+                    let content = RealWorld::read_file(&path)?;
                     let source_id = self.source_pool.add_source(abs_path.clone(), content);
 
                     self.abs_path_source_map.insert(abs_path, source_id);
@@ -98,23 +112,19 @@ impl CompilerApi for NativeCompiler {
             }
         };
 
-        let mut name_pass = NamePass::new(ast);
+        let mut name_pass = NamePass::new(&ast);
         let name_pass_result = match name_pass.pass() {
-            Ok(res @ NamePassResult {
-                do_scope_map,
-                fun_scope_map,
-                pool: tree
-            })  => {
+            Ok(res @ NamePassResult { .. })  => {
                 println!("=== scope tree ===");
-                println!("{:#?}", tree);
+                println!("{:#?}", res.pool);
                 println!("=== === ===");
 
                 println!("=== fun-scope map ===");
-                println!("{:#?}", fun_scope_map);
+                println!("{:#?}", res.fun_scope_map);
                 println!("=== === ===");
 
                 println!("=== do-scope map ===");
-                println!("{:#?}", do_scope_map);
+                println!("{:#?}", res.do_scope_map);
                 println!("=== === ===");
                 res
             },
@@ -126,7 +136,7 @@ impl CompilerApi for NativeCompiler {
         };
 
         let crate_name = dir_path_buf.file_stem().unwrap().to_str().unwrap().to_string();
-        let mut hir_lower = HirLower::new(ast, &name_pass_result, crate_name);
+        let mut hir_lower = HirLower::new(&ast, name_pass_result, crate_name);
 
         let hir = match hir_lower.lower() {
             Ok(hir) => {

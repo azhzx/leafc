@@ -12,10 +12,10 @@ pub enum HirLowerError {
 pub trait HirLowerApi<'a> {
     fn new(
         crate_ast: &'a CrateAst,
-        name_pass_result: &'a NamePassResult,
+        name_pass_result: NamePassResult,
 
         crate_name: String
     ) -> Self;
 
-    fn lower(&mut self) -> Result<&HirCrate, DiagMsg>;
+    fn lower(self) -> Result<HirCrate, DiagMsg>;
 }

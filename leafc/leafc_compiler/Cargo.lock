@@ -11,6 +11,7 @@ dependencies = [
  "leafc_hirlower",
  "leafc_namepass",
  "leafc_parser",
+ "realworld_io_api",
 ]
 
 [[package]]
@@ -60,3 +61,7 @@ version = "0.1.0"
 dependencies = [
  "leafc_coreapi",
 ]
+
+[[package]]
+name = "realworld_io_api"
+version = "0.1.0"

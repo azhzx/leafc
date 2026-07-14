@@ -1,10 +1,19 @@
 use crate::ast::CrateAst;
 use crate::diagnostic::DiagMsg;
+use crate::hir::HirCrate;
+use crate::name_pass::NamePassResult;
+use crate::type_context::{HirDeclTypeMap, HirExprTypeMap};
 
 pub enum TypeCheckerError {
     
 }
 
-pub trait TypeCheckerApi {
+pub struct TypeCheckerResult {
+    pub decl_type_map: HirDeclTypeMap,
+    pub expr_type_map: HirExprTypeMap,
+}
 
+pub trait TypeCheckerApi {
+    fn new(hir_crate: HirCrate) -> Self;
+    fn check(self) -> Result<TypeCheckerResult, DiagMsg>;
 }

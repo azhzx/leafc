@@ -536,13 +536,13 @@ impl<'a> NamePassApi<'a> for NamePass<'a> {
         Ok(())
     }
 
-    fn pass(&mut self) -> Result<NamePassResult, DiagMsg> {
+    fn pass(mut self) -> Result<NamePassResult, DiagMsg> {
         self.pass_scope()?;
         self.pass_name()?;
         Ok(NamePassResult {
-            pool: &self.scope_pool,
-            do_scope_map: &self.do_scope_map,
-            fun_scope_map: &self.fun_scope_map,
+            pool: self.scope_pool,
+            do_scope_map: self.do_scope_map,
+            fun_scope_map: self.fun_scope_map,
         })
     }
 }

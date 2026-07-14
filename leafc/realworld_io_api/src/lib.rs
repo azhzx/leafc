@@ -1,7 +1,7 @@
+use std::path::PathBuf;
 
-pub trait RealWorldIO {
-    fn println(text: String);
-    fn print(text: String);
-    fn read_file(path: String);
-    fn write_file(path: String, text: String);
+pub trait RealWorldIOApi {
+    fn println(text: &String);
+    fn print(text: &String);
+    fn read_file(path: &PathBuf) -> std::io::Result<String>;
 }

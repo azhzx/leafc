@@ -9,13 +9,19 @@ use leafc_coreapi::source::{SourceId, Span};
 use leafc_coreapi::tokens_pass::{TokenPassApi, TokenPassError};
 
 const KEYWORD_PREPROCESS: &str = "__define";
+
 const KEYWORD_DELETE_PREPROCESS: &str = "__delete";
+
 const KEYWORD_IF: &str = "__if";
+
 const KEYWORD_ELIF: &str = "__elif";
+
 const KEYWORD_ELSE: &str = "__else";
+
 const KEYWORD_ENDIF: &str = "__endif";
 
 const KEYWORD_PANIC: &str = "__panic";
+
 const KEYWORD_WARNING: &str = "__warning";
 
 const KEYWORD_COUNTER: &str = "__counter";

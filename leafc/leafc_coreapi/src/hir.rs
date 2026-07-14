@@ -1,22 +1,26 @@
 use std::collections::HashMap;
+use crate::name_pass::NamePassResult;
 use crate::scope::{ScopeId, SymId};
 use crate::source::Span;
-
+use crate::type_context::{HirDeclTypeMap, TyId};
 
 #[derive(Debug, Clone)]
 pub struct HirCrate {
     pub name: String,
+    
     pub main_fun: Option<HirDeclId>,
+    
     pub hir_expr_pool: Vec<HirExpr>,
+    
     pub hir_decl_pool: Vec<HirDecl>,
+    
     /// 模块中对外公开的声明(PublicExternal)
     pub pub_decl_ids: Vec<HirDeclId>,
+    
+    pub type_map: HirDeclTypeMap,
+    
+    pub name_pass_result: NamePassResult
 }
-
-/// 将声明 id 映射到其推导出的或标注的类型 id(HirLower阶段只做标记, 推导和检查留给TypeChecker)
-pub type HirTypeMap = HashMap<HirDeclId, TyId>;
-
-pub type TyId = usize;
 
 pub type HirDeclId = usize;
 pub type HirExprId = usize;
@@ -225,42 +229,4 @@ pub enum HirBinOp {
 pub enum HirUnaryOp {
     Not,
     Neg,
-}
-
-pub enum TypeKind {
-    Int8,
-    Int16,
-    Int32,
-    Int64,
-    UInt8,
-    UInt16,
-    UInt32,
-    UInt64,
-    Float32,
-    Float64,
-    Never,
-    Ptr {
-        ref_to: TyId
-    },
-    Ref {
-        ref_to: TyId
-    },
-    MutRef {
-        ref_to: TyId
-    },
-
-    Alias {
-        ref_to: TyId,
-        def: HirDeclId
-    },
-    Struct {
-        def: HirDeclId
-    },
-    Union {
-        unions: Vec<TyId>,
-        def: HirDeclId
-    },
-    Tuple {
-        members: Vec<TyId>,
-    }
 }

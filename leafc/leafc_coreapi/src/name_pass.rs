@@ -16,15 +16,16 @@ pub enum NamePassError {
 }
 
 
-pub struct NamePassResult<'a> {
-    pub pool: &'a ScopePool,
-    pub do_scope_map: &'a DoScopeMap,
-    pub fun_scope_map: &'a FunScopeMap,
+#[derive(Debug, Clone)]
+pub struct NamePassResult {
+    pub pool: ScopePool,
+    pub do_scope_map: DoScopeMap,
+    pub fun_scope_map: FunScopeMap,
 }
 
 pub trait NamePassApi<'a> {
     fn new(ast: &'a CrateAst) -> Self;
     fn pass_scope(&mut self) -> Result<(), DiagMsg>;
     fn pass_name(&mut self) -> Result<(), DiagMsg>;
-    fn pass(&mut self) -> Result<NamePassResult, DiagMsg>;
+    fn pass(self) -> Result<NamePassResult, DiagMsg>;
 }

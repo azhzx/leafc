@@ -69,7 +69,7 @@ pub enum SymbolKind {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Scope {
     pub parent: Option<ScopeId>,
     pub children: Vec<ScopeId>,
@@ -77,7 +77,7 @@ pub struct Scope {
     pub symbols: Vec<SymId>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ScopePool {
     scopes: Vec<Scope>,
     top_scopes: Vec<ScopeId>,

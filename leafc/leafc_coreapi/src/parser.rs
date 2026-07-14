@@ -33,6 +33,6 @@ pub trait ParserApi<'a> {
         source_pool: &'a mut SourcePool,
         abs_path_source_map: &'a AbsPathSourceMap
     ) -> Self;
-    fn parse(&mut self)
-        -> Result<&CrateAst, DiagMsg>;
+    fn parse(self)
+        -> Result<CrateAst, DiagMsg>;
 }

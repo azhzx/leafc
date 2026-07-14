@@ -5,7 +5,7 @@ use leafc_coreapi::diagnostic::DiagMsg;
 use leafc_coreapi::hir::{
     HirBinOp, HirCtorDef, HirDecl, HirDeclId, HirDeclKind, HirCrate, HirExpr,
     HirExprId, HirExprKind, HirFieldDef, HirGenericParam, HirLit, HirMethodDecl,
-    HirName, HirParam, HirTypeName, HirUnaryOp, TyId,
+    HirName, HirParam, HirTypeName, HirUnaryOp,
 };
 use leafc_coreapi::hir_lower::HirLowerApi;
 use leafc_coreapi::name_pass::{DoScopeMap, FunScopeMap, NamePassResult};
@@ -13,7 +13,6 @@ use leafc_coreapi::scope::{ScopeId, ScopePool, Symbol};
 
 pub struct HirLower<'a> {
     ast_crate: &'a CrateAst,
-    name_pass_result: &'a NamePassResult<'a>,
     hir: HirCrate,
 }
 
@@ -43,7 +42,7 @@ impl<'a> HirLower<'a> {
         scope_id: ScopeId,
         name: &str,
     ) -> Option<&Symbol> {
-        self.name_pass_result
+        self.hir.name_pass_result
             .pool
             .lookup(scope_id, name)
             .map(|(sym, _)| sym)
@@ -74,7 +73,7 @@ impl<'a> HirLower<'a> {
 
     /// 获取声明自身的作用域
     fn get_decl_scope(&self, decl_id: usize) -> Option<ScopeId> {
-        self.name_pass_result.pool
+        self.hir.name_pass_result.pool
             .decl_node_scope_map
             .get(&decl_id)
             .copied()
@@ -475,6 +474,7 @@ impl<'a> HirLower<'a> {
             }
             ExprNodeKind::Do { exprs } => {
                 let do_scope = self
+                    .hir
                     .name_pass_result
                     .do_scope_map
                     .get(&expr_id)
@@ -591,25 +591,26 @@ impl<'a> HirLower<'a> {
 impl<'a> HirLowerApi<'a> for HirLower<'a> {
     fn new(
         ast_module: &'a CrateAst,
-        name_pass_result: &'a NamePassResult,
+        name_pass_result: NamePassResult,
         module_name: String,
     ) -> Self {
 
 
         Self {
             ast_crate: ast_module,
-            name_pass_result,
             hir: HirCrate {
                 name: module_name,
                 main_fun: None,
                 hir_expr_pool: vec![],
                 hir_decl_pool: vec![],
                 pub_decl_ids: vec![],
+                type_map: HashMap::new(),
+                name_pass_result,
             },
         }
     }
 
-    fn lower(&mut self) -> Result<&HirCrate, DiagMsg> {
+    fn lower(mut self) -> Result<HirCrate, DiagMsg> {
         let mut top_decls: Vec<(usize, &DeclNode)> = Vec::new();
 
         for decl in &self.ast_crate.decl_pool {
@@ -627,6 +628,6 @@ impl<'a> HirLowerApi<'a> for HirLower<'a> {
             }
         }
 
-        Ok(&self.hir)
+        Ok(self.hir)
     }
 }

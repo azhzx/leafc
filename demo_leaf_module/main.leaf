@@ -1,2 +1,6 @@
-__define PRINT(fmt, ...) println(fmt __only_has_rest_args(,) __rest_args)
-PRINT("x", "t", "y")
+type Point
+    x: Int
+    y: Int
+
+fun main()
+    let x = Point(1,0)

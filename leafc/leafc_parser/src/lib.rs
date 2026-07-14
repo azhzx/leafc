@@ -299,7 +299,7 @@ impl<'a> ParserApi<'a> for Parser<'a> {
 
 
     /// main dispatcher
-    fn parse(&mut self) -> Result<&CrateAst, DiagMsg> {
+    fn parse(mut self) -> Result<CrateAst, DiagMsg> {
         let main_file_path = self.dir_abs_path.join("main.leaf");
 
         let main_file_source_id = self.abs_path_sources.get(
@@ -315,6 +315,6 @@ impl<'a> ParserApi<'a> for Parser<'a> {
 
         self.ast.decl_pool.push(main_module);
 
-        Ok(&self.ast)
+        Ok(self.ast)
     }
 }
