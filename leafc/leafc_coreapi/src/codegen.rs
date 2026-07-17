@@ -1,5 +1,5 @@
 use crate::diagnostic::DiagMsg;
 
-pub trait CodegenApi<'a> {
+pub trait CodegenApi {
     type Output;
 }

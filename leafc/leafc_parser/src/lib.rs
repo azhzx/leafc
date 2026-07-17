@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use leafc_coreapi;
-use leafc_coreapi::ast::{AtomExprNode, DeclNode, DeclNodeId, ExprNode, CrateAst, GenericVar, Param, TypeNameString, Visibility, DeclNodeKind};
+use leafc_coreapi::ast::{AtomExprNode, DeclNode, DeclNodeId, ExprNode, CrateAst, GenericVar, Param, TypeNameString, Visibility, DeclNodeKind, AnnotationDecl};
 use leafc_coreapi::diagnostic::DiagMsg;
 use leafc_coreapi::lexer::{LexerApi, Token, TokenStream, TokenType};
 use leafc_coreapi::lexer::TokenType::Lparen;
@@ -24,7 +24,7 @@ pub struct Parser<'a> {
     dir_abs_path: PathBuf,
     tokens: TokenStream,
     index: usize,
-    source_pool: &'a mut SourcePool,
+    source_pool: &'a SourcePool,
     abs_path_sources: &'a AbsPathSourceMap,
     ast: CrateAst,
 }
@@ -218,6 +218,46 @@ impl<'a> Parser<'a> {
         let mut top_decls = vec![];
 
         while self.current_token().kind != TokenType::Eof {
+            // handle ann
+            let mut ann = vec![];
+            while self.current_token().kind == TokenType::Hash {
+                self.skip_token();
+
+                let ann_name = self.current_token().text.clone();
+                self.skip_token_only(TokenType::Ident)?;
+
+                let mut ann_args = vec![];
+
+                if self.current_token().kind == TokenType::Lparen {
+                    self.skip_token(); // '('
+                    let call_span = self.current_token().span.clone();
+                    while self.current_token().kind != TokenType::Rparen {
+                        ann_args.push(self.current_token().text.clone());
+                        self.skip_token();
+                        if self.current_token().kind == TokenType::Comma {
+                            self.skip_token();
+                        } else if self.current_token().kind == TokenType::Rparen {
+                            break;
+                        } else {
+                            return Err(DiagMsg {
+                                title: format!("{:?}", ParserError::InvalidCallArgumentList),
+                                msg: "invalid call argument list".to_string(),
+                                span: call_span,
+                            });
+                        }
+                    }
+                    self.skip_token_only(TokenType::Rparen)?;
+                }
+
+                self.skip_token_only(TokenType::NewLine)?;
+
+                ann.push(AnnotationDecl {
+                    name: ann_name,
+                    args: ann_args,
+                });
+            }
+
+
             let mut visibility = Visibility::Private;
             if self.current_token().kind == TokenType::KwPub {
                 self.skip_token();
@@ -234,22 +274,22 @@ impl<'a> Parser<'a> {
             match self.current_token().kind {
                 TokenType::KwUse => self.parse_use_decl()?,
                 TokenType::KwFun => {
-                    let decl_node = self.parse_fun_decl(visibility)?;
+                    let decl_node = self.parse_fun_decl(visibility, ann)?;
                     self.ast.decl_pool.push(decl_node);
                     top_decls.push(self.ast.decl_pool.len() - 1);
                 },
                 TokenType::KwExternal => {
-                    let decl_node =self.parse_external_decl(visibility)?;
+                    let decl_node =self.parse_external_decl(visibility, ann)?;
                     self.ast.decl_pool.push(decl_node);
                     top_decls.push(self.ast.decl_pool.len() - 1);
                 },
                 TokenType::KwType => {
-                    let decl_node =self.parse_type_decl(visibility)?;
+                    let decl_node =self.parse_type_decl(visibility, ann)?;
                     self.ast.decl_pool.push(decl_node);
                     top_decls.push(self.ast.decl_pool.len() - 1);
                 },
                 TokenType::KwAbst => {
-                    let decl_node =self.parse_abstract_decl(visibility)?;
+                    let decl_node =self.parse_abstract_decl(visibility, ann)?;
                     self.ast.decl_pool.push(decl_node);
                     top_decls.push(self.ast.decl_pool.len() - 1);
                 },
@@ -271,6 +311,7 @@ impl<'a> Parser<'a> {
             kind: DeclNodeKind::FileUnit {
                 top_decls,
             },
+            annotations: vec![],
         })
     }
 
@@ -279,7 +320,7 @@ impl<'a> Parser<'a> {
 impl<'a> ParserApi<'a> for Parser<'a> {
     fn new(
         dir_abs_path: PathBuf,
-        source_pool: &'a mut SourcePool,
+        source_pool: &'a SourcePool,
         abs_path_source_map: &'a AbsPathSourceMap
     ) -> Self {
         Parser {
@@ -292,7 +333,6 @@ impl<'a> ParserApi<'a> for Parser<'a> {
                 external_requires: vec![],
                 expr_pool: vec![],
                 decl_pool: vec![],
-                type_name_pool: vec![],
             },
         }
     }

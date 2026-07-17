@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use crate::name_pass::NamePassResult;
 use crate::scope::{ScopeId, SymId};
 use crate::source::Span;
-use crate::type_context::{HirDeclTypeMap, TyId};
+use crate::type_context::{HirDeclTypeMap, TyId, TypeUnit};
 
 #[derive(Debug, Clone)]
 pub struct HirCrate {
@@ -19,6 +19,8 @@ pub struct HirCrate {
     
     pub type_map: HirDeclTypeMap,
     
+    pub type_pool: Vec<TypeUnit>,
+
     pub name_pass_result: NamePassResult
 }
 
@@ -38,6 +40,12 @@ pub struct HirTypeName {
     pub args: Vec<HirTypeName>,
 }
 
+#[derive(Debug, Clone)]
+pub struct HirGenericParam {
+    pub name: HirName,
+    pub constraints: Vec<HirTypeName>,
+}
+
 
 #[derive(Debug, Clone)]
 pub struct HirDecl {
@@ -46,12 +54,6 @@ pub struct HirDecl {
     pub is_pub_external: bool, // public, private在NamePass已被处理, 只剩pub(external)
     pub hir_id: HirDeclId,
     pub span: Span,
-}
-
-#[derive(Debug, Clone)]
-pub struct HirGenericParam {
-    pub name: HirName,
-    pub constraints: Vec<HirTypeName>,
 }
 
 #[derive(Debug, Clone)]
@@ -65,7 +67,7 @@ pub enum HirDeclKind {
     Struct {
         generic_params: Vec<HirGenericParam>,
         fields: Vec<HirFieldDef>,
-        implemented_absts: Vec<HirTypeName>,
+        implemented_abstracts: Vec<HirTypeName>,
     },
     TypeAlias {
         generic_params: Vec<HirGenericParam>,
@@ -74,12 +76,12 @@ pub enum HirDeclKind {
     ADT {
         generic_params: Vec<HirGenericParam>,
         ctors: Vec<HirCtorDef>,
-        implemented_absts: Vec<HirTypeName>,
+        implemented_abstracts: Vec<HirTypeName>,
     },
     Abstract {
         generic_params: Vec<HirGenericParam>,
         methods: Vec<HirMethodDecl>,
-        super_absts: Vec<HirTypeName>,
+        super_abstracts: Vec<HirTypeName>,
     },
     CType,
     External {

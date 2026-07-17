@@ -148,7 +148,7 @@ impl<'a> HirLower<'a> {
                 HirDeclKind::Abstract {
                     generic_params,
                     methods: hir_methods,
-                    super_absts,
+                    super_abstracts: super_absts,
                 }
             }
             DeclNodeKind::TypeStruct {
@@ -173,7 +173,7 @@ impl<'a> HirLower<'a> {
                 HirDeclKind::Struct {
                     generic_params,
                     fields: hir_fields,
-                    implemented_absts,
+                    implemented_abstracts: implemented_absts,
                 }
             }
             DeclNodeKind::TypeAlias {
@@ -212,7 +212,7 @@ impl<'a> HirLower<'a> {
                 HirDeclKind::ADT {
                     generic_params,
                     ctors: hir_ctors,
-                    implemented_absts,
+                    implemented_abstracts: implemented_absts,
                 }
             }
             DeclNodeKind::CType => HirDeclKind::CType,
@@ -221,14 +221,9 @@ impl<'a> HirLower<'a> {
                 params,
                 return_type_str,
             } => {
-                todo!();
-
-                // HirDeclKind::External {
-                //     sym_name: sym_name.clone(),
-                //     params: hir_params,
-                //     return_type,
-                // }
+                todo!()
             }
+            DeclNodeKind::TypeDecl => todo!(),
             DeclNodeKind::FileUnit { .. } => unreachable!("FileUnit should be flattened"),
         };
 
@@ -605,6 +600,7 @@ impl<'a> HirLowerApi<'a> for HirLower<'a> {
                 hir_decl_pool: vec![],
                 pub_decl_ids: vec![],
                 type_map: HashMap::new(),
+                type_pool: vec![],
                 name_pass_result,
             },
         }

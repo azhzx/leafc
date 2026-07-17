@@ -53,10 +53,10 @@ pub type TypeVarId = usize;
 pub trait TypeContextApi {
     fn push_concrete(&mut self, ty: TypeUnit) -> TyId;
     fn new_ty_var(&mut self, span: Span) -> TyId;
-    fn resolve(&self, id: TyId) -> TyId;
-    fn kind_of(&self, id: TyId) -> &TypeKind;
+    fn resolve(&self, id: TyId) -> Result<TyId, DiagMsg>;
+    fn kind_of(&self, id: TyId) -> Result<TypeKind, DiagMsg>;
     /// 合一
-    fn unify(&mut self, lhs: TyId, rhs: TyId) -> Result<(), DiagMsg>;
+    fn unify(&mut self, lhs: TyId, rhs: TyId, span: Span) -> Result<(), DiagMsg>;
     fn bind_var(&mut self, var: TyId, ty: TyId) -> Result<(), DiagMsg>;
-    fn occurs(&self, var: TyId, ty: TyId) -> bool;
+    fn occurs(&self, var: TyId, ty: TyId) -> Result<bool, DiagMsg>;
 }

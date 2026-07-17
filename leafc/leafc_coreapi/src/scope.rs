@@ -55,7 +55,7 @@ pub enum SymbolKind {
 
     Generic,
 
-    /// A ADT Constructor
+    /// an ADT Constructor
     Constructor,
 
     /// A field of a struct

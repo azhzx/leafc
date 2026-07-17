@@ -30,7 +30,7 @@ pub enum ParserError {
 pub trait ParserApi<'a> {
     fn new(
         dir_abs_path: PathBuf,
-        source_pool: &'a mut SourcePool,
+        source_pool: &'a SourcePool,
         abs_path_source_map: &'a AbsPathSourceMap
     ) -> Self;
     fn parse(self)

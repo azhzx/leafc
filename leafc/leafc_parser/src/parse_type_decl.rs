@@ -1,16 +1,27 @@
-use leafc_coreapi::ast::{Ctor, DeclNode, DeclNodeKind, Field, Param, TypeNameString, Visibility};
+use leafc_coreapi::ast::{AnnotationDecl, Ctor, DeclNode, DeclNodeKind, Field, Param, TypeNameString, Visibility};
 use leafc_coreapi::diagnostic::DiagMsg;
 use leafc_coreapi::lexer::{Token, TokenType};
 use leafc_coreapi::parser::{ParserError};
 use crate::Parser;
 
 impl<'a> Parser<'a> {
-    pub fn parse_type_decl(&mut self, visibility: Visibility) -> Result<DeclNode, DiagMsg> {
+    pub fn parse_type_decl(&mut self, visibility: Visibility, ann: Vec<AnnotationDecl>) -> Result<DeclNode, DiagMsg> {
         self.skip_token();
         let name_token = self.current_token();
         let name = name_token.text.clone();
         let name_span = name_token.span.clone();
         self.skip_token_only(TokenType::Ident)?;
+
+        if self.current_token().kind == TokenType::Semicolon {
+            self.skip_token();
+            return Ok(DeclNode {
+                name,
+                visibility,
+                span: name_span,
+                kind: DeclNodeKind::TypeDecl,
+                annotations: ann,
+            })
+        }
 
         let mut generic = if self.current_token().kind == TokenType::Lbracket {
             self.handle_generic_param()?
@@ -55,6 +66,7 @@ impl<'a> Parser<'a> {
                         has_abst: impls,
                         generic_vars: generic,
                     },
+                    annotations: ann,
                 })
             }
             TokenType::NewLine => {
@@ -86,7 +98,7 @@ impl<'a> Parser<'a> {
 
                     self.skip_token_if_newlines()?;
                     self.skip_token_only(TokenType::Dedent)?;
-                    return Ok(DeclNode {
+                    Ok(DeclNode {
                         name,
                         visibility,
                         span: name_span,
@@ -96,6 +108,7 @@ impl<'a> Parser<'a> {
                             has_abst: impls,
                             generic_vars: generic,
                         },
+                        annotations: ann,
                     })
                 } else if self.current_token().kind == TokenType::Pipe {
 
@@ -147,6 +160,7 @@ impl<'a> Parser<'a> {
                             has_abst: impls,
                             generic_vars: generic,
                         },
+                        annotations: ann,
                     })
                 } else {
                     return Err(DiagMsg{

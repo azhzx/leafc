@@ -1,11 +1,11 @@
-use leafc_coreapi::ast::{DeclNode, DeclNodeKind, MethodDecl, Param, TypeNameString, Visibility};
+use leafc_coreapi::ast::{AnnotationDecl, DeclNode, DeclNodeKind, MethodDecl, Param, TypeNameString, Visibility};
 use leafc_coreapi::diagnostic::DiagMsg;
 use leafc_coreapi::lexer::{Token, TokenType};
 use leafc_coreapi::parser::{ParserError};
 use crate::Parser;
 
 impl<'a> Parser<'a> {
-    pub fn parse_abstract_decl(&mut self, visibility: Visibility) -> Result<DeclNode, DiagMsg> {
+    pub fn parse_abstract_decl(&mut self, visibility: Visibility, ann: Vec<AnnotationDecl>) -> Result<DeclNode, DiagMsg> {
         self.skip_token();
         let name_token = self.current_token();
         let name = name_token.text.clone();
@@ -120,6 +120,7 @@ impl<'a> Parser<'a> {
             name,
             visibility,
             span: name_span,
+            annotations: ann,
             kind: DeclNodeKind::Abstract {
                 has_abst: impls,
                 generic_vars: generic,

@@ -175,11 +175,18 @@ pub struct MethodDecl {
 }
 
 #[derive(Debug, Clone)]
+pub struct AnnotationDecl {
+    pub name: String,
+    pub args: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
 pub struct DeclNode {
     pub name: String,
     pub visibility: Visibility,
     pub span: Span,
     pub kind: DeclNodeKind,
+    pub annotations: Vec<AnnotationDecl>,
 }
 
 #[derive(Debug, Clone)]
@@ -211,6 +218,7 @@ pub enum DeclNodeKind {
         has_abst: Vec<String>,
         generic_vars: Vec<GenericVar>,
     },
+    TypeDecl,
     ADT {
         has_abst: Vec<String>,
         generic_vars: Vec<GenericVar>,
@@ -246,5 +254,4 @@ pub struct CrateAst {
     pub external_requires: Vec<Require>,
     pub expr_pool: Vec<ExprNode>,
     pub decl_pool: Vec<DeclNode>,
-    pub type_name_pool: Vec<TypeNameString>,
 }

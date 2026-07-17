@@ -1,4 +1,4 @@
-use std::fmt::Debug;
+use unicode_xid::UnicodeXID;
 use leafc_coreapi::diagnostic::DiagMsg;
 use leafc_coreapi::lexer::{Document, DocumentString, LexerApi, LexerError, Token, TokenStream, TokenType};
 use leafc_coreapi::lexer::LexerError::{InvalidChar, InvalidString};
@@ -185,7 +185,7 @@ impl Lexer {
                             if ch.is_ascii_digit() {
                                 state = LexerState::Number;
                             }
-                            else if ch.is_ascii_alphabetic() || ch == '_' {
+                            else if ch == '_' || ch.is_xid_start() {
                                 state = LexerState::Ident;
                             } else if ch == '/'
                                 && self.index+1 < self.code.len()
@@ -299,25 +299,14 @@ impl Lexer {
                         } else { break; }
                     }
                     tokens.push(
-                        if is_float {
-                            Token {
-                                kind: TokenType::Float,
-                                span: Span {
-                                    source_id: self.source,
-                                    start_off: start_offset,
-                                    end_off: self.current_offset()
-                                },
-                                text,
-                            }
-                        } else {
-                            Token {
-                                kind: TokenType::Int,
-                                span: Span {
-                                    source_id: self.source,
-                                    start_off: start_offset,
-                                    end_off: self.current_offset() },
-                                text,
-                            }
+                        Token {
+                            kind: if is_float { TokenType::Float } else { TokenType::Int },
+                            span: Span {
+                                source_id: self.source,
+                                start_off: start_offset,
+                                end_off: self.current_offset()
+                            },
+                            text,
                         }
                     );
                     state = LexerState::Start;
@@ -328,9 +317,7 @@ impl Lexer {
                     let mut text = String::new();
                     while self.index < self.code.len() {
                         let c = self.code.get(self.index).unwrap();
-                        if c.is_ascii_alphabetic()
-                            || c.is_ascii_digit()
-                            || *c == '_'{
+                        if c.is_xid_continue() {
                             text.push(*c);
                             self.next_char()
                         } else { break; }

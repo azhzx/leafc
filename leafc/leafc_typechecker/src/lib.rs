@@ -11,7 +11,6 @@ use leafc_coreapi::type_context::TypeKind::Var;
 
 pub struct TypeChecker {
     hir_crate: HirCrate,
-    type_pool: Vec<TypeUnit>,
     bindings: Vec<Option<TyId>>,
     decl_type_map: HirDeclTypeMap,
     expr_type_map: HirExprTypeMap,
@@ -22,7 +21,6 @@ impl TypeCheckerApi for TypeChecker {
     fn new(hir_crate: HirCrate) -> Self {
         Self {
             hir_crate,
-            type_pool: vec![],
             bindings: vec![],
             decl_type_map: HashMap::new(),
             expr_type_map: HashMap::new(),

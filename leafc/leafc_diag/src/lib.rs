@@ -8,6 +8,25 @@ pub struct Diagnostician<'a> {
 }
 
 impl<'a> Diagnostician<'a> {
+    /// 计算字符串在终端上的实际显示宽度（跳过 ANSI 颜色序列）
+    fn visible_len(s: &str) -> usize {
+        let mut len = 0;
+        let mut chars = s.chars().peekable();
+        while let Some(ch) = chars.next() {
+            if ch == '\x1b' {
+                while let Some(&c) = chars.peek() {
+                    if c.is_alphabetic() {
+                        chars.next();
+                        break;
+                    }
+                    chars.next();
+                }
+            } else {
+                len += 1;
+            }
+        }
+        len
+    }
 }
 
 impl<'a> DiagnosticianApi<'a> for Diagnostician<'a> {
@@ -20,6 +39,7 @@ impl<'a> DiagnosticianApi<'a> for Diagnostician<'a> {
     }
 
     fn report(&self, diag: DiagMsg) -> String {
+
         let mut out = String::new();
 
         let source_id = diag.span.source_id;
@@ -79,49 +99,72 @@ impl<'a> DiagnosticianApi<'a> for Diagnostician<'a> {
             })
             .collect();
 
+        // 最大行号的位数，用于动态对齐
+        let lineno_width = last.to_string().len();
+
+        // 指示器前缀：固定的箭头行，不随行号宽度变化（保持原风格）
         let indicator_prefix = format!(
-            "{}{}{}",
-            self.colors.diag_bar, "  ╭─➜  |", self.colors.diag_reset
+            "{}  ╭─➜  |{}",
+            self.colors.diag_bar,
+            self.colors.diag_reset
         );
-        let indicator_len = indicator_prefix.chars().count();
+        let indicator_visible_len = Self::visible_len(&indicator_prefix);
 
         for lineno in first..=last {
             let line = &lines[lineno - first];
 
-            let prefix = if lineno < start_line {
-                format!(
-                    "{}  {:>4} | {}",
-                    self.colors.diag_bar, lineno, self.colors.diag_reset
-                )
+            // 根据行号选择前缀格式
+            let (prefix, prefix_visible_len) = if lineno < start_line {
+                let p = format!(
+                    "{}    {:>width$} | {}",
+                    self.colors.diag_bar,
+                    lineno,
+                    self.colors.diag_reset,
+                    width = lineno_width
+                );
+                let vlen = Self::visible_len(&p);
+                (p, vlen)
             } else if lineno == start_line {
-                format!(
-                    "{}  {:>4} | {}",
-                    self.colors.diag_bar, lineno, self.colors.diag_reset
-                )
+                let p = format!(
+                    "{}    {:>width$} | {}",
+                    self.colors.diag_bar,
+                    lineno,
+                    self.colors.diag_reset,
+                    width = lineno_width
+                );
+                let vlen = Self::visible_len(&p);
+                (p, vlen)
             } else {
-                format!(
-                    "{}  |  {} | {}",
-                    self.colors.diag_bar, lineno, self.colors.diag_reset
-                )
+                let p = format!(
+                    "{}  | {:>width$} | {}",
+                    self.colors.diag_bar,
+                    lineno,
+                    self.colors.diag_reset,
+                    width = lineno_width
+                );
+                let vlen = Self::visible_len(&p);
+                (p, vlen)
             };
 
             writeln!(&mut out, "{}{}", prefix, line).unwrap();
 
+            // 仅错误起始行后打印指示符
             if lineno == start_line {
-                let fill = (prefix.len() + start_col).saturating_sub(indicator_len + 1);
-
-                let mut indicator =
-                    String::with_capacity(indicator_len + fill + (end_col - start_col).max(1) + 10);
-                indicator.push_str(&indicator_prefix);
-                for _ in 0..fill {
-                    indicator.push(' ');
-                }
+                let fill = (prefix_visible_len + start_col).saturating_sub(indicator_visible_len);
 
                 let caret_len = if end_col > start_col {
                     end_col - start_col
                 } else {
                     1
                 };
+
+                let mut indicator = String::with_capacity(
+                    indicator_visible_len + fill + caret_len + 20,
+                );
+                indicator.push_str(&indicator_prefix);
+                for _ in 0..fill {
+                    indicator.push(' ');
+                }
                 write!(
                     &mut indicator,
                     "{}{}{}",
@@ -134,7 +177,15 @@ impl<'a> DiagnosticianApi<'a> for Diagnostician<'a> {
             }
         }
 
-        writeln!(&mut out, "{}  |{}", self.colors.diag_bar, self.colors.diag_reset).unwrap();
+        // 结尾竖线行
+        writeln!(
+            &mut out,
+            "{}  |{}",
+            self.colors.diag_bar,
+            self.colors.diag_reset
+        )
+            .unwrap();
+
         writeln!(
             &mut out,
             "  {}{}: {}{}{}",

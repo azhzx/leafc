@@ -11,6 +11,7 @@ dependencies = [
  "leafc_hirlower",
  "leafc_namepass",
  "leafc_parser",
+ "leafc_typechecker",
  "realworld_io_api",
 ]
 
@@ -37,6 +38,7 @@ name = "leafc_lexer"
 version = "0.1.0"
 dependencies = [
  "leafc_coreapi",
+ "unicode-xid",
 ]
 
 [[package]]
@@ -63,5 +65,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "leafc_typechecker"
+version = "0.1.0"
+dependencies = [
+ "leafc_coreapi",
+]
+
+[[package]]
 name = "realworld_io_api"
 version = "0.1.0"
+
+[[package]]
+name = "unicode-xid"
+version = "0.2.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"

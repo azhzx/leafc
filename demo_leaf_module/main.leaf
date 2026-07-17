@@ -1,6 +1,9 @@
+#lang("Int")
+pub(external) type Int;
+
 type Point
     x: Int
     y: Int
 
 fun main()
-    let x = Point(1,0)
+    let m = Point(1,0)
