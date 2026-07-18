@@ -1,0 +1,13 @@
+[crate]
+name = "demo_leaf_crate"
+version = "0.1.0"
+authors = ["azhz"]
+
+[build]
+target = "bin"
+
+[operator.at]
+text = "@"
+kind = "postfix"
+high_than = "Mul"
+is_pub_external = false

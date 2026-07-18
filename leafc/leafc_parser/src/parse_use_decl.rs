@@ -6,7 +6,7 @@ use leafc_coreapi::parser::{ParserError};
 use crate::Parser;
 
 impl<'a> Parser<'a> {
-    pub fn parse_use_decl(&mut self) -> Result<(), DiagMsg> {
+    pub fn parse_use_decl(&mut self) -> Result<Option<Require>, DiagMsg> {
         let start_span = self.current_token().span.clone();
         self.skip_token_only(TokenType::KwUse)?;
         let mut require_paths = vec![];
@@ -69,13 +69,14 @@ impl<'a> Parser<'a> {
         }
 
 
-        if is_external_module {
+        let req = if is_external_module {
             self.ast.external_requires.push( Require {
                 path: require_paths,
                 only,
                 is_open,
                 span: start_span,
             });
+            None
         } else {
             let mut file_path = self.dir_abs_path.clone();
 
@@ -93,19 +94,25 @@ impl<'a> Parser<'a> {
             let old_tokens = self.tokens.clone();
             let old_index = self.index;
 
-            let token = Self::lexer(*source_id, &content.file_content)?;
+            let token = Self::lexer(*source_id, &content.file_content, self.user_operators)?;
             self.tokens = Self::pp(*source_id, &token)?;
             self.index = 0;
 
             let module = self.parse_top(
                 require_paths[require_paths.len() - 1].clone())?;
 
-            self.ast.decl_pool.push(module);
+            self.ast.file_units.push(module);;
 
             self.tokens = old_tokens;
             self.index = old_index;
 
-        }
+            Some(Require {
+                path: require_paths,
+                only,
+                is_open,
+                span: start_span,
+            })
+        };
 
         while self.current_token().kind != TokenType::NewLine {
             return Err(DiagMsg {
@@ -115,6 +122,6 @@ impl<'a> Parser<'a> {
             });
         }
 
-        Ok(())
+        Ok(req)
     }
 }

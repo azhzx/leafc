@@ -1,3 +1,5 @@
+use std::collections::{HashMap, HashSet};
+use leafc_coreapi::crate_meta::OperatorDef;
 use unicode_xid::UnicodeXID;
 use leafc_coreapi::diagnostic::DiagMsg;
 use leafc_coreapi::lexer::{Document, DocumentString, LexerApi, LexerError, Token, TokenStream, TokenType};
@@ -15,17 +17,20 @@ pub enum LexerState {
 
 const INDENT_WIDTH: usize = 4;
 
-pub struct Lexer {
+pub struct Lexer<'a> {
     index: usize,
     byte_index: usize,
     source: SourceId,
     code: Vec<char>,
     indent_level: isize,
     docstrings: Document,
+
+    operator_table: HashMap<String, TokenType>,
+    operator_prefixes: HashSet<String>,
+    user_operators: &'a HashMap<String, OperatorDef>
 }
 
-impl Lexer {
-    // 原 current_pos 改为返回当前字节偏移
+impl<'a> Lexer<'a> {
     fn current_offset(&self) -> usize {
         self.byte_index
     }
@@ -89,59 +94,6 @@ impl Lexer {
             "for" => TokenType::KwFor,
             "subtype" => TokenType::KwSubType,
             "basetype" => TokenType::KwBaseType,
-            _ => TokenType::Error,
-        }
-    }
-
-    fn symbol_map(&self, s: &String) -> TokenType {
-        match s.as_str() {
-            "+" => TokenType::Plus,
-            "-" => TokenType::Minus,
-            "*" => TokenType::Star,
-            "/" => TokenType::Slash,
-            "%" => TokenType::Percent,
-            "&" => TokenType::Amp,
-            "|" => TokenType::Pipe,
-            "^" => TokenType::Caret,
-            "!" => TokenType::Not,
-            "=" => TokenType::Eq,
-            "==" => TokenType::EqEq,
-            "!=" => TokenType::Ne,
-            "<" => TokenType::Lt,
-            ">" => TokenType::Gt,
-            "<=" => TokenType::Le,
-            ">=" => TokenType::Ge,
-            "&&" => TokenType::And,
-            "||" => TokenType::Or,
-            "<<" => TokenType::Shl,
-            ">>" => TokenType::Shr,
-            "+=" => TokenType::PlusEq,
-            "-=" => TokenType::MinusEq,
-            "*=" => TokenType::StarEq,
-            "/=" => TokenType::SlashEq,
-            "%=" => TokenType::PercentEq,
-            "&=" => TokenType::AmpEq,
-            "|=" => TokenType::PipeEq,
-            "^=" => TokenType::CaretEq,
-            "<<=" => TokenType::ShlEq,
-            ">>=" => TokenType::ShrEq,
-            "->" => TokenType::Arrow,
-            "=>" => TokenType::FatArrow,
-            "." => TokenType::Dot,
-            ".." => TokenType::DotDot,
-            "..." => TokenType::DotDotDot,
-            "(" => TokenType::Lparen,
-            ")" => TokenType::Rparen,
-            "{" => TokenType::Lbrace,
-            "}" => TokenType::Rbrace,
-            "[" => TokenType::Lbracket,
-            "]" => TokenType::Rbracket,
-            "," => TokenType::Comma,
-            ":" => TokenType::Colon,
-            ";" => TokenType::Semicolon,
-            "#" => TokenType::Hash,
-            "@" => TokenType::At,
-            "_" => TokenType::Underline,
             _ => TokenType::Error,
         }
     }
@@ -352,49 +304,53 @@ impl Lexer {
                 LexerState::Symbol => {
                     let start_offset = self.current_offset();
                     let mut text = String::new();
-                    let mut matched_text = String::new();    // 最后一次成功匹配的符号文本
-                    let mut token_type = TokenType::Error;   // 最后一次成功匹配的 Token 类型
+                    let mut matched_text = String::new();
+                    let mut token_type = TokenType::Error;
 
-                    // 不断尝试扩展符号
-                    while self.index < self.code.len() {
-                        let c = self.code[self.index];
+                    loop {
+                        let c = match self.current_char() {
+                            Some(ch) => ch,
+                            None => break,
+                        };
+
                         text.push(c);
 
-                        let t = self.symbol_map(&text);
-                        if t != TokenType::Error {
-                            token_type = t;
+                        if let Some(tt) = self.operator_table.get(&text) {
                             matched_text = text.clone();
-                            self.next_char();
-                        } else {
+                            token_type = tt.clone();
+                        }
+
+                        if !self.operator_prefixes.contains(&text) {
                             break;
                         }
+
+                        self.next_char();
                     }
 
                     if token_type == TokenType::Error {
-                        let err_char = text.chars().next().unwrap(); // 取第一个字符
-                        self.next_char(); // 消费该字符
-                        tokens.push(Token {
-                            kind: TokenType::Error,
+                        let ch = text.chars().next().unwrap();
+                        self.next_char(); // 至少消费一个字符, 防止死循环
+                        return Err(DiagMsg {
+                            title: format!("{:?}", InvalidChar),
+                            msg: format!("Invalid character '{}'", ch),
                             span: Span {
                                 source_id: self.source,
                                 start_off: start_offset,
-                                end_off: self.current_offset()
+                                end_off: self.current_offset(),
                             },
-                            text: err_char.to_string(),
                         });
-                        state = LexerState::Start;
-                    } else {
-                        // 生成匹配到的符号 Token
-                        tokens.push(Token {
-                            kind: token_type,
-                            span: Span {
-                                source_id: self.source,
-                                start_off: start_offset,
-                                end_off: self.current_offset() },
-                            text: matched_text,
-                        });
-                        state = LexerState::Start;
                     }
+
+                    tokens.push(Token {
+                        kind: token_type,
+                        span: Span {
+                            source_id: self.source,
+                            start_off: start_offset,
+                            end_off: self.current_offset(),
+                        },
+                        text: matched_text,
+                    });
+                    state = LexerState::Start;
                 }
                 LexerState::LineStart => {
                     let last_line_byte = self.current_offset();
@@ -474,9 +430,81 @@ impl Lexer {
     }
 }
 
-impl LexerApi for Lexer {
-    fn new(source: SourceId, text: &String) -> Self {
+impl<'a> LexerApi<'a> for Lexer<'a> {
+    fn new(
+        source: SourceId,
+        text: &String,
+        user_operators: &'a HashMap<String, OperatorDef>,
+    ) -> Self {
         let code = text.chars().collect();
+
+        let builtin_ops: &[(&str, TokenType)] = &[
+            ("+", TokenType::Plus),
+            ("-", TokenType::Minus),
+            ("*", TokenType::Star),
+            ("/", TokenType::Slash),
+            ("%", TokenType::Percent),
+            ("&", TokenType::Amp),
+            ("|", TokenType::Pipe),
+            ("^", TokenType::Caret),
+            ("!", TokenType::Not),
+            ("=", TokenType::Eq),
+            ("==", TokenType::EqEq),
+            ("!=", TokenType::Ne),
+            ("<", TokenType::Lt),
+            (">", TokenType::Gt),
+            ("<=", TokenType::Le),
+            (">=", TokenType::Ge),
+            ("&&", TokenType::And),
+            ("||", TokenType::Or),
+            ("<<", TokenType::Shl),
+            (">>", TokenType::Shr),
+            ("+=", TokenType::PlusEq),
+            ("-=", TokenType::MinusEq),
+            ("*=", TokenType::StarEq),
+            ("/=", TokenType::SlashEq),
+            ("%=", TokenType::PercentEq),
+            ("&=", TokenType::AmpEq),
+            ("|=", TokenType::PipeEq),
+            ("^=", TokenType::CaretEq),
+            ("<<=", TokenType::ShlEq),
+            (">>=", TokenType::ShrEq),
+            ("->", TokenType::Arrow),
+            ("=>", TokenType::FatArrow),
+            (".", TokenType::Dot),
+            ("..", TokenType::DotDot),
+            ("...", TokenType::DotDotDot),
+            ("(", TokenType::Lparen),
+            (")", TokenType::Rparen),
+            ("{", TokenType::Lbrace),
+            ("}", TokenType::Rbrace),
+            ("[", TokenType::Lbracket),
+            ("]", TokenType::Rbracket),
+            (",", TokenType::Comma),
+            (":", TokenType::Colon),
+            (";", TokenType::Semicolon),
+            ("#", TokenType::Hash),
+            ("@", TokenType::At),
+            ("_", TokenType::Underline),
+        ];
+
+        let mut operator_table = HashMap::new();
+        for (text, tt) in builtin_ops {
+            operator_table.insert(text.to_string(), tt.clone());
+        }
+
+        for def in user_operators.values() {
+            operator_table.insert(def.text.clone(), TokenType::UserOp);
+        }
+
+        // 构建前缀集合
+        let mut operator_prefixes = HashSet::new();
+        for key in operator_table.keys() {
+            for end in 1..=key.len() {
+                operator_prefixes.insert(key[..end].to_string());
+            }
+        }
+
         Lexer {
             index: 0,
             byte_index: 0,
@@ -484,6 +512,9 @@ impl LexerApi for Lexer {
             code,
             indent_level: 0,
             docstrings: Document { data: Vec::new() },
+            operator_table,
+            operator_prefixes,
+            user_operators: user_operators,
         }
     }
 
@@ -493,7 +524,7 @@ impl LexerApi for Lexer {
         self.main_loop(&mut tokens)?;
 
         let off = self.current_offset();
-        for _ in 0 .. self.indent_level {
+        for _ in 0..self.indent_level {
             tokens.push(Token {
                 kind: TokenType::Dedent,
                 span: Span {

@@ -1,5 +1,7 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use crate::ast::CrateAst;
+use crate::crate_meta::OperatorDef;
 use crate::diagnostic::DiagMsg;
 use crate::lexer::{Token, TokenStream};
 use crate::scope::ScopePool;
@@ -31,7 +33,8 @@ pub trait ParserApi<'a> {
     fn new(
         dir_abs_path: PathBuf,
         source_pool: &'a SourcePool,
-        abs_path_source_map: &'a AbsPathSourceMap
+        abs_path_source_map: &'a AbsPathSourceMap,
+        user_operators: &'a HashMap<String, OperatorDef>,
     ) -> Self;
     fn parse(self)
         -> Result<CrateAst, DiagMsg>;

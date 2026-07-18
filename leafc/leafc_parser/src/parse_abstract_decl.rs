@@ -1,11 +1,16 @@
-use leafc_coreapi::ast::{AnnotationDecl, DeclNode, DeclNodeKind, MethodDecl, Param, TypeNameString, Visibility};
+use std::sync::Arc;
+use leafc_coreapi::ast::{AnnotationDecl, DeclNode, DeclNodeKind, DeclRedNode, MethodDecl, Param, TypeNameString, Visibility};
 use leafc_coreapi::diagnostic::DiagMsg;
 use leafc_coreapi::lexer::{Token, TokenType};
 use leafc_coreapi::parser::{ParserError};
 use crate::Parser;
 
 impl<'a> Parser<'a> {
-    pub fn parse_abstract_decl(&mut self, visibility: Visibility, ann: Vec<AnnotationDecl>) -> Result<DeclNode, DiagMsg> {
+    pub fn parse_abstract_decl(
+        &mut self,
+        visibility: Visibility,
+        ann: Vec<AnnotationDecl>
+    ) -> Result<DeclRedNode, DiagMsg> {
         self.skip_token();
         let name_token = self.current_token();
         let name = name_token.text.clone();
@@ -116,16 +121,18 @@ impl<'a> Parser<'a> {
         self.skip_token_if_newlines()?;
         self.skip_token_only(TokenType::Dedent)?;
 
-        Ok(DeclNode {
-            name,
-            visibility,
+        Ok(DeclRedNode {
             span: name_span,
-            annotations: ann,
-            kind: DeclNodeKind::Abstract {
-                has_abst: impls,
-                generic_vars: generic,
-                methods,
-            },
+            inner: Arc::new(DeclNode {
+                name,
+                visibility,
+                annotations: ann,
+                kind: DeclNodeKind::Abstract {
+                    has_abst: impls,
+                    generic_vars: generic,
+                    methods,
+                },
+            }),
         })
     }
 }

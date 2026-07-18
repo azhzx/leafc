@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+use crate::crate_meta::OperatorDef;
 use crate::diagnostic::DiagMsg;
 use crate::source::{SourceId, Span};
 
@@ -106,6 +108,7 @@ pub enum TokenType {
     Indent,
     Dedent,
     Error,
+    UserOp,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -137,8 +140,12 @@ pub enum LexerError {
     InvalidChar,
 }
 
-pub trait LexerApi {
-    fn new(source: SourceId, text: &String) -> Self;
+pub trait LexerApi<'a> {
+    fn new(
+        source: SourceId,
+        text: &String,
+        user_operators: &'a HashMap<String, OperatorDef>,
+    ) -> Self;
     fn tokenize(&mut self)
         -> Result<TokenStream, DiagMsg>;
     fn get_document_strings(&self) -> &Document;

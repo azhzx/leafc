@@ -1,9 +1,0 @@
-#lang("Int")
-pub(external) type Int;
-
-type Point
-    x: Int
-    y: Int
-
-fun main()
-    let m = Point(1,0)

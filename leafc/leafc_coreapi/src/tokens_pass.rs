@@ -8,7 +8,8 @@ pub enum TokenPassError {
     InvalidPreprocessorArgumentList,
     UserPreprocessorPanic,
     InvalidIdentToString,
-    InvalidIdentConcat
+    InvalidIdentConcat,
+    InvalidPreprocessorSyntax
 }
 
 pub trait TokenPassApi<'a> {

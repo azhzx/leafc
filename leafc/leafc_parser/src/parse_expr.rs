@@ -1,19 +1,15 @@
-use std::fmt::format;
-use leafc_coreapi::ast::{AtomExprNode, DeclNode, ElseIf, ExprNode, ExprNodeId, ExprNodeKind, Operator};
-use leafc_coreapi::ast::ExprNodeKind::{Atom, If};
+use std::sync::Arc;
+use leafc_coreapi::ast::{
+    AtomExprNode, ElseIf, ExprNode, ExprNodeKind, ExprRedNode, Operator,
+};
 use leafc_coreapi::diagnostic::DiagMsg;
 use leafc_coreapi::lexer::TokenType;
-use leafc_coreapi::lexer::TokenType::Pipe;
 use leafc_coreapi::parser::ParserError;
+use leafc_coreapi::crate_meta::{OperatorKind};
 use crate::Parser;
 
 impl<'a> Parser<'a> {
-    pub fn push_expr(&mut self, expr: ExprNode) -> ExprNodeId {
-        self.ast.expr_pool.push(expr);
-        self.ast.expr_pool.len() - 1
-    }
-
-    pub fn parse_block_expr(&mut self) -> Result<ExprNodeId, DiagMsg> {
+    pub fn parse_block_expr(&mut self) -> Result<ExprRedNode, DiagMsg> {
         let mut exprs = vec![];
         let span = self.current_token().span.clone();
         self.skip_token_only(TokenType::Indent)?;
@@ -27,16 +23,17 @@ impl<'a> Parser<'a> {
             exprs.push(expr);
         }
 
-
         self.skip_token_only(TokenType::Dedent)?;
 
-        Ok(self.push_expr(ExprNode {
+        Ok(ExprRedNode {
             span,
-            kind: ExprNodeKind::Do { exprs },
-        }))
+            inner: Arc::new(ExprNode {
+                kind: ExprNodeKind::Do { exprs },
+            }),
+        })
     }
 
-    pub fn parse_let_expr(&mut self) -> Result<ExprNodeId, DiagMsg> {
+    pub fn parse_let_expr(&mut self) -> Result<ExprRedNode, DiagMsg> {
         self.skip_token_only(TokenType::KwLet)?;
         let mut mutable = false;
 
@@ -57,16 +54,25 @@ impl<'a> Parser<'a> {
             self.unknown_type_name()
         };
 
-
         self.skip_token_only(TokenType::Eq)?;
         let expr = self.parse_expr()?;
 
-        Ok(self.push_expr(ExprNode {
-            span, kind: ExprNodeKind::Let { expr, name, type_str, mutable }
-        }))
+        self.skip_token_only(TokenType::NewLine)?;
+
+        Ok(ExprRedNode {
+            span,
+            inner: Arc::new(ExprNode {
+                kind: ExprNodeKind::Let {
+                    expr,
+                    name,
+                    type_str,
+                    mutable,
+                },
+            }),
+        })
     }
 
-    pub fn parse_do_expr(&mut self) -> Result<ExprNodeId, DiagMsg> {
+    pub fn parse_do_expr(&mut self) -> Result<ExprRedNode, DiagMsg> {
         let span = self.current_token().span.clone();
         self.skip_token_only(TokenType::KwDo)?;
         self.skip_token_only(TokenType::NewLine)?;
@@ -74,12 +80,12 @@ impl<'a> Parser<'a> {
         self.parse_block_expr()
     }
 
-    pub fn parse_if_expr(&mut self) -> Result<ExprNodeId, DiagMsg> {
+    pub fn parse_if_expr(&mut self) -> Result<ExprRedNode, DiagMsg> {
         let span = self.current_token().span.clone();
         self.skip_token_only(TokenType::KwIf)?;
         let cond = self.parse_expr()?;
 
-        let if_then_exprs = if self.current_token().kind == TokenType::KwThen {
+        let if_then_expr = if self.current_token().kind == TokenType::KwThen {
             self.skip_token();
             self.parse_expr()?
         } else {
@@ -99,12 +105,11 @@ impl<'a> Parser<'a> {
                 if self.current_token().kind == TokenType::NewLine {
                     self.skip_token();
                 }
-                elif_body_exprs.push(ElseIf{cond, body});
+                elif_body_exprs.push(ElseIf { cond, body });
             }
         }
 
-
-        let else_body_exprs: Option<ExprNodeId> = if self.current_token().kind == TokenType::KwElse {
+        let else_body_expr = if self.current_token().kind == TokenType::KwElse {
             self.skip_token();
 
             if self.current_token().kind == TokenType::NewLine {
@@ -113,21 +118,24 @@ impl<'a> Parser<'a> {
             } else {
                 Some(self.parse_expr()?)
             }
-        } else { None };
+        } else {
+            None
+        };
 
-        Ok(self.push_expr(ExprNode {
+        Ok(ExprRedNode {
             span,
-            kind: ExprNodeKind::If {
-                cond,
-                then_expr: if_then_exprs,
-                elifs: elif_body_exprs,
-                else_expr: else_body_exprs,
-            },
-        }))
-
+            inner: Arc::new(ExprNode {
+                kind: ExprNodeKind::If {
+                    cond,
+                    then_expr: if_then_expr,
+                    elifs: elif_body_exprs,
+                    else_expr: else_body_expr,
+                },
+            }),
+        })
     }
 
-    pub fn parse_return_expr(&mut self) -> Result<ExprNodeId, DiagMsg> {
+    pub fn parse_return_expr(&mut self) -> Result<ExprRedNode, DiagMsg> {
         let span = self.current_token().span.clone();
         self.skip_token_only(TokenType::KwReturn)?;
         let expr = if self.current_token().kind == TokenType::NewLine {
@@ -138,12 +146,12 @@ impl<'a> Parser<'a> {
             Some(expr)
         };
 
-        Ok(self.push_expr(ExprNode {
+        Ok(ExprRedNode {
             span,
-            kind: ExprNodeKind::Return {
-                expr,
-            },
-        }))
+            inner: Arc::new(ExprNode {
+                kind: ExprNodeKind::Return { expr },
+            }),
+        })
     }
 
     pub fn parse_atom_expr(&mut self) -> Result<AtomExprNode, DiagMsg> {
@@ -156,19 +164,18 @@ impl<'a> Parser<'a> {
 
         let expr = match current_token_kind {
             TokenType::Float => AtomExprNode::Decimal {
-                dec:current_token_text, span: current_token_span },
+                dec: current_token_text,
+            },
             TokenType::Int => AtomExprNode::Int {
-                int:current_token_text, span: current_token_span
+                int: current_token_text,
             },
             TokenType::String => AtomExprNode::Str {
-                string:current_token_text, span: current_token_span
+                string: current_token_text,
             },
             TokenType::Ident => AtomExprNode::Name {
-                name:current_token_text, span: current_token_span
+                name: current_token_text,
             },
-            TokenType::DotDotDot => AtomExprNode::Ellipsis {
-                span: current_token_span,
-            },
+            TokenType::DotDotDot => AtomExprNode::Ellipsis,
             TokenType::Hash => {
                 let mut exprs = vec![];
 
@@ -184,22 +191,19 @@ impl<'a> Parser<'a> {
                             title: format!("{:?}", ParserError::InvalidTupleLiteral),
                             msg: "invalid tuple literal".to_string(),
                             span: current_token_span,
-                        })
+                        });
                     }
                 }
                 self.skip_token_only(TokenType::Rbracket)?;
 
-                AtomExprNode::Tuple {
-                    exprs,
-                    span: current_token_span,
-                }
+                AtomExprNode::Tuple { exprs }
             }
             _ => {
                 return Err(DiagMsg {
                     title: format!("{:?}", ParserError::InvalidExpression),
                     msg: "invalid expression literal".to_string(),
                     span: current_token_span,
-                })
+                });
             }
         };
 
@@ -209,8 +213,8 @@ impl<'a> Parser<'a> {
     /// 中缀运算符左绑定优先级
     fn lbp(token: TokenType) -> Option<usize> {
         match token {
-            TokenType::Or   => Some(10),
-            TokenType::And  => Some(20),
+            TokenType::Or => Some(10),
+            TokenType::And => Some(20),
 
             TokenType::EqEq
             | TokenType::Ne
@@ -234,11 +238,10 @@ impl<'a> Parser<'a> {
         }
     }
 
-
-    pub fn parse_expr(&mut self) -> Result<ExprNodeId, DiagMsg> {
+    pub fn parse_expr(&mut self) -> Result<ExprRedNode, DiagMsg> {
         match self.current_token().kind {
-            TokenType::KwIf  => return self.parse_if_expr(),
-            TokenType::KwDo  => return self.parse_do_expr(),
+            TokenType::KwIf => return self.parse_if_expr(),
+            TokenType::KwDo => return self.parse_do_expr(),
             TokenType::KwLet => return self.parse_let_expr(),
             TokenType::KwReturn => return self.parse_return_expr(),
             _ => {}
@@ -258,37 +261,66 @@ impl<'a> Parser<'a> {
             TokenType::And => Some(Operator::And),
             TokenType::Or => Some(Operator::Or),
             TokenType::Not => Some(Operator::Not),
-            TokenType::EqEq   => Some(Operator::Eq),
-            TokenType::Ne  => Some(Operator::Neq),
-            TokenType::Lt     => Some(Operator::Lt),
-            TokenType::Gt     => Some(Operator::Gt),
-            TokenType::Le   => Some(Operator::Le),
-            TokenType::Ge   => Some(Operator::Ge),
-            _ => None
+            TokenType::EqEq => Some(Operator::Eq),
+            TokenType::Ne => Some(Operator::Neq),
+            TokenType::Lt => Some(Operator::Lt),
+            TokenType::Gt => Some(Operator::Gt),
+            TokenType::Le => Some(Operator::Le),
+            TokenType::Ge => Some(Operator::Ge),
+            _ => None,
         }
     }
 
     /// 以最小绑定强度 min_bp 继续解析表达式
-    fn parse_expr_bp(&mut self, min_bp: usize) -> Result<ExprNodeId, DiagMsg> {
+    fn parse_expr_bp(&mut self, min_bp: usize) -> Result<ExprRedNode, DiagMsg> {
         // nud
         let token = self.current_token().clone();
         let kind = token.kind;
         let start_span = token.span.clone();
 
         let mut lhs = match kind {
-            // =- / not
+            // - / not
             TokenType::Minus | TokenType::Not => {
                 let op_kind = kind;
                 let op_span = start_span;
                 self.skip_token();
                 let operand = self.parse_expr_bp(Self::rbp(op_kind.clone()).unwrap())?;
-                self.push_expr(ExprNode {
+                ExprRedNode {
                     span: op_span,
-                    kind: ExprNodeKind::Unary {
-                        op: Self::token_type_to_operator(op_kind).unwrap(),
-                        right: operand,
+                    inner: Arc::new(ExprNode {
+                        kind: ExprNodeKind::Unary {
+                            op: Self::token_type_to_operator(op_kind).unwrap(),
+                            right: operand,
+                        },
+                    }),
+                }
+            }
+
+            TokenType::UserOp => {
+                if let Some((prio, op_kind)) = self.user_op_info.get(&token.text) {
+                    if *op_kind == OperatorKind::Prefix {
+                        let rbp = *prio;   // 前缀运算符的右绑定强度
+                        self.skip_token();
+                        let operand = self.parse_expr_bp(rbp)?;
+                        ExprRedNode {
+                            span: start_span,
+                            inner: Arc::new(ExprNode {
+                                kind: ExprNodeKind::Unary {
+                                    op: Operator::UserOp(token.text.clone()),
+                                    right: operand,
+                                },
+                            }),
+                        }
+                    } else {
+                        return Err(DiagMsg {
+                            title: format!("{:?}", ParserError::InvalidExpression),
+                            msg: format!("Unexpected operator '{}' in prefix position", token.text),
+                            span: token.span.clone(),
+                        });
                     }
-                })
+                } else {
+                    unreachable!()
+                }
             }
 
             // 括号
@@ -305,12 +337,15 @@ impl<'a> Parser<'a> {
                 self.skip_token();
                 let target = self.parse_expr_bp(60)?;
                 let kind = match kind {
-                    TokenType::KwMove  => ExprNodeKind::Move  { target },
-                    TokenType::KwCopy  => ExprNodeKind::Copy  { target },
+                    TokenType::KwMove => ExprNodeKind::Move { target },
+                    TokenType::KwCopy => ExprNodeKind::Copy { target },
                     TokenType::KwShared => ExprNodeKind::Share { target },
                     _ => unreachable!(),
                 };
-                self.push_expr(ExprNode {span: kw_span, kind })
+                ExprRedNode {
+                    span: kw_span,
+                    inner: Arc::new(ExprNode { kind }),
+                }
             }
 
             // ref / ref mut
@@ -319,30 +354,33 @@ impl<'a> Parser<'a> {
                 self.skip_token();
                 let target = if self.current_token().kind == TokenType::KwMut {
                     self.skip_token();
-                    let t = self.parse_expr_bp(60)?;
-                    self.push_expr(ExprNode {
-                        kind: ExprNodeKind::MutRef { target: t },
-                        span: ref_span
-                    })
+                    self.parse_expr_bp(60)?
                 } else {
-                    let t = self.parse_expr_bp(60)?;
-                    self.push_expr(ExprNode {
-                        kind: ExprNodeKind::Ref { target: t },
-                        span: ref_span
-                    })
+                    self.parse_expr_bp(60)?
                 };
-                target
+                let kind = if self.current_token().kind == TokenType::KwMut {
+                    ExprNodeKind::MutRef { target }
+                } else {
+                    ExprNodeKind::Ref { target }
+                };
+                ExprRedNode {
+                    span: ref_span,
+                    inner: Arc::new(ExprNode { kind }),
+                }
             }
 
             // 其余一切视为原子
             _ => {
                 let atom = self.parse_atom_expr()?;
-                self.push_expr(ExprNode {
-                    kind: ExprNodeKind::Atom { expr: atom },
+                ExprRedNode {
                     span: start_span,
-                })
+                    inner: Arc::new(ExprNode {
+                        kind: ExprNodeKind::Atom { expr: atom },
+                    }),
+                }
             }
         };
+
 
         // led
         loop {
@@ -350,34 +388,85 @@ impl<'a> Parser<'a> {
             let kind = token.kind;
             let token_span = token.span.clone();
 
-            // 中缀二元运算符
-            if let Some(lbp) = Self::lbp(kind.clone()) {
+            let lbp = match kind {
+                TokenType::UserOp => self.user_op_info.get(&token.text).map(|(p, _)| *p),
+                _ => Self::lbp(kind.clone()),
+            };
+
+            if let Some(lbp) = lbp {
                 if lbp < min_bp {
                     break;
                 }
-                self.skip_token();
-                let rhs = self.parse_expr_bp(lbp + 1)?;
-                lhs = self.push_expr(ExprNode {
-                    kind: ExprNodeKind::Binary {
-                        left: lhs,
-                        op: Self::token_type_to_operator(kind).ok_or_else(
-                            || DiagMsg {
-                                title: format!("{:?}", ParserError::InvalidOperator),
-                                msg: "invalid operator".to_string(),
-                                span: token_span.clone(),
-                            })?,
-                        right: rhs,
-                    },
-                    span: token_span,
-                });
-                continue;
+
+                // 分支处理
+                match kind {
+                    TokenType::UserOp => {
+                        let (prio, op_kind) = self.user_op_info.get(&token.text)
+                            .expect("UserOp must be in user_op_info");
+                        match op_kind {
+                            OperatorKind::Infix => {
+                                self.skip_token();
+                                let rhs = self.parse_expr_bp(lbp + 1)?; // 左结合
+                                lhs = ExprRedNode {
+                                    span: token_span,
+                                    inner: Arc::new(ExprNode {
+                                        kind: ExprNodeKind::Binary {
+                                            left: lhs,
+                                            op: Operator::UserOp(token.text.clone()),
+                                            right: rhs,
+                                        },
+                                    }),
+                                };
+                                continue;
+                            }
+                            OperatorKind::Postfix => {
+                                self.skip_token();
+                                lhs = ExprRedNode {
+                                    span: token_span,
+                                    inner: Arc::new(ExprNode {
+                                        kind: ExprNodeKind::Unary {
+                                            op: Operator::UserOp(token.text.clone()),
+                                            right: lhs,
+                                        },
+                                    }),
+                                };
+                                continue;
+                            }
+                            _ => {
+                               return Err(DiagMsg {
+                                    title: format!("{:?}", ParserError::InvalidExpression),
+                                    msg: format!("Unexpected prefix operator '{}' in infix position", token.text),
+                                    span: token.span.clone(),
+                                });
+                            }
+                        }
+                    }
+                    // 内置中缀运算符
+                    _ => {
+                        self.skip_token();
+                        let rhs = self.parse_expr_bp(lbp + 1)?;
+                        lhs = ExprRedNode {
+                            span: token_span.clone(),
+                            inner: Arc::new(ExprNode {
+                                kind: ExprNodeKind::Binary {
+                                    left: lhs,
+                                    op: Self::token_type_to_operator(kind).ok_or_else(|| DiagMsg {
+                                        title: format!("{:?}", ParserError::InvalidOperator),
+                                        msg: "invalid operator".to_string(),
+                                        span: token_span.clone(),
+                                    })?,
+                                    right: rhs,
+                                },
+                            }),
+                        };
+                        continue;
+                    }
+                }
             }
 
-            // 调用 / 成员访问
             match kind {
                 TokenType::Lparen => {
                     self.skip_token(); // '('
-                    let call_span = token_span;
                     let mut args = vec![];
                     while self.current_token().kind != TokenType::Rparen {
                         args.push(self.parse_expr()?);
@@ -389,18 +478,39 @@ impl<'a> Parser<'a> {
                             return Err(DiagMsg {
                                 title: format!("{:?}", ParserError::InvalidCallArgumentList),
                                 msg: "invalid call argument list".to_string(),
-                                span: call_span,
+                                span: token_span.clone(),
                             });
                         }
                     }
                     self.skip_token_only(TokenType::Rparen)?;
-                    lhs = self.push_expr(ExprNode {
-                        kind: ExprNodeKind::Call {
-                            callee: lhs,
-                            args,
-                        },
-                        span: call_span,
-                    });
+                    lhs = ExprRedNode {
+                        span: token_span,
+                        inner: Arc::new(ExprNode {
+                            kind: ExprNodeKind::Call {
+                                callee: lhs,
+                                args,
+                            },
+                        }),
+                    };
+                    continue;
+                }
+
+                TokenType::KwAs => {
+                    const AS_BP: usize = 20;
+                    if AS_BP < min_bp {
+                        break;
+                    }
+                    self.skip_token();
+                    let into_type = self.parse_expr_bp(AS_BP)?;
+                    lhs = ExprRedNode {
+                        span: token_span.clone(),
+                        inner: Arc::new(ExprNode {
+                            kind: ExprNodeKind::TypeCast {
+                                expr: lhs,
+                                into_type,
+                            },
+                        }),
+                    };
                     continue;
                 }
 
@@ -408,16 +518,16 @@ impl<'a> Parser<'a> {
                     self.skip_token(); // '.'
                     let member_token = self.current_token();
                     let member = member_token.text.clone();
-                    let member_span = member_token.span.clone();
                     self.skip_token_only(TokenType::Ident)?;
-                    lhs = self.push_expr(ExprNode {
-                        kind: ExprNodeKind::Member {
-                            left: lhs,
-                            right: member,
-                        },
-
+                    lhs = ExprRedNode {
                         span: token_span,
-                    });
+                        inner: Arc::new(ExprNode {
+                            kind: ExprNodeKind::Member {
+                                left: lhs,
+                                right: member,
+                            },
+                        }),
+                    };
                     continue;
                 }
 

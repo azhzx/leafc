@@ -1,11 +1,16 @@
-use leafc_coreapi::ast::{AnnotationDecl, DeclNode, DeclNodeKind, ExprNodeId, Param, Visibility};
+use std::sync::Arc;
+use leafc_coreapi::ast::{AnnotationDecl, DeclNode, DeclNodeKind, DeclRedNode, Param, Visibility};
 use leafc_coreapi::diagnostic::DiagMsg;
 use leafc_coreapi::lexer::TokenType;
 use leafc_coreapi::parser::ParserError;
 use crate::Parser;
 
 impl<'a> Parser<'a> {
-    pub fn parse_external_decl(&mut self, visibility: Visibility, ann: Vec<AnnotationDecl>) -> Result<DeclNode, DiagMsg> {
+    pub fn parse_external_decl(
+        &mut self,
+        visibility: Visibility,
+        ann: Vec<AnnotationDecl>
+    ) -> Result<DeclRedNode, DiagMsg> {
         self.skip_token();
 
         if self.current_token().kind == TokenType::KwCType {
@@ -18,12 +23,14 @@ impl<'a> Parser<'a> {
             self.skip_token_only(TokenType::NewLine)?;
 
 
-            return Ok(DeclNode {
-                name,
-                visibility,
+            return Ok(DeclRedNode {
                 span,
-                kind: DeclNodeKind::CType,
-                annotations: ann,
+                inner: Arc::new(DeclNode {
+                    name,
+                    visibility,
+                    kind: DeclNodeKind::CType,
+                    annotations: ann,
+                }),
             });
         }
 
@@ -95,16 +102,18 @@ impl<'a> Parser<'a> {
         self.skip_token_only(TokenType::Semicolon)?;
 
         self.skip_token_only(TokenType::NewLine)?;
-        Ok(DeclNode {
-            name: fist_name_token.text,
-            visibility,
+        Ok(DeclRedNode {
             span: fist_name_token.span.clone(),
-            kind: DeclNodeKind::External {
-                sym_name,
-                params,
-                return_type_str,
-            },
-            annotations: ann,
+            inner: Arc::new(DeclNode {
+                name: fist_name_token.text,
+                visibility,
+                kind: DeclNodeKind::External {
+                    sym_name,
+                    params,
+                    return_type_str,
+                },
+                annotations: ann,
+            }),
         })
     }
 }

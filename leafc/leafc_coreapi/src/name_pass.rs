@@ -1,10 +1,11 @@
 use std::collections::HashMap;
-use crate::ast::{DeclNodeId, ExprNodeId, CrateAst};
+use std::sync::Arc;
+use crate::ast::{CrateAst, DeclNode, ExprNode};
 use crate::diagnostic::DiagMsg;
 use crate::scope::{ScopeId, ScopePool};
 
-pub type DoScopeMap  = HashMap<ExprNodeId, ScopeId>;
-pub type FunScopeMap = HashMap<DeclNodeId, ScopeId>;
+pub type DoScopeMap  = HashMap<Arc<ExprNode>, ScopeId>;
+pub type FunScopeMap = HashMap<Arc<DeclNode>, ScopeId>;
 
 #[derive(Debug)]
 pub enum NamePassError {
@@ -25,7 +26,7 @@ pub struct NamePassResult {
 
 pub trait NamePassApi<'a> {
     fn new(ast: &'a CrateAst) -> Self;
-    fn pass_scope(&mut self) -> Result<(), DiagMsg>;
-    fn pass_name(&mut self) -> Result<(), DiagMsg>;
+    fn build_scope(&mut self) -> Result<(), DiagMsg>;
+    fn resolve(&mut self) -> Result<(), DiagMsg>;
     fn pass(self) -> Result<NamePassResult, DiagMsg>;
 }

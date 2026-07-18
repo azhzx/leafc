@@ -10,8 +10,9 @@ use leafc_hirlower::HirLower;
 use leafc_namepass::NamePass;
 use leafc_parser::Parser;
 
-use std::fs;
+use std::{fs, process};
 use std::path::PathBuf;
+use leafc_coreapi::crate_meta::CrateManifest;
 use leafc_coreapi::type_checker::TypeCheckerApi;
 use leafc_typechecker::TypeChecker;
 use realworld_io_api::RealWorldIOApi;
@@ -86,25 +87,47 @@ impl CompilerApi for NativeCompiler {
     }
 
     fn set_crate_path(&mut self, dir_path: &str) -> Option<&mut Self> {
-        let dir_path_buf = fs::canonicalize(PathBuf::from(dir_path)).ok()?;
+        let dir_path_buf =  PathBuf::from(dir_path);
+        let abs_dir_path_buf = fs::canonicalize(&dir_path_buf).ok()?;
 
-        if let Err(e) = self.collect_sources(&dir_path_buf) {
+        self.crate_path = abs_dir_path_buf;
+
+        if let Err(e) = self.collect_sources(&self.crate_path.clone()) {
             eprintln!("Failed to collect sources: {}", e);
             return None
         }
-        return Some(self)
+        Some(self)
     }
 
 
     fn compile(&mut self) -> Option<Self::Output> {
 
+        let leaf_toml_path = self.crate_path.join("LeafCrate.toml");
+
+        let content = match RealWorld::read_file(&leaf_toml_path) {
+            Ok(content) => content,
+            Err(err) => {
+                eprintln!("fail to read {}: {}", leaf_toml_path.display(), err);
+                process::exit(1);
+            }
+        };
+
+        let manifest = match CrateManifest::from_str(&content) {
+            Ok(manifest) => manifest,
+            Err(err) => {
+                eprintln!("fail to parse LeafCrate.toml: {}", err);
+                process::exit(1);
+            }
+        };
+
         let diag = Diagnostician::new(&self.source_pool, DIAG_COLORS);
 
         // 解析
-        let mut parser = Parser::new(
+        let parser = Parser::new(
             self.crate_path.clone(),
             &self.source_pool,
             &self.abs_path_source_map,
+            &manifest.operator
         );
         let ast = match parser.parse() {
             Ok( ast ) => {
@@ -180,11 +203,19 @@ impl CompilerApi for NativeCompiler {
 }
 
 impl IncrementalCompiler for NativeCompiler {
-    fn edit_append(&mut self, abs_path: String, line: &str, start_offset: usize) -> &mut Self {
+    fn edit_append(
+        &mut self,
+        abs_path: String,
+        line: &str,
+        start_offset: usize) -> &mut Self {
         todo!()
     }
 
-    fn edit_remove(&mut self, abs_path: String, start_offset: usize) -> &mut Self {
+    fn edit_remove(
+        &mut self,
+        abs_path: String,
+        start_offset: usize
+    ) -> &mut Self {
         todo!()
     }
 }

@@ -1,10 +1,8 @@
+use std::sync::Arc;
 use crate::source::{Span};
 
-pub type ExprNodeId = usize;
-pub type DeclNodeId = usize;
 
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct TypeNameString {
     pub name: String,
     pub generics: Vec<TypeNameString>,
@@ -12,34 +10,27 @@ pub struct TypeNameString {
 }
 
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum AtomExprNode {
     Decimal {
         dec: String,
-        span: Span,
     },
     Int {
         int: String,
-        span: Span,
     },
     Str {
         string: String,
-        span: Span,
     },
     Name {
         name: String,
-        span: Span,
     },
     Tuple {
-        exprs: Vec<ExprNodeId>,
-        span: Span,
+        exprs: Vec<ExprRedNode>,
     },
-    Ellipsis {
-        span: Span,
-    }
+    Ellipsis
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum Operator {
     Add,
     Sub,
@@ -55,107 +46,113 @@ pub enum Operator {
     Gt,
     Le,
     Ge,
+    UserOp(String)
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct ExprRedNode {
+    pub span: Span,
+    pub inner: Arc<ExprNode>,
 }
 
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct ExprNode {
-    pub span: Span,
     pub kind: ExprNodeKind,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct ElseIf {
-    pub cond: ExprNodeId,
-    pub body: ExprNodeId
+    pub cond: ExprRedNode,
+    pub body: ExprRedNode
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum ExprNodeKind {
     Atom {
         expr: AtomExprNode,
     },
     Binary {
-        left: ExprNodeId,
-        right: ExprNodeId,
+        left: ExprRedNode,
+        right: ExprRedNode,
         op: Operator,
     },
     Unary {
         op: Operator,
-        right: ExprNodeId,
+        right: ExprRedNode,
     },
     Move {
-        target: ExprNodeId,
+        target: ExprRedNode,
     },
     Copy {
-        target: ExprNodeId,
+        target: ExprRedNode,
     },
     Ref {
-        target: ExprNodeId,
+        target: ExprRedNode,
     },
     MutRef {
-        target: ExprNodeId,
+        target: ExprRedNode,
     },
     Share {
-        target: ExprNodeId,
+        target: ExprRedNode,
     },
     Call {
-        callee: ExprNodeId,
-        args: Vec<ExprNodeId>,
+        callee: ExprRedNode,
+        args: Vec<ExprRedNode>,
     },
     UnsafeExternalCall {
-        callee: ExprNodeId,
-        args: Vec<ExprNodeId>,
+        callee: ExprRedNode,
+        args: Vec<ExprRedNode>,
     },
     Member {
-        left: ExprNodeId,
+        left: ExprRedNode,
         right: String,
     },
     TypeCast {
-        expr: ExprNodeId,
-        into_type_str: TypeNameString,
+        expr: ExprRedNode,
+        into_type: ExprRedNode,
     },
     Do {
-        exprs: Vec<ExprNodeId>,
+        exprs: Vec<ExprRedNode>,
     },
     Let {
         name: String,
-        expr: ExprNodeId,
+        expr: ExprRedNode,
         type_str: TypeNameString,
         mutable: bool,
     },
     If {
-        cond: ExprNodeId,
-        then_expr: ExprNodeId,
+        cond: ExprRedNode,
+        then_expr: ExprRedNode,
         elifs: Vec<ElseIf>,
-        else_expr: Option<ExprNodeId>,
+        else_expr: Option<ExprRedNode>,
     },
     Return {
-        expr: Option<ExprNodeId>,
+        expr: Option<ExprRedNode>,
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct Param {
     pub name: String,
     pub type_str: TypeNameString,
     pub span: Span,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct Field {
     pub name: String,
     pub type_str: TypeNameString,
     pub span: Span,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct GenericVar {
     pub name: String,
     pub constraint: Vec<TypeNameString>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct Ctor {
     pub name: String,
     pub generic_vars: Vec<GenericVar>,
@@ -165,7 +162,7 @@ pub struct Ctor {
     pub span: Span,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct MethodDecl {
     pub name: String,
     pub params: Vec<Param>,
@@ -174,30 +171,32 @@ pub struct MethodDecl {
     pub span: Span,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct AnnotationDecl {
     pub name: String,
     pub args: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct DeclRedNode {
+    pub span: Span,
+    pub inner: Arc<DeclNode>,
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct DeclNode {
     pub name: String,
     pub visibility: Visibility,
-    pub span: Span,
     pub kind: DeclNodeKind,
     pub annotations: Vec<AnnotationDecl>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum DeclNodeKind {
     Fun {
         params: Vec<Param>,
         return_type_str: TypeNameString,
-        block: Vec<ExprNodeId>,
-    },
-    FileUnit {  // file module
-        top_decls: Vec<DeclNodeId>,
+        block: Vec<ExprRedNode>,
     },
     FunDecl {
         params: Vec<Param>,
@@ -233,14 +232,14 @@ pub enum DeclNodeKind {
 }
 
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Visibility {
     Private,
     Public,
     PublicExternal
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct Require {
     pub path: Vec<String>,
     pub only: Vec<String>,
@@ -248,10 +247,16 @@ pub struct Require {
     pub span: Span,
 }
 
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct FileRedUnit {
+    pub span: Span,
+    pub name: String,
+    pub top_decls: Vec<DeclRedNode>,
+    pub file_unit_requires: Vec<Require>,
+}
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct CrateAst {
     pub external_requires: Vec<Require>,
-    pub expr_pool: Vec<ExprNode>,
-    pub decl_pool: Vec<DeclNode>,
+    pub file_units: Vec<FileRedUnit>,
 }

@@ -1,11 +1,16 @@
-use leafc_coreapi::ast::{AnnotationDecl, DeclNode, DeclNodeKind, Param, TypeNameString, Visibility};
+use std::sync::Arc;
+use leafc_coreapi::ast::{AnnotationDecl, DeclNode, DeclNodeKind, DeclRedNode, Param, TypeNameString, Visibility};
 use leafc_coreapi::diagnostic::DiagMsg;
 use leafc_coreapi::lexer::{Token, TokenType};
 use leafc_coreapi::parser::{ParserError};
 use crate::Parser;
 
 impl<'a> Parser<'a> {
-    pub fn parse_fun_decl(&mut self, visibility: Visibility, ann: Vec<AnnotationDecl>) -> Result<DeclNode, DiagMsg> {
+    pub fn parse_fun_decl(
+        &mut self,
+        visibility: Visibility,
+        ann: Vec<AnnotationDecl>
+    ) -> Result<DeclRedNode, DiagMsg> {
         self.skip_token();
         let fist_name_token = self.current_token().clone();
         self.skip_token_only(TokenType::Ident)?;
@@ -64,15 +69,17 @@ impl<'a> Parser<'a> {
 
         if self.current_token().kind == TokenType::Semicolon {
             self.skip_token();
-            return Ok(DeclNode {
-                name: fist_name_token.text.clone(),
+            return Ok(DeclRedNode {
                 span: fist_name_token.span.clone(),
-                visibility,
-                kind: DeclNodeKind::FunDecl {
-                    params,
-                    return_type_str,
-                },
-                annotations: ann,
+                inner: Arc::new(DeclNode {
+                    name: fist_name_token.text.clone(),
+                    visibility,
+                    kind: DeclNodeKind::FunDecl {
+                        params,
+                        return_type_str,
+                    },
+                    annotations: ann,
+                }),
             })
         }
 
@@ -91,16 +98,18 @@ impl<'a> Parser<'a> {
 
         self.skip_token_only(TokenType::Dedent)?; // dedent
 
-        Ok(DeclNode {
-            name: fist_name_token.text.clone(),
+        Ok(DeclRedNode {
             span: fist_name_token.span.clone(),
-            visibility,
-            kind: DeclNodeKind::Fun {
-                params,
-                return_type_str,
-                block: body,
-            },
-            annotations: ann,
+            inner: Arc::new(DeclNode {
+                name: fist_name_token.text.clone(),
+                visibility,
+                kind: DeclNodeKind::Fun {
+                    params,
+                    return_type_str,
+                    block: body,
+                },
+                annotations: ann,
+            }),
         })
     }
 }

@@ -1,11 +1,16 @@
-use leafc_coreapi::ast::{AnnotationDecl, Ctor, DeclNode, DeclNodeKind, Field, Param, TypeNameString, Visibility};
+use std::sync::Arc;
+use leafc_coreapi::ast::{AnnotationDecl, Ctor, DeclNode, DeclNodeKind, DeclRedNode, Field, Param, TypeNameString, Visibility};
 use leafc_coreapi::diagnostic::DiagMsg;
 use leafc_coreapi::lexer::{Token, TokenType};
 use leafc_coreapi::parser::{ParserError};
 use crate::Parser;
 
 impl<'a> Parser<'a> {
-    pub fn parse_type_decl(&mut self, visibility: Visibility, ann: Vec<AnnotationDecl>) -> Result<DeclNode, DiagMsg> {
+    pub fn parse_type_decl(
+        &mut self,
+        visibility: Visibility,
+        ann: Vec<AnnotationDecl>
+    ) -> Result<DeclRedNode, DiagMsg> {
         self.skip_token();
         let name_token = self.current_token();
         let name = name_token.text.clone();
@@ -14,12 +19,14 @@ impl<'a> Parser<'a> {
 
         if self.current_token().kind == TokenType::Semicolon {
             self.skip_token();
-            return Ok(DeclNode {
-                name,
-                visibility,
+            return Ok(DeclRedNode {
                 span: name_span,
-                kind: DeclNodeKind::TypeDecl,
-                annotations: ann,
+                inner: Arc::new(DeclNode {
+                    name,
+                    visibility,
+                    kind: DeclNodeKind::TypeDecl,
+                    annotations: ann,
+                }),
             })
         }
 
@@ -57,16 +64,18 @@ impl<'a> Parser<'a> {
                     generic = self.handle_where(generic)?;
                 }
 
-                Ok(DeclNode {
-                    name,
-                    visibility,
+                Ok(DeclRedNode {
                     span: name_span,
-                    kind: DeclNodeKind::TypeAlias {
-                        ref_to,
-                        has_abst: impls,
-                        generic_vars: generic,
-                    },
-                    annotations: ann,
+                    inner: Arc::new(DeclNode {
+                        name,
+                        visibility,
+                        kind: DeclNodeKind::TypeAlias {
+                            ref_to,
+                            has_abst: impls,
+                            generic_vars: generic,
+                        },
+                        annotations: ann,
+                    }),
                 })
             }
             TokenType::NewLine => {
@@ -98,17 +107,19 @@ impl<'a> Parser<'a> {
 
                     self.skip_token_if_newlines()?;
                     self.skip_token_only(TokenType::Dedent)?;
-                    Ok(DeclNode {
-                        name,
-                        visibility,
+                    Ok(DeclRedNode {
                         span: name_span,
+                        inner: Arc::new(DeclNode {
+                            name,
+                            visibility,
+                            annotations: ann,
 
-                        kind: DeclNodeKind::TypeStruct {
-                            fields,
-                            has_abst: impls,
-                            generic_vars: generic,
-                        },
-                        annotations: ann,
+                            kind: DeclNodeKind::TypeStruct {
+                                fields,
+                                has_abst: impls,
+                                generic_vars: generic,
+                            },
+                        }),
                     })
                 } else if self.current_token().kind == TokenType::Pipe {
 
@@ -151,16 +162,18 @@ impl<'a> Parser<'a> {
                     }
                     self.skip_token_if_newlines()?;
                     self.skip_token_only(TokenType::Dedent)?;
-                    return Ok(DeclNode {
-                        name,
-                        visibility,
+                    return Ok(DeclRedNode {
                         span: name_span,
-                        kind: DeclNodeKind::ADT {
-                            ctors,
-                            has_abst: impls,
-                            generic_vars: generic,
-                        },
-                        annotations: ann,
+                        inner: Arc::new(DeclNode {
+                            name,
+                            visibility,
+                            kind: DeclNodeKind::ADT {
+                                ctors,
+                                has_abst: impls,
+                                generic_vars: generic,
+                            },
+                            annotations: ann,
+                        }),
                     })
                 } else {
                     return Err(DiagMsg{

@@ -1,0 +1,2 @@
+fun main()
+    let n = 1 @ 6 * 3

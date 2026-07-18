@@ -1,9 +1,10 @@
 use std::collections::HashMap;
-use crate::ast::{DeclNodeId, ExprNodeId, Field};
+use std::sync::Arc;
+use crate::ast::DeclNode;
 use crate::source::{SourceId, Span};
 
 pub type ScopeId = usize;
-pub type DeclNodeScopeMap = HashMap<DeclNodeId, ScopeId>;
+pub type DeclNodeScopeMap = HashMap<Arc<DeclNode>, ScopeId>;
 
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,6 +76,7 @@ pub struct Scope {
     pub children: Vec<ScopeId>,
     pub kind: ScopeKind,
     pub symbols: Vec<SymId>,
+    pub def_span: Option<Span>,
 }
 
 #[derive(Debug, Clone)]
@@ -101,7 +103,8 @@ impl ScopePool {
         &mut self,
         parent: Option<ScopeId>,
         kind: ScopeKind,
-        bind_to_ast: Option<DeclNodeId>,
+        bind_to_ast: Option<Arc<DeclNode>>,
+        def_span: Option<Span>,
     ) -> ScopeId {
         let id = self.scopes.len();
 
@@ -114,6 +117,7 @@ impl ScopePool {
             children: Vec::new(),
             kind,
             symbols: Vec::new(),
+            def_span,
         };
         self.scopes.push(scope);
 

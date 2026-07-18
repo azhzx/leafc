@@ -8,8 +8,10 @@ mod parse_abstract_decl;
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Arc;
 use leafc_coreapi;
-use leafc_coreapi::ast::{AtomExprNode, DeclNode, DeclNodeId, ExprNode, CrateAst, GenericVar, Param, TypeNameString, Visibility, DeclNodeKind, AnnotationDecl};
+use leafc_coreapi::ast::{AtomExprNode, DeclNode, ExprNode, CrateAst, GenericVar, Param, TypeNameString, Visibility, DeclNodeKind, AnnotationDecl, DeclRedNode, FileRedUnit, Operator};
+use leafc_coreapi::crate_meta::{BuiltinOperator, OperatorDef, PriorityRelation, OperatorKind};
 use leafc_coreapi::diagnostic::DiagMsg;
 use leafc_coreapi::lexer::{LexerApi, Token, TokenStream, TokenType};
 use leafc_coreapi::lexer::TokenType::Lparen;
@@ -27,10 +29,28 @@ pub struct Parser<'a> {
     source_pool: &'a SourcePool,
     abs_path_sources: &'a AbsPathSourceMap,
     ast: CrateAst,
+    user_operators: &'a HashMap<String, OperatorDef>,
+
+    /// op_text => (precedence, kind)
+    user_op_info: HashMap<String, (usize, OperatorKind)>,
 }
 
 
 impl<'a> Parser<'a> {
+    const PRIORITY_OFFSET: usize = 5;
+
+    fn builtin_priority(op: BuiltinOperator) -> usize {
+        match op {
+            BuiltinOperator::Or => 10,
+            BuiltinOperator::And => 20,
+            BuiltinOperator::Eq | BuiltinOperator::Neq
+            | BuiltinOperator::Lt | BuiltinOperator::Gt
+            | BuiltinOperator::Le | BuiltinOperator::Ge => 30,
+            BuiltinOperator::Add | BuiltinOperator::Sub => 40,
+            BuiltinOperator::Mul | BuiltinOperator::Div | BuiltinOperator::Mod => 50,
+            BuiltinOperator::Not => 70,  // 前缀 not 的优先级，用户若引用则以此为基准
+        }
+    }
     fn current_token(&self) -> &Token {
         match self.tokens.data.get(self.index) {
             Some(t) => t,
@@ -191,8 +211,12 @@ impl<'a> Parser<'a> {
         Ok(generics)
     }
 
-    fn lexer(source_id: SourceId, code: &String) -> Result<TokenStream, DiagMsg> {
-        let mut lex = Lexer::new(source_id, &code);
+    fn lexer(
+        source_id: SourceId,
+        code: &String,
+        user_operators: &'a HashMap<String, OperatorDef>
+    ) -> Result<TokenStream, DiagMsg> {
+        let mut lex = Lexer::new(source_id, &code, user_operators);
         let tokens = lex.tokenize()?;
         for token in &tokens.data {
             println!("{:?}", token);
@@ -214,8 +238,9 @@ impl<'a> Parser<'a> {
         Ok(new_tokens)
     }
 
-    fn parse_top(&mut self, module_name: String) -> Result<DeclNode, DiagMsg> {
+    fn parse_top(&mut self, module_name: String) -> Result<FileRedUnit, DiagMsg> {
         let mut top_decls = vec![];
+        let mut file_unit_requires = vec![];
 
         while self.current_token().kind != TokenType::Eof {
             // handle ann
@@ -272,26 +297,26 @@ impl<'a> Parser<'a> {
             }
 
             match self.current_token().kind {
-                TokenType::KwUse => self.parse_use_decl()?,
+                TokenType::KwUse => {
+                    if let Some(req) = self.parse_use_decl()? {
+                        file_unit_requires.push(req);
+                    }
+                },
                 TokenType::KwFun => {
                     let decl_node = self.parse_fun_decl(visibility, ann)?;
-                    self.ast.decl_pool.push(decl_node);
-                    top_decls.push(self.ast.decl_pool.len() - 1);
+                    top_decls.push(decl_node);
                 },
                 TokenType::KwExternal => {
                     let decl_node =self.parse_external_decl(visibility, ann)?;
-                    self.ast.decl_pool.push(decl_node);
-                    top_decls.push(self.ast.decl_pool.len() - 1);
+                    top_decls.push(decl_node);
                 },
                 TokenType::KwType => {
                     let decl_node =self.parse_type_decl(visibility, ann)?;
-                    self.ast.decl_pool.push(decl_node);
-                    top_decls.push(self.ast.decl_pool.len() - 1);
+                    top_decls.push(decl_node);
                 },
                 TokenType::KwAbst => {
                     let decl_node =self.parse_abstract_decl(visibility, ann)?;
-                    self.ast.decl_pool.push(decl_node);
-                    top_decls.push(self.ast.decl_pool.len() - 1);
+                    top_decls.push(decl_node);
                 },
                 TokenType::NewLine => self.skip_token(),
                 _ => {
@@ -304,14 +329,11 @@ impl<'a> Parser<'a> {
             }
         }
 
-        Ok(DeclNode {
-            name: module_name,
-            visibility: Visibility::Public,
+        Ok(FileRedUnit {
             span: self.current_token().span.clone(),
-            kind: DeclNodeKind::FileUnit {
-                top_decls,
-            },
-            annotations: vec![],
+            name: module_name,
+            top_decls,
+            file_unit_requires,
         })
     }
 
@@ -321,8 +343,18 @@ impl<'a> ParserApi<'a> for Parser<'a> {
     fn new(
         dir_abs_path: PathBuf,
         source_pool: &'a SourcePool,
-        abs_path_source_map: &'a AbsPathSourceMap
+        abs_path_source_map: &'a AbsPathSourceMap,
+        user_operators: &'a HashMap<String, OperatorDef>,
     ) -> Self {
+        let mut user_op_info = HashMap::new();
+        for (_op_name, def) in user_operators {
+            let base_prio = match def.priority_relation() {
+                PriorityRelation::HigherThan(op) => Self::builtin_priority(op) + Self::PRIORITY_OFFSET,
+                PriorityRelation::LowerThan(op) => Self::builtin_priority(op) - Self::PRIORITY_OFFSET,
+            };
+            user_op_info.insert(def.text.clone(), (base_prio, def.kind));
+        }
+
         Parser {
             dir_abs_path,
             tokens: TokenStream { data: vec![] },
@@ -331,9 +363,10 @@ impl<'a> ParserApi<'a> for Parser<'a> {
             abs_path_sources: abs_path_source_map,
             ast: CrateAst {
                 external_requires: vec![],
-                expr_pool: vec![],
-                decl_pool: vec![],
+                file_units: vec![],
             },
+            user_operators,
+            user_op_info,
         }
     }
 
@@ -347,13 +380,13 @@ impl<'a> ParserApi<'a> for Parser<'a> {
 
         let content = &self.source_pool.0[*main_file_source_id];
 
-        let token = Self::lexer(*main_file_source_id, &content.file_content)?;
+        let token = Self::lexer(*main_file_source_id, &content.file_content, &self.user_operators)?;
         self.tokens = Self::pp(*main_file_source_id, &token)?;
         self.index = 0;
 
         let main_module = self.parse_top("main".to_string())?;
 
-        self.ast.decl_pool.push(main_module);
+        self.ast.file_units.push(main_module);
 
         Ok(self.ast)
     }
