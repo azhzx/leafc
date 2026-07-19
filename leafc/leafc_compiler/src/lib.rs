@@ -229,15 +229,24 @@ impl CompilerApi for NativeCompiler {
 
         let type_checker = TypeChecker::new(hir);
         let ty_map = match type_checker.check() {
-            Ok(hir) => {
+            Ok(result) => {
                 println!("=== ty decl map ===");
-                println!("{:#?}", hir.decl_type_map);
+                println!("{:#?}", result.decl_type_map);
                 println!("=== === ===");
 
                 println!("=== ty expr map ===");
-                println!("{:#?}", hir.expr_type_map);
+                println!("{:#?}", result.expr_type_map);
                 println!("=== === ===");
-                hir
+
+                println!("=== hir ty pool ===");
+                println!("{:#?}", result.hir.type_pool);
+                println!("=== === ===");
+
+                println!("=== hir ty map ===");
+                println!("{:#?}", result.hir.type_map);
+                println!("=== === ===");
+
+                result
             }
             Err(e) => {
                 println!("{}", diag.report(e));
@@ -245,7 +254,7 @@ impl CompilerApi for NativeCompiler {
                 return self;
             }
         };
-
+        
         self.ast_cache = ast;
 
         *out = Some(());

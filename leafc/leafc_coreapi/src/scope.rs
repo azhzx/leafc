@@ -81,10 +81,10 @@ pub struct Scope {
 
 #[derive(Debug, Clone)]
 pub struct ScopePool {
-    scopes: Vec<Scope>,
-    top_scopes: Vec<ScopeId>,
-    sym_counter: usize,
-    symbols: Vec<Symbol>,
+    pub scopes: Vec<Scope>,
+    pub top_scopes: Vec<ScopeId>,
+    pub sym_counter: usize,
+    pub symbols: Vec<Symbol>,
     pub decl_node_scope_map: DeclNodeScopeMap,
 }
 

@@ -182,7 +182,7 @@ pub struct ExprRedNode {
 }
 
 impl ExprRedNode {
-    fn child_red(&self, child: &GreenChild<GreenExpr>) -> ExprRedNode {
+    pub fn child_red(&self, child: &GreenChild<GreenExpr>) -> ExprRedNode {
         let start = self.span.start_off + child.relative_start;
         let len = child.node.text_len;
         ExprRedNode {
@@ -546,7 +546,7 @@ pub struct StringRedNode {
     pub text: String,
 }
 
-trait HasTextLen {
+pub trait HasTextLen {
     fn text_len(&self) -> TextLen;
 }
 
@@ -567,6 +567,8 @@ impl HasTextLen for GreenRequire { fn text_len(&self) -> TextLen { self.text_len
 
 impl HasTextLen for GreenFileUnit { fn text_len(&self) -> TextLen { self.text_len } }
 
+impl HasTextLen for String { fn text_len(&self) -> usize { self.len() } }
+
 impl DeclRedNode {
 
     fn child_span<T: HasTextLen>(&self, child: &GreenChild<T>) -> Span {
@@ -578,7 +580,7 @@ impl DeclRedNode {
         }
     }
 
-    fn child_red(&self, child: &GreenChild<GreenExpr>) -> ExprRedNode {
+    pub fn child_red(&self, child: &GreenChild<GreenExpr>) -> ExprRedNode {
         let span = self.child_span(child);
         ExprRedNode {
             span,

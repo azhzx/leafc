@@ -14,6 +14,7 @@ pub enum TypeCheckerError {
 pub struct TypeCheckerResult {
     pub decl_type_map: HirDeclTypeMap,
     pub expr_type_map: HirExprTypeMap,
+    pub hir: HirCrate
 }
 
 pub trait TypeCheckerApi {

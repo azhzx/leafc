@@ -7,10 +7,11 @@ fn main() {
         .set_crate_path("demo_leaf_crate")
         .expect("fail to set crate path")
         .compile(&mut compile_result)
-        .edit_append(
-            r"D:\leafc\demo_leaf_crate\main.leaf".to_string(),
-            "100",
-            24
-        );
+        // .edit_append(
+        //     r"D:\leafc\demo_leaf_crate\main.leaf".to_string(),
+        //     "100",
+        //     24
+        // )
+        ;
 }
 

@@ -686,6 +686,7 @@ impl<'a> NamePassApi<'a> for NamePass<'a> {
             pool: self.scope_pool,
             do_scope_map: self.do_scope_map,
             fun_scope_map: self.fun_scope_map,
+            source_id_to_scope: self.source_id_to_scope,
         })
     }
 }
