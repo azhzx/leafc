@@ -1,6 +1,5 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::format;
-use leafc_coreapi::ast::ExprNode;
 use leafc_coreapi::diagnostic::DiagMsg;
 use leafc_coreapi::lexer::{Token, TokenStream, TokenType};
 use leafc_coreapi::lexer::TokenType::{Comma, Eof, Ident, KwAbst, Lparen, Rparen, NewLine};

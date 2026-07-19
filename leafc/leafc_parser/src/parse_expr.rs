@@ -1,39 +1,55 @@
+use std::ops::Deref;
 use std::sync::Arc;
 use leafc_coreapi::ast::{
-    AtomExprNode, ElseIf, ExprNode, ExprNodeKind, ExprRedNode, Operator,
+    AtomExprNode, GreenChild, GreenElseIf, GreenExpr, GreenExprKind, ExprRedNode, Operator,
+    TypeNameString,
 };
 use leafc_coreapi::diagnostic::DiagMsg;
 use leafc_coreapi::lexer::TokenType;
 use leafc_coreapi::parser::ParserError;
-use leafc_coreapi::crate_meta::{OperatorKind};
+use leafc_coreapi::crate_meta::OperatorKind;
 use crate::Parser;
 
 impl<'a> Parser<'a> {
     pub fn parse_block_expr(&mut self) -> Result<ExprRedNode, DiagMsg> {
-        let mut exprs = vec![];
-        let span = self.current_token().span.clone();
+        let start_off = self.current_token().span.start_off; // 'indent' token
         self.skip_token_only(TokenType::Indent)?;
+        let mut exprs: Vec<GreenChild<GreenExpr>> = vec![];
 
         while self.current_token().kind != TokenType::Dedent {
-            let expr = self.parse_expr()?;
+            let expr_red = self.parse_expr()?;
+            let expr_start = expr_red.span.start_off;
+            exprs.push(GreenChild {
+                relative_start: (expr_start - start_off),
+                node: expr_red.inner.clone(),
+            });
             if self.current_token().kind == TokenType::NewLine {
                 self.skip_token();
                 self.skip_token_if_newlines()?;
             }
-            exprs.push(expr);
         }
 
         self.skip_token_only(TokenType::Dedent)?;
+        let end_off = self.tokens.data[self.index - 1].span.end_off;
+        let text_len = (end_off - start_off);
+
+        let green = GreenExpr {
+            kind: GreenExprKind::Do { exprs },
+            text_len,
+        };
 
         Ok(ExprRedNode {
-            span,
-            inner: Arc::new(ExprNode {
-                kind: ExprNodeKind::Do { exprs },
-            }),
+            span: leafc_coreapi::source::Span {
+                source_id: self.tokens.data.first().unwrap().span.source_id,
+                start_off,
+                end_off,
+            },
+            inner: Arc::new(green),
         })
     }
 
     pub fn parse_let_expr(&mut self) -> Result<ExprRedNode, DiagMsg> {
+        let let_start = self.current_token().span.start_off;
         self.skip_token_only(TokenType::KwLet)?;
         let mut mutable = false;
 
@@ -42,76 +58,119 @@ impl<'a> Parser<'a> {
             mutable = true;
         }
 
-        let name_token = self.current_token();
+        let name_token = self.current_token().clone();
+        let name_start = name_token.span.start_off;
         let name = name_token.text.clone();
-        let span = name_token.span.clone();
         self.skip_token_only(TokenType::Ident)?;
 
-        let type_str = if self.current_token().kind == TokenType::Colon {
+        let type_str_opt: Option<(TypeNameString, usize)> = if self.current_token().kind == TokenType::Colon {
             self.skip_token();
-            self.handle_type_name_string()?
+            let ts = self.current_token().span.start_off;
+            let t = self.handle_type_name_string()?;
+            Some((t, ts))
         } else {
-            self.unknown_type_name()
+            None
         };
 
         self.skip_token_only(TokenType::Eq)?;
-        let expr = self.parse_expr()?;
+        let expr_red = self.parse_expr()?;
+        let expr_start = expr_red.span.start_off;
 
         self.skip_token_only(TokenType::NewLine)?;
+        let end_off = self.tokens.data[self.index - 1].span.end_off;
+        let text_len = (end_off - let_start);
+
+        let name_child = GreenChild {
+            relative_start: (name_start - let_start),
+            node: Arc::new(name),
+        };
+
+        let expr_child = GreenChild {
+            relative_start: (expr_start - let_start),
+            node: expr_red.inner.clone(),
+        };
+
+        let type_str_child = type_str_opt.map(|(t, start)| GreenChild {
+            relative_start: (start - let_start),
+            node: Arc::new(t),
+        });
+
+        let green = GreenExpr {
+            kind: GreenExprKind::Let {
+                name: name_child,
+                expr: expr_child,
+                type_str: type_str_child,
+                mutable,
+            },
+            text_len,
+        };
 
         Ok(ExprRedNode {
-            span,
-            inner: Arc::new(ExprNode {
-                kind: ExprNodeKind::Let {
-                    expr,
-                    name,
-                    type_str,
-                    mutable,
-                },
-            }),
+            span: leafc_coreapi::source::Span {
+                source_id: name_token.span.source_id,
+                start_off: let_start,
+                end_off,
+            },
+            inner: Arc::new(green),
         })
     }
 
     pub fn parse_do_expr(&mut self) -> Result<ExprRedNode, DiagMsg> {
-        let span = self.current_token().span.clone();
+        let do_start = self.current_token().span.start_off;
         self.skip_token_only(TokenType::KwDo)?;
         self.skip_token_only(TokenType::NewLine)?;
-
         self.parse_block_expr()
     }
 
     pub fn parse_if_expr(&mut self) -> Result<ExprRedNode, DiagMsg> {
-        let span = self.current_token().span.clone();
+        let if_start = self.current_token().span.start_off;
         self.skip_token_only(TokenType::KwIf)?;
-        let cond = self.parse_expr()?;
+        let cond_red = self.parse_expr()?;
+        let cond_start = cond_red.span.start_off;
 
-        let if_then_expr = if self.current_token().kind == TokenType::KwThen {
+        let (then_red, then_start) = if self.current_token().kind == TokenType::KwThen {
             self.skip_token();
-            self.parse_expr()?
+            let expr = self.parse_expr()?;
+            let start = expr.span.start_off;
+            (expr, start)
         } else {
             self.skip_token_only(TokenType::NewLine)?;
-            self.parse_block_expr()?
+            let expr = self.parse_block_expr()?;
+            let start = expr.span.start_off;
+            (expr, start)
         };
 
-        let mut elif_body_exprs = vec![];
-        if self.current_token().kind == TokenType::KwElif {
-            while self.current_token().kind == TokenType::KwElif {
+        let mut elifs: Vec<GreenElseIf> = vec![];
+        while self.current_token().kind == TokenType::KwElif {
+            let elif_start = self.current_token().span.start_off;
+            self.skip_token(); // 'elif'
+            let elif_cond_red = self.parse_expr()?;
+            self.skip_token_only(TokenType::NewLine)?;
+            let elif_body_red = self.parse_block_expr()?;
+            let elif_end = self.tokens.data[self.index - 1].span.end_off;
+
+            let elif_cond_child = GreenChild {
+                relative_start: (elif_cond_red.span.start_off - elif_start) as usize,
+                node: elif_cond_red.inner.clone(),
+            };
+            let elif_body_child = GreenChild {
+                relative_start: (elif_body_red.span.start_off - elif_start),
+                node: elif_body_red.inner.clone(),
+            };
+
+            elifs.push(GreenElseIf {
+                cond: elif_cond_child,
+                body: elif_body_child,
+                text_len: (elif_end - elif_start),
+            });
+
+            if self.current_token().kind == TokenType::NewLine {
                 self.skip_token();
-                let cond = self.parse_expr()?;
-
-                self.skip_token_only(TokenType::NewLine)?;
-                let body = self.parse_block_expr()?;
-
-                if self.current_token().kind == TokenType::NewLine {
-                    self.skip_token();
-                }
-                elif_body_exprs.push(ElseIf { cond, body });
             }
         }
 
-        let else_body_expr = if self.current_token().kind == TokenType::KwElse {
+        let else_red = if self.current_token().kind == TokenType::KwElse {
             self.skip_token();
-
             if self.current_token().kind == TokenType::NewLine {
                 self.skip_token_only(TokenType::NewLine)?;
                 Some(self.parse_block_expr()?)
@@ -122,66 +181,129 @@ impl<'a> Parser<'a> {
             None
         };
 
+        let end_off = self.tokens.data[self.index - 1].span.end_off;
+        let text_len = (end_off - if_start);
+
+        let cond_child = GreenChild {
+            relative_start: (cond_start - if_start),
+            node: cond_red.inner.clone(),
+        };
+        let then_child = GreenChild {
+            relative_start: (then_start - if_start),
+            node: then_red.inner.clone(),
+        };
+
+        let else_child = else_red.map(|r| GreenChild {
+            relative_start: (r.span.start_off - if_start),
+            node: r.inner.clone(),
+        });
+
+        let green = GreenExpr {
+            kind: GreenExprKind::If {
+                cond: cond_child,
+                then_expr: then_child,
+                elifs,
+                else_expr: else_child,
+            },
+            text_len,
+        };
+
         Ok(ExprRedNode {
-            span,
-            inner: Arc::new(ExprNode {
-                kind: ExprNodeKind::If {
-                    cond,
-                    then_expr: if_then_expr,
-                    elifs: elif_body_exprs,
-                    else_expr: else_body_expr,
-                },
-            }),
+            span: leafc_coreapi::source::Span {
+                source_id: self.tokens.data[0].span.source_id,
+                start_off: if_start,
+                end_off,
+            },
+            inner: Arc::new(green),
         })
     }
 
     pub fn parse_return_expr(&mut self) -> Result<ExprRedNode, DiagMsg> {
-        let span = self.current_token().span.clone();
+        let return_start = self.current_token().span.start_off;
         self.skip_token_only(TokenType::KwReturn)?;
-        let expr = if self.current_token().kind == TokenType::NewLine {
-            None
-        } else {
-            let expr = self.parse_expr()?;
-            self.skip_token_only(TokenType::NewLine);
-            Some(expr)
-        };
 
-        Ok(ExprRedNode {
-            span,
-            inner: Arc::new(ExprNode {
-                kind: ExprNodeKind::Return { expr },
-            }),
-        })
+        if self.current_token().kind == TokenType::NewLine {
+            let end_off = self.current_token().span.start_off;
+            self.skip_token_only(TokenType::NewLine)?;
+
+            let green = GreenExpr {
+                kind: GreenExprKind::Return { expr: None },
+                text_len: (end_off - return_start),
+            };
+            Ok(ExprRedNode {
+                span: leafc_coreapi::source::Span {
+                    source_id: self.tokens.data[0].span.source_id,
+                    start_off: return_start,
+                    end_off,
+                },
+                inner: Arc::new(green),
+            })
+
+        } else {
+            let expr_red = self.parse_expr()?;
+            let expr_start = expr_red.span.start_off;
+            self.skip_token_only(TokenType::NewLine)?;
+            let end_off = self.tokens.data[self.index - 1].span.end_off;
+
+            let green = GreenExpr {
+                kind: GreenExprKind::Return {
+                    expr: Some(GreenChild {
+                        relative_start: (expr_start - return_start),
+                        node: expr_red.inner.clone(),
+                    }),
+                },
+                text_len: (end_off - return_start),
+            };
+            Ok(ExprRedNode {
+                span: leafc_coreapi::source::Span {
+                    source_id: self.tokens.data[0].span.source_id,
+                    start_off: return_start,
+                    end_off,
+                },
+                inner: Arc::new(green),
+            })
+        }
     }
 
     pub fn parse_atom_expr(&mut self) -> Result<AtomExprNode, DiagMsg> {
-        let current_token = self.current_token();
-        let current_token_kind = current_token.kind.clone();
+
+        let current_token = self.current_token().clone();
+        let current_token_kind = current_token.kind;
         let current_token_text = current_token.text.clone();
-        let current_token_span = current_token.span.clone();
+        let start_off = current_token.span.start_off;
+        let end_off = current_token.span.end_off;
+        let text_len = (end_off - start_off);
 
         self.skip_token();
 
-        let expr = match current_token_kind {
-            TokenType::Float => AtomExprNode::Decimal {
+        match current_token_kind {
+            TokenType::Float => Ok(AtomExprNode::Decimal {
                 dec: current_token_text,
-            },
-            TokenType::Int => AtomExprNode::Int {
+                text_len,
+            }),
+            TokenType::Int => Ok(AtomExprNode::Int {
                 int: current_token_text,
-            },
-            TokenType::String => AtomExprNode::Str {
+                text_len,
+            }),
+            TokenType::String => Ok(AtomExprNode::Str {
                 string: current_token_text,
-            },
-            TokenType::Ident => AtomExprNode::Name {
+                text_len,
+            }),
+            TokenType::Ident => Ok(AtomExprNode::Name {
                 name: current_token_text,
-            },
-            TokenType::DotDotDot => AtomExprNode::Ellipsis,
+                text_len,
+            }),
+            TokenType::DotDotDot => Ok(AtomExprNode::Ellipsis { text_len }),
             TokenType::Hash => {
-                let mut exprs = vec![];
-
+                let hash_start = start_off;
                 self.skip_token_only(TokenType::Lbracket)?;
+                let mut exprs = vec![];
                 while self.current_token().kind != TokenType::Rbracket {
-                    exprs.push(self.parse_expr()?);
+                    let expr_red = self.parse_expr()?;
+                    exprs.push(GreenChild {
+                        relative_start: (expr_red.span.start_off - hash_start) as usize,
+                        node: expr_red.inner.clone(),
+                    });
                     if self.current_token().kind == TokenType::Comma {
                         self.skip_token();
                     } else if self.current_token().kind == TokenType::Rbracket {
@@ -190,24 +312,24 @@ impl<'a> Parser<'a> {
                         return Err(DiagMsg {
                             title: format!("{:?}", ParserError::InvalidTupleLiteral),
                             msg: "invalid tuple literal".to_string(),
-                            span: current_token_span,
+                            span: current_token.span.clone(),
                         });
                     }
                 }
+                let rbracket_token = self.current_token().clone();
                 self.skip_token_only(TokenType::Rbracket)?;
-
-                AtomExprNode::Tuple { exprs }
+                let end = rbracket_token.span.end_off;
+                Ok(AtomExprNode::Tuple {
+                    exprs,
+                    text_len: (end - hash_start),
+                })
             }
-            _ => {
-                return Err(DiagMsg {
-                    title: format!("{:?}", ParserError::InvalidExpression),
-                    msg: "invalid expression literal".to_string(),
-                    span: current_token_span,
-                });
-            }
-        };
-
-        Ok(expr)
+            _ => Err(DiagMsg {
+                title: format!("{:?}", ParserError::InvalidExpression),
+                msg: "invalid expression literal".to_string(),
+                span: current_token.span,
+            }),
+        }
     }
 
     /// 中缀运算符左绑定优先级
@@ -273,43 +395,71 @@ impl<'a> Parser<'a> {
 
     /// 以最小绑定强度 min_bp 继续解析表达式
     fn parse_expr_bp(&mut self, min_bp: usize) -> Result<ExprRedNode, DiagMsg> {
-        // nud
         let token = self.current_token().clone();
         let kind = token.kind;
-        let start_span = token.span.clone();
+        let start_off = token.span.start_off;
 
         let mut lhs = match kind {
-            // - / not
             TokenType::Minus | TokenType::Not => {
-                let op_kind = kind;
-                let op_span = start_span;
+                let op_start = start_off;
                 self.skip_token();
-                let operand = self.parse_expr_bp(Self::rbp(op_kind.clone()).unwrap())?;
+                let operand_red = self.parse_expr_bp(Self::rbp(kind.clone()).unwrap())?;
+                let op_end = token.span.end_off;
+                let expr_end = operand_red.span.end_off;
+                let text_len = (expr_end - op_start);
+
+                let op_child = GreenChild {
+                    relative_start: 0, // 操作符在表达式开始
+                    node: Arc::new(Self::token_type_to_operator(kind).unwrap()),
+                };
+                let right_child = GreenChild {
+                    relative_start: (operand_red.span.start_off - op_start),
+                    node: operand_red.inner.clone(),
+                };
+                let green = GreenExpr {
+                    kind: GreenExprKind::Unary {
+                        op: op_child,
+                        right: right_child,
+                    },
+                    text_len,
+                };
                 ExprRedNode {
-                    span: op_span,
-                    inner: Arc::new(ExprNode {
-                        kind: ExprNodeKind::Unary {
-                            op: Self::token_type_to_operator(op_kind).unwrap(),
-                            right: operand,
-                        },
-                    }),
+                    span: leafc_coreapi::source::Span {
+                        source_id: token.span.source_id,
+                        start_off: op_start,
+                        end_off: expr_end,
+                    },
+                    inner: Arc::new(green),
                 }
             }
 
             TokenType::UserOp => {
                 if let Some((prio, op_kind)) = self.user_op_info.get(&token.text) {
                     if *op_kind == OperatorKind::Prefix {
-                        let rbp = *prio;   // 前缀运算符的右绑定强度
+                        let rbp = *prio;
+                        let op_start = start_off;
                         self.skip_token();
-                        let operand = self.parse_expr_bp(rbp)?;
+                        let operand_red = self.parse_expr_bp(rbp)?;
+                        let expr_end = operand_red.span.end_off;
+                        let op_child = GreenChild {
+                            relative_start: 0,
+                            node: Arc::new(Operator::UserOp(token.text.clone())),
+                        };
+                        let right_child = GreenChild {
+                            relative_start: (operand_red.span.start_off - op_start),
+                            node: operand_red.inner.clone(),
+                        };
+                        let green = GreenExpr {
+                            kind: GreenExprKind::Unary { op: op_child, right: right_child },
+                            text_len: (expr_end - op_start),
+                        };
                         ExprRedNode {
-                            span: start_span,
-                            inner: Arc::new(ExprNode {
-                                kind: ExprNodeKind::Unary {
-                                    op: Operator::UserOp(token.text.clone()),
-                                    right: operand,
-                                },
-                            }),
+                            span: leafc_coreapi::source::Span {
+                                source_id: token.span.source_id,
+                                start_off: op_start,
+                                end_off: expr_end,
+                            },
+                            inner: Arc::new(green),
                         }
                     } else {
                         return Err(DiagMsg {
@@ -323,7 +473,6 @@ impl<'a> Parser<'a> {
                 }
             }
 
-            // 括号
             TokenType::Lparen => {
                 self.skip_token(); // '('
                 let inner = self.parse_expr()?;
@@ -331,62 +480,98 @@ impl<'a> Parser<'a> {
                 inner
             }
 
-            // move / copy / shared
             TokenType::KwMove | TokenType::KwCopy | TokenType::KwShared => {
-                let kw_span = start_span;
+                let kw_start = start_off;
                 self.skip_token();
-                let target = self.parse_expr_bp(60)?;
+                let target_red = self.parse_expr_bp(60)?;
+                let expr_end = target_red.span.end_off;
+
+                let target_child = GreenChild {
+                    relative_start: (target_red.span.start_off - kw_start),
+                    node: target_red.inner.clone(),
+                };
                 let kind = match kind {
-                    TokenType::KwMove => ExprNodeKind::Move { target },
-                    TokenType::KwCopy => ExprNodeKind::Copy { target },
-                    TokenType::KwShared => ExprNodeKind::Share { target },
+                    TokenType::KwMove => GreenExprKind::Move { target: target_child },
+                    TokenType::KwCopy => GreenExprKind::Copy { target: target_child },
+                    TokenType::KwShared => GreenExprKind::Share { target: target_child },
                     _ => unreachable!(),
                 };
+                let green = GreenExpr {
+                    kind,
+                    text_len: (expr_end - kw_start),
+                };
                 ExprRedNode {
-                    span: kw_span,
-                    inner: Arc::new(ExprNode { kind }),
+                    span: leafc_coreapi::source::Span {
+                        source_id: token.span.source_id,
+                        start_off: kw_start,
+                        end_off: expr_end,
+                    },
+                    inner: Arc::new(green),
                 }
             }
 
-            // ref / ref mut
             TokenType::KwRef => {
-                let ref_span = start_span;
+                let ref_start = start_off;
                 self.skip_token();
-                let target = if self.current_token().kind == TokenType::KwMut {
+                let is_mut = self.current_token().kind == TokenType::KwMut;
+                if is_mut {
                     self.skip_token();
-                    self.parse_expr_bp(60)?
-                } else {
-                    self.parse_expr_bp(60)?
+                }
+                let target_red = self.parse_expr_bp(60)?;
+                let expr_end = target_red.span.end_off;
+                let target_child = GreenChild {
+                    relative_start: (target_red.span.start_off - ref_start),
+                    node: target_red.inner.clone(),
                 };
-                let kind = if self.current_token().kind == TokenType::KwMut {
-                    ExprNodeKind::MutRef { target }
+                let kind = if is_mut {
+                    GreenExprKind::MutRef { target: target_child }
                 } else {
-                    ExprNodeKind::Ref { target }
+                    GreenExprKind::Ref { target: target_child }
+                };
+                let green = GreenExpr {
+                    kind,
+                    text_len: (expr_end - ref_start),
                 };
                 ExprRedNode {
-                    span: ref_span,
-                    inner: Arc::new(ExprNode { kind }),
+                    span: leafc_coreapi::source::Span {
+                        source_id: token.span.source_id,
+                        start_off: ref_start,
+                        end_off: expr_end,
+                    },
+                    inner: Arc::new(green),
                 }
             }
 
-            // 其余一切视为原子
             _ => {
                 let atom = self.parse_atom_expr()?;
+                let atom_text_len = match &atom {
+                    AtomExprNode::Decimal { text_len, .. } => *text_len,
+                    AtomExprNode::Int { text_len, .. } => *text_len,
+                    AtomExprNode::Str { text_len, .. } => *text_len,
+                    AtomExprNode::Name { text_len, .. } => *text_len,
+                    AtomExprNode::Tuple { text_len, .. } => *text_len,
+                    AtomExprNode::Ellipsis { text_len } => *text_len,
+                };
+                let green = GreenExpr {
+                    kind: GreenExprKind::Atom { expr: atom },
+                    text_len: atom_text_len,
+                };
                 ExprRedNode {
-                    span: start_span,
-                    inner: Arc::new(ExprNode {
-                        kind: ExprNodeKind::Atom { expr: atom },
-                    }),
+                    span: leafc_coreapi::source::Span {
+                        source_id: token.span.source_id,
+                        start_off,
+                        end_off: start_off + atom_text_len,
+                    },
+                    inner: Arc::new(green),
                 }
             }
         };
 
-
-        // led
+        // led 部分
         loop {
             let token = self.current_token().clone();
             let kind = token.kind;
-            let token_span = token.span.clone();
+            let token_start = token.span.start_off;
 
             let lbp = match kind {
                 TokenType::UserOp => self.user_op_info.get(&token.text).map(|(p, _)| *p),
@@ -398,7 +583,6 @@ impl<'a> Parser<'a> {
                     break;
                 }
 
-                // 分支处理
                 match kind {
                     TokenType::UserOp => {
                         let (prio, op_kind) = self.user_op_info.get(&token.text)
@@ -406,70 +590,129 @@ impl<'a> Parser<'a> {
                         match op_kind {
                             OperatorKind::Infix => {
                                 self.skip_token();
-                                let rhs = self.parse_expr_bp(lbp + 1)?; // 左结合
+                                let rhs_red = self.parse_expr_bp(lbp + 1)?;
+                                let expr_start = lhs.span.start_off;
+                                let expr_end = rhs_red.span.end_off;
+
+                                let left_child = GreenChild {
+                                    relative_start: (lhs.span.start_off - expr_start),
+                                    node: lhs.inner.clone(),
+                                };
+                                let op_child = GreenChild {
+                                    relative_start: (token_start - expr_start),
+                                    node: Arc::new(Operator::UserOp(token.text.clone())),
+                                };
+                                let right_child = GreenChild {
+                                    relative_start: (rhs_red.span.start_off - expr_start),
+                                    node: rhs_red.inner.clone(),
+                                };
+                                let green = GreenExpr {
+                                    kind: GreenExprKind::Binary {
+                                        left: left_child,
+                                        op: op_child,
+                                        right: right_child,
+                                    },
+                                    text_len: (expr_end - expr_start),
+                                };
                                 lhs = ExprRedNode {
-                                    span: token_span,
-                                    inner: Arc::new(ExprNode {
-                                        kind: ExprNodeKind::Binary {
-                                            left: lhs,
-                                            op: Operator::UserOp(token.text.clone()),
-                                            right: rhs,
-                                        },
-                                    }),
+                                    span: leafc_coreapi::source::Span {
+                                        source_id: token.span.source_id,
+                                        start_off: expr_start,
+                                        end_off: expr_end,
+                                    },
+                                    inner: Arc::new(green),
                                 };
                                 continue;
                             }
                             OperatorKind::Postfix => {
                                 self.skip_token();
+                                let expr_start = lhs.span.start_off;
+                                let expr_end = token.span.end_off;
+                                let op_child = GreenChild {
+                                    relative_start: (token_start - expr_start),
+                                    node: Arc::new(Operator::UserOp(token.text.clone())),
+                                };
+                                let right_child = GreenChild {
+                                    relative_start: (lhs.span.start_off - expr_start),
+                                    node: lhs.inner.clone(),
+                                };
+                                let green = GreenExpr {
+                                    kind: GreenExprKind::Unary { op: op_child, right: right_child },
+                                    text_len: (expr_end - expr_start),
+                                };
                                 lhs = ExprRedNode {
-                                    span: token_span,
-                                    inner: Arc::new(ExprNode {
-                                        kind: ExprNodeKind::Unary {
-                                            op: Operator::UserOp(token.text.clone()),
-                                            right: lhs,
-                                        },
-                                    }),
+                                    span: leafc_coreapi::source::Span {
+                                        source_id: token.span.source_id,
+                                        start_off: expr_start,
+                                        end_off: expr_end,
+                                    },
+                                    inner: Arc::new(green),
                                 };
                                 continue;
                             }
                             _ => {
-                               return Err(DiagMsg {
+                                return Err(DiagMsg {
                                     title: format!("{:?}", ParserError::InvalidExpression),
-                                    msg: format!("Unexpected prefix operator '{}' in infix position", token.text),
+                                    msg: format!("Unexpected operator '{}' in infix/postfix position", token.text),
                                     span: token.span.clone(),
                                 });
                             }
                         }
                     }
-                    // 内置中缀运算符
                     _ => {
                         self.skip_token();
-                        let rhs = self.parse_expr_bp(lbp + 1)?;
+                        let rhs_red = self.parse_expr_bp(lbp + 1)?;
+                        let expr_start = lhs.span.start_off;
+                        let expr_end = rhs_red.span.end_off;
+
+                        let left_child = GreenChild {
+                            relative_start: (lhs.span.start_off - expr_start),
+                            node: lhs.inner.clone(),
+                        };
+                        let op_child = GreenChild {
+                            relative_start: (token_start - expr_start),
+                            node: Arc::new(Self::token_type_to_operator(kind).ok_or_else(|| DiagMsg {
+                                title: format!("{:?}", ParserError::InvalidOperator),
+                                msg: "invalid operator".to_string(),
+                                span: token.span.clone(),
+                            })?),
+                        };
+                        let right_child = GreenChild {
+                            relative_start: (rhs_red.span.start_off - expr_start),
+                            node: rhs_red.inner.clone(),
+                        };
+                        let green = GreenExpr {
+                            kind: GreenExprKind::Binary {
+                                left: left_child,
+                                op: op_child,
+                                right: right_child,
+                            },
+                            text_len: (expr_end - expr_start),
+                        };
                         lhs = ExprRedNode {
-                            span: token_span.clone(),
-                            inner: Arc::new(ExprNode {
-                                kind: ExprNodeKind::Binary {
-                                    left: lhs,
-                                    op: Self::token_type_to_operator(kind).ok_or_else(|| DiagMsg {
-                                        title: format!("{:?}", ParserError::InvalidOperator),
-                                        msg: "invalid operator".to_string(),
-                                        span: token_span.clone(),
-                                    })?,
-                                    right: rhs,
-                                },
-                            }),
+                            span: leafc_coreapi::source::Span {
+                                source_id: token.span.source_id,
+                                start_off: expr_start,
+                                end_off: expr_end,
+                            },
+                            inner: Arc::new(green),
                         };
                         continue;
                     }
                 }
             }
 
+            // 其他后缀操作
             match kind {
                 TokenType::Lparen => {
                     self.skip_token(); // '('
                     let mut args = vec![];
                     while self.current_token().kind != TokenType::Rparen {
-                        args.push(self.parse_expr()?);
+                        let arg_red = self.parse_expr()?;
+                        args.push(GreenChild {
+                            relative_start: (arg_red.span.start_off - token_start),
+                            node: arg_red.inner.clone(),
+                        });
                         if self.current_token().kind == TokenType::Comma {
                             self.skip_token();
                         } else if self.current_token().kind == TokenType::Rparen {
@@ -478,19 +721,40 @@ impl<'a> Parser<'a> {
                             return Err(DiagMsg {
                                 title: format!("{:?}", ParserError::InvalidCallArgumentList),
                                 msg: "invalid call argument list".to_string(),
-                                span: token_span.clone(),
+                                span: token.span.clone(),
                             });
                         }
                     }
                     self.skip_token_only(TokenType::Rparen)?;
+                    let rparen_span = self.tokens.data[self.index - 1].span.clone();
+                    let expr_start = lhs.span.start_off;
+                    let expr_end = rparen_span.end_off;
+
+                    let callee_child = GreenChild {
+                        relative_start: (lhs.span.start_off - expr_start),
+                        node: lhs.inner.clone(),
+                    };
+
+                    let lparen_offset = (token_start - expr_start);
+                    let adjusted_args: Vec<GreenChild<GreenExpr>> = args.into_iter().map(|mut child| {
+                        child.relative_start += lparen_offset;
+                        child
+                    }).collect();
+
+                    let green = GreenExpr {
+                        kind: GreenExprKind::Call {
+                            callee: callee_child,
+                            args: adjusted_args,
+                        },
+                        text_len: (expr_end - expr_start),
+                    };
                     lhs = ExprRedNode {
-                        span: token_span,
-                        inner: Arc::new(ExprNode {
-                            kind: ExprNodeKind::Call {
-                                callee: lhs,
-                                args,
-                            },
-                        }),
+                        span: leafc_coreapi::source::Span {
+                            source_id: token.span.source_id,
+                            start_off: expr_start,
+                            end_off: expr_end,
+                        },
+                        inner: Arc::new(green),
                     };
                     continue;
                 }
@@ -501,32 +765,68 @@ impl<'a> Parser<'a> {
                         break;
                     }
                     self.skip_token();
-                    let into_type = self.parse_expr_bp(AS_BP)?;
+                    let into_red = self.parse_expr_bp(AS_BP)?;
+                    let expr_start = lhs.span.start_off;
+                    let expr_end = into_red.span.end_off;
+
+                    let expr_child = Arc::new(GreenChild {
+                        relative_start: (lhs.span.start_off - expr_start) as usize,
+                        node: lhs.inner.clone(),
+                    });
+                    let type_start = token_start; // 'as' 后面类型开始
+                    let into_child = GreenChild {
+                        relative_start: (type_start - expr_start) as usize,
+                        node: expr_child.clone(),
+                    };
+                    let green = GreenExpr {
+                        kind: GreenExprKind::TypeCast {
+                            expr: expr_child.as_ref().clone(),
+                            into_type: into_child.node.as_ref().clone(),
+                        },
+                        text_len: (expr_end - expr_start),
+                    };
                     lhs = ExprRedNode {
-                        span: token_span.clone(),
-                        inner: Arc::new(ExprNode {
-                            kind: ExprNodeKind::TypeCast {
-                                expr: lhs,
-                                into_type,
-                            },
-                        }),
+                        span: leafc_coreapi::source::Span {
+                            source_id: token.span.source_id,
+                            start_off: expr_start,
+                            end_off: expr_end,
+                        },
+                        inner: Arc::new(green),
                     };
                     continue;
                 }
 
                 TokenType::Dot => {
                     self.skip_token(); // '.'
-                    let member_token = self.current_token();
+                    let member_token = self.current_token().clone();
                     let member = member_token.text.clone();
+                    let member_start = member_token.span.start_off;
                     self.skip_token_only(TokenType::Ident)?;
+                    let expr_start = lhs.span.start_off;
+                    let expr_end = member_token.span.end_off;
+
+                    let left_child = GreenChild {
+                        relative_start: (lhs.span.start_off - expr_start) as usize,
+                        node: lhs.inner.clone(),
+                    };
+                    let right_child = GreenChild {
+                        relative_start: (member_start - expr_start) as usize,
+                        node: Arc::new(member),
+                    };
+                    let green = GreenExpr {
+                        kind: GreenExprKind::Member {
+                            left: left_child,
+                            right: right_child,
+                        },
+                        text_len: (expr_end - expr_start) as usize,
+                    };
                     lhs = ExprRedNode {
-                        span: token_span,
-                        inner: Arc::new(ExprNode {
-                            kind: ExprNodeKind::Member {
-                                left: lhs,
-                                right: member,
-                            },
-                        }),
+                        span: leafc_coreapi::source::Span {
+                            source_id: token.span.source_id,
+                            start_off: expr_start,
+                            end_off: expr_end,
+                        },
+                        inner: Arc::new(green),
                     };
                     continue;
                 }

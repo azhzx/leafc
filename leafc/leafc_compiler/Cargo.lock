@@ -25,9 +25,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "intervaltree"
+version = "0.2.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "270bc34e57047cab801a8c871c124d9dc7132f6473c6401f645524f4e6edd111"
+dependencies = [
+ "smallvec",
+]
+
+[[package]]
 name = "leafc_compiler"
 version = "0.1.0"
 dependencies = [
+ "intervaltree",
  "leafc_coreapi",
  "leafc_diag",
  "leafc_hirlower",
@@ -78,6 +88,7 @@ dependencies = [
 name = "leafc_parser"
 version = "0.1.0"
 dependencies = [
+ "intervaltree",
  "leafc_coreapi",
  "leafc_lexer",
  "leafc_tokenpass",
@@ -157,6 +168,12 @@ checksum = "6662b5879511e06e8999a8a235d848113e942c9124f211511b16466ee2995f26"
 dependencies = [
  "serde_core",
 ]
+
+[[package]]
+name = "smallvec"
+version = "1.15.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
 
 [[package]]
 name = "syn"

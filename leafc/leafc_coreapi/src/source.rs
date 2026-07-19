@@ -20,6 +20,12 @@ pub struct Span {
     pub end_off: usize,
 }
 
+impl Span {
+    pub fn len(&self) -> usize {
+        self.end_off - self.start_off
+    }
+}
+
 pub struct SourcePool(pub Vec<Source>);
 
 impl SourcePool {
@@ -40,5 +46,15 @@ impl SourcePool {
         });
 
         (self.0.len() - 1) as SourceId
+    }
+
+    pub fn find_source(&self, file_abs_path: String) -> Option<SourceId> {
+        self.0.iter().position(|s|
+            s.file_abs_path.as_str() == file_abs_path.as_str()
+        )
+    }
+
+    pub fn update_source(&mut self, id: SourceId, new_content: String) {
+        self.0[id].file_content = new_content;
     }
 }

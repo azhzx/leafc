@@ -7,3 +7,4 @@ edition = "2024"
 leafc_lexer = { path = "../leafc_lexer" }
 leafc_tokenpass = { path = "../leafc_tokenpass" }
 leafc_coreapi = { path = "../leafc_coreapi" }
+intervaltree = "0.2.7"

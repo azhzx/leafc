@@ -1,2 +1,2 @@
 fun main()
-    let n = 1 @ 6 * 3
+    let n = 1 + 6 * 3

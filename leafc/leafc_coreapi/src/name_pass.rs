@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use crate::ast::{CrateAst, DeclNode, ExprNode};
+use crate::ast::{CrateAst, GreenDecl, GreenExpr};
 use crate::diagnostic::DiagMsg;
 use crate::scope::{ScopeId, ScopePool};
 
-pub type DoScopeMap  = HashMap<Arc<ExprNode>, ScopeId>;
-pub type FunScopeMap = HashMap<Arc<DeclNode>, ScopeId>;
+pub type DoScopeMap  = HashMap<Arc<GreenExpr>, ScopeId>;
+pub type FunScopeMap = HashMap<Arc<GreenDecl>, ScopeId>;
 
 #[derive(Debug)]
 pub enum NamePassError {

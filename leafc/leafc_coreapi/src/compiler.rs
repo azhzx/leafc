@@ -11,7 +11,7 @@ pub trait CompilerApi {
     fn get_version() -> &'static str;
     
     fn set_crate_path(&mut self, dir_path: &str) -> Option<&mut Self>;
-    fn compile(&mut self) -> Option<Self::Output>;
+    fn compile(&mut self, out: &mut Option<Self::Output>) -> &mut Self;
 }
 
 pub trait IncrementalCompiler {

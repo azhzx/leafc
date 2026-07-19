@@ -1,27 +1,43 @@
+use crate::type_context::TyId;
+
 pub type LocalId = usize;
-pub type FieldId = usize;
 pub type BasicBlockId = usize;
 
 pub type FunId = usize;
 pub type StaticId = usize;
 
+pub type TagId = usize;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CrateMirBody {
-    pub blocks: Vec<BasicBlock>,
+pub struct MirCrate {
     pub functions: Vec<MirFun>
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MirFun {
     pub name: String,
+    pub signature: FnSig,
+    pub local_decls: Vec<LocalDecl>,
     pub blocks: Vec<BasicBlockId>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LocalDecl {
+    pub ty: TyId,
+    pub mutable: bool,
+    pub name: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FnSig {
+    pub params: Vec<TyId>,
+    pub return_ty: TyId,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BasicBlock {
     pub statements: Vec<MirStmt>,
     pub terminator: TerminatorKind,
-    pub is_cleanup: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -33,35 +49,54 @@ pub struct MirStmt {
 pub enum MirStmtKind {
     Assign {
         place: Place,
-        rvalue: Rvalue
+        rvalue: Rvalue,
     },
     Nop,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Place {
+    Local(LocalId),
+    Static(StaticId),
+    Deref(Box<Place>),
+    Index {
+        place: Box<Place>,
+        item_index: usize
+    },
+    EnumItem {
+        place: Box<Place>,
+        variant: TagId
+    }
 }
 
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Rvalue {
-    Use {
-        operand: Box<Rvalue>
-    },
-    Ref(Place),
-    RefMut(Place),
+    TempRef(Place),
+    TempRefMut(Place),
     BinaryOp  {
         op: BinOp,
         left: Box<Rvalue>,
         right: Box<Rvalue>,
     },
     UnaryOp  {
-        op: BinOp,
+        op: UnOp,
         right: Box<Rvalue>,
+    },
+    Index {
+        place: Box<Place>,
+        item_index: usize
     },
     GetFunPtr(FunId),
     Tuple(Vec<Rvalue>),
+    Variant(TagId, Box<Rvalue>),
     Len(Place),
-    Discriminant(Place),
+    Tag(Place),
     Copy(Place),
     Move(Place),
     Constant(Const),
+
+    GcNew(Box<Rvalue>),
 }
 
 
@@ -73,7 +108,7 @@ pub enum TerminatorKind {
     SwitchInt {
         for_switch: Rvalue,
         targets: Vec<(Rvalue, BasicBlockId)>,
-        otherwise: BasicBlockId,
+        default: BasicBlockId,
     },
     Call {
         func: FunId,
@@ -81,19 +116,14 @@ pub enum TerminatorKind {
         dest: Place,
         target: Option<BasicBlockId>,
     },
+    CallByPtr {
+        func: Rvalue,
+        args: Vec<Rvalue>,
+        dest: Place,
+        target: Option<BasicBlockId>,
+    },
     Return,
     Unreachable,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum Place {
-    Local(LocalId),
-    Static(StaticId),
-    Deref(Box<Place>),
-    Index {
-        place: Box<Place>,
-        idx: usize
-    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -111,13 +141,21 @@ pub enum NativeType {
 }
 
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Const {
-    Int(i64),
-    UInt(u64),
-    Bool(bool),
-    Char(char),
+    Int8(i8),
+    Int16(i16),
+    Int32(i32),
+    Int64(i64),
+    UInt8(u8),
+    UInt16(u16),
+    UInt32(u32),
+    UInt64(u64),
+    Float32(u64),
+    Float64(u64),
+    Char(u64),
     Str(String),
+    Bool(bool),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

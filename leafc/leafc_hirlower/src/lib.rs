@@ -1,6 +1,5 @@
 use std::collections::HashMap;
-
-use leafc_coreapi::ast::{AtomExprNode, CrateAst, DeclNode, DeclNodeKind, ElseIf, ExprNode, ExprNodeKind, Field, GenericVar, MethodDecl, Operator, Param, TypeNameString, Visibility};
+use leafc_coreapi::ast::{CrateAst, FieldRedNode, GreenField, GreenGenericVar, Operator, TypeNameString, Visibility};
 use leafc_coreapi::diagnostic::DiagMsg;
 use leafc_coreapi::hir::{
     HirBinOp, HirCtorDef, HirDecl, HirDeclId, HirDeclKind, HirCrate, HirExpr,
@@ -50,25 +49,26 @@ impl<'a> HirLower<'a> {
 
     fn lower_generic_params(
         &self,
-        generic_vars: &[GenericVar],
+        generic_vars: &[GreenGenericVar],
         scope_id: ScopeId,
     ) -> Result<Vec<HirGenericParam>, DiagMsg> {
-        generic_vars
-            .iter()
-            .map(|gv| {
-                let sym = self.lookup_symbol(scope_id, &gv.name).unwrap();
-                let name = HirName {
-                    name: sym.name.clone(),
-                    sym_id: sym.sym_id,
-                };
-                let constraints = gv
-                    .constraint
-                    .iter()
-                    .map(|c| self.type_name_to_path(c, scope_id))
-                    .collect::<Result<_, _>>()?;
-                Ok(HirGenericParam { name, constraints })
-            })
-            .collect()
+        // generic_vars
+        //     .iter()
+        //     .map(|gv| {
+        //         let sym = self.lookup_symbol(scope_id, &gv.name.node.clone()).unwrap();
+        //         let name = HirName {
+        //             name: sym.name.clone(),
+        //             sym_id: sym.sym_id,
+        //         };
+        //         let constraints = gv
+        //             .constraint
+        //             .iter()
+        //             .map(|c| self.type_name_to_path(c, scope_id))
+        //             .collect::<Result<_, _>>()?;
+        //         Ok(HirGenericParam { name, constraints })
+        //     })
+        //     .collect()
+        todo!()
     }
 
     /// 获取声明自身的作用域
@@ -256,9 +256,9 @@ impl<'a> HirLower<'a> {
     //     })
     // }
 
-    fn lower_field_def(&self, field: &Field, scope_id: ScopeId) -> Result<HirFieldDef, DiagMsg> {
-        let type_ann = self.type_name_to_path(&field.type_str, scope_id)?;
-        let sym = self.lookup_symbol(scope_id, &field.name).unwrap();
+    fn lower_field_def(&self, field: &FieldRedNode, scope_id: ScopeId) -> Result<HirFieldDef, DiagMsg> {
+        let type_ann = self.type_name_to_path(&field.green.type_str.node, scope_id)?;
+        let sym = self.lookup_symbol(scope_id, &field.green.name.node).unwrap();
         let name = HirName {
             name: sym.name.clone(),
             sym_id: sym.sym_id,
@@ -302,36 +302,37 @@ impl<'a> HirLower<'a> {
 
     fn lower_ctor_def(
         &self,
-        ctor: &leafc_coreapi::ast::Ctor,
+        ctor: &leafc_coreapi::ast::CtorRedNode,
         scope_id: ScopeId,
     ) -> Result<HirCtorDef, DiagMsg> {
-        let sym = self.lookup_symbol(scope_id, &ctor.name).unwrap();
-        let name = HirName {
-            name: sym.name.clone(),
-            sym_id: sym.sym_id,
-        };
-        let generic_params = self.lower_generic_params(&ctor.generic_vars, scope_id)?;
-
-        let from_type = if ctor.from_type_str.name.is_empty() {
-            None
-        } else {
-            Some(self.type_name_to_path(&ctor.from_type_str, scope_id)?)
-        };
-
-        let return_type = if ctor.return_type_str.name.is_empty() {
-            None
-        } else {
-            Some(self.type_name_to_path(&ctor.return_type_str, scope_id)?)
-        };
-
-        Ok(HirCtorDef {
-            name,
-            generic_params,
-            from_type,
-            return_type,
-            is_pub_external: ctor.visibility == Visibility::PublicExternal,
-            span: ctor.span.clone(),
-        })
+        // let sym = self.lookup_symbol(scope_id, &ctor.name).unwrap();
+        // let name = HirName {
+        //     name: sym.name.clone(),
+        //     sym_id: sym.sym_id,
+        // };
+        // let generic_params = self.lower_generic_params(&ctor.generic_vars, scope_id)?;
+        //
+        // let from_type = if ctor.from_type_str.name.is_empty() {
+        //     None
+        // } else {
+        //     Some(self.type_name_to_path(&ctor.from_type_str, scope_id)?)
+        // };
+        //
+        // let return_type = if ctor.return_type_str.name.is_empty() {
+        //     None
+        // } else {
+        //     Some(self.type_name_to_path(&ctor.return_type_str, scope_id)?)
+        // };
+        //
+        // Ok(HirCtorDef {
+        //     name,
+        //     generic_params,
+        //     from_type,
+        //     return_type,
+        //     is_pub_external: ctor.visibility == Visibility::PublicExternal,
+        //     span: ctor.span.clone(),
+        // })
+        todo!()
     }
 
     /// 将名字提升为 HirTypeName

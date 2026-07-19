@@ -11,3 +11,4 @@ leafc_hirlower = { path = "../leafc_hirlower" }
 leafc_typechecker = { path = "../leafc_typechecker" }
 leafc_diag = { path = "../leafc_diag" }
 realworld_io_api = { path = "../realworld_io_api" }
+intervaltree = "0.2.7"
