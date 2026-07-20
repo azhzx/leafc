@@ -1,4 +1,4 @@
-use crate::type_context::TyId;
+use crate::type_system::TyId;
 
 pub type LocalId = usize;
 pub type BasicBlockId = usize;

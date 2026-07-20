@@ -10,11 +10,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 use leafc_coreapi;
-use leafc_coreapi::ast::{
-    AtomExprNode, GreenExpr, GreenDecl, CrateAst, GreenGenericVar, GreenParam, TypeNameString,
-    Visibility, GreenDeclKind, GreenAnnotation, DeclRedNode, FileRedUnit, Operator,
-    GreenChild, GreenElseIf, GreenRequire, GreenFileUnit, ExprRedNode,
-};
+use leafc_coreapi::ast::{AtomExprNode, GreenExpr, GreenDecl, CrateAst, GreenGenericVar, GreenParam, TypeNameString, Visibility, GreenDeclKind, GreenAnnotation, DeclRedNode, FileRedUnit, Operator, GreenChild, GreenElseIf, GreenRequire, GreenFileUnit, ExprRedNode, IdentName};
 use leafc_coreapi::crate_meta::{BuiltinOperator, OperatorDef, PriorityRelation, OperatorKind};
 use leafc_coreapi::diagnostic::DiagMsg;
 use leafc_coreapi::lexer::{LexerApi, Token, TokenStream, TokenType};
@@ -34,10 +30,10 @@ pub struct Parser<'a> {
     pub source_pool: &'a SourcePool,
     pub abs_path_sources: &'a AbsPathSourceMap,
     pub ast: CrateAst,
-    pub user_operators: &'a HashMap<String, OperatorDef>,
 
+    pub user_operators: &'a HashMap<String, OperatorDef>,
     /// op_text => (precedence, kind)
-    pub user_op_info: HashMap<String, (usize, OperatorKind)>,
+    pub user_op_info: &'a HashMap<String, (usize, OperatorKind)>,
 }
 
 
@@ -140,7 +136,7 @@ impl<'a> Parser<'a> {
     }
 
     fn handle_generic_param(&mut self)
-        -> Result<(Vec<GreenChild<GreenGenericVar>>, usize), DiagMsg> {
+                            -> Result<(Vec<GreenChild<GreenGenericVar>>, usize), DiagMsg> {
 
         let list_start_off = self.current_token().span.start_off; // '['
         self.skip_token_only(TokenType::Lbracket)?;
@@ -166,7 +162,7 @@ impl<'a> Parser<'a> {
             let param_text_len = (end_off - param_start_off) as usize;
             let name_child = GreenChild {
                 relative_start: 0, // 名字在参数开头
-                node: Arc::new(param_name_token.text.clone()),
+                node: Arc::new(IdentName{ name: param_name_token.text.clone()}),
             };
 
             let green_var = GreenGenericVar {
@@ -289,67 +285,9 @@ impl<'a> Parser<'a> {
 
         while self.current_token().kind != TokenType::Eof {
             // handle ann
-            let mut anns: Vec<(GreenAnnotation, Span)> = vec![];
-            while self.current_token().kind == TokenType::Hash {
-                let hash_span = self.current_token().span.clone();
-                self.skip_token();
+            let mut anns = self.parse_annotations()?;
 
-                let ann_name = self.current_token().text.clone();
-                let name_span = self.current_token().span.clone();
-                self.skip_token_only(TokenType::Ident)?;
-
-                let mut ann_args = vec![];
-
-                if self.current_token().kind == TokenType::Lparen {
-                    self.skip_token(); // '('
-                    let call_span = self.current_token().span.clone();
-                    while self.current_token().kind != TokenType::Rparen {
-                        ann_args.push(self.current_token().text.clone());
-                        self.skip_token();
-                        if self.current_token().kind == TokenType::Comma {
-                            self.skip_token();
-                        } else if self.current_token().kind == TokenType::Rparen {
-                            break;
-                        } else {
-                            return Err(DiagMsg {
-                                title: format!("{:?}", ParserError::InvalidCallArgumentList),
-                                msg: "invalid call argument list".to_string(),
-                                span: call_span,
-                            });
-                        }
-                    }
-                    self.skip_token_only(TokenType::Rparen)?;
-                }
-
-                self.skip_token_only(TokenType::NewLine)?;
-                let nl_span = self.tokens.data[self.index - 1].span.clone();
-                let text_len = (nl_span.end_off - hash_span.start_off) as usize;
-                let ann_span = Span {
-                    source_id: hash_span.source_id,
-                    start_off: hash_span.start_off,
-                    end_off: nl_span.end_off,
-                };
-
-                anns.push((GreenAnnotation {
-                    name: ann_name,
-                    args: ann_args,
-                    text_len,
-                }, ann_span));
-            }
-
-
-            let mut visibility = Visibility::Private;
-            if self.current_token().kind == TokenType::KwPub {
-                self.skip_token();
-                if self.current_token().kind == Lparen {
-                    self.skip_token();
-                    self.skip_token_only(TokenType::KwExternal)?;
-                    self.skip_token_only(TokenType::Rparen)?;
-                    visibility = Visibility::PublicExternal;
-                } else {
-                    visibility = Visibility::Public;
-                }
-            }
+            let visibility = self.parse_visibility()?;
 
             let decl_start_off = self.current_token().span.start_off;
             match self.current_token().kind {
@@ -422,7 +360,7 @@ impl<'a> Parser<'a> {
         let green_file_unit = GreenFileUnit {
             name: GreenChild {
                 relative_start: 0, // 暂置0
-                node: Arc::new(module_name),
+                node: Arc::new(IdentName { name : module_name}),
             },
             top_decls: top_decl_green_children,
             file_unit_requires: file_unit_requires_green_children,
@@ -483,15 +421,12 @@ impl<'a> Parser<'a> {
                     relative_start,
                     node: Arc::clone(decl),
                 });
-                // 跳过该声明对应的所有 token
                 skip_to_offset(&self.tokens, &mut self.index, range.end);
                 continue;
             }
 
-            // --- 解析注解 ---
             let anns = self.parse_annotations()?;
 
-            // --- 可见性 ---
             let visibility = self.parse_visibility()?;
 
             let decl_start_off = self.current_token().span.start_off;
@@ -553,7 +488,7 @@ impl<'a> Parser<'a> {
         let green_file_unit = GreenFileUnit {
             name: GreenChild {
                 relative_start: 0,
-                node: Arc::new(module_name),
+                node: Arc::new(IdentName { name : module_name}),
             },
             top_decls: top_decl_green_children,
             file_unit_requires: file_unit_requires_green_children,
@@ -640,16 +575,8 @@ impl<'a> ParserApi<'a> for Parser<'a> {
         source_pool: &'a SourcePool,
         abs_path_source_map: &'a AbsPathSourceMap,
         user_operators: &'a HashMap<String, OperatorDef>,
+        user_op_info: &'a HashMap<String, (usize, OperatorKind)>,
     ) -> Self {
-        let mut user_op_info = HashMap::new();
-        for (_op_name, def) in user_operators {
-            let base_prio = match def.priority_relation() {
-                PriorityRelation::HigherThan(op) => Self::builtin_priority(op) + Self::PRIORITY_OFFSET,
-                PriorityRelation::LowerThan(op) => Self::builtin_priority(op) - Self::PRIORITY_OFFSET,
-            };
-            user_op_info.insert(def.text.clone(), (base_prio, def.kind));
-        }
-
         Parser {
             dir_abs_path,
             tokens: TokenStream { data: vec![] },

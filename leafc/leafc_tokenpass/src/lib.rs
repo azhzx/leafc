@@ -31,9 +31,9 @@ const PP_FUNCTION_EVAL: &str = "__eval";
 
 const PP_FUNCTION_REPEAT: &str = "__repeat";
 
-const PP_FUNCTION_IDENT_TO_STRING: &str = "__ident_to_string";
+const PP_FUNCTION_TO_STRING: &str = "__to_string";
 
-const PP_FUNCTION_IDENT_CONCAT: &str = "__ident_concat";
+const PP_FUNCTION_CONCAT: &str = "__concat";
 
 const PP_FUNCTION_ARGS_OPTION: &str = "__only_has_rest_args";
 
@@ -673,9 +673,9 @@ impl<'a> Preprocessor<'a> {
                 }
 
                 else if current_token.kind == TokenType::Ident
-                    && current_token.text == PP_FUNCTION_IDENT_TO_STRING
+                    && current_token.text == PP_FUNCTION_TO_STRING
                 {
-                    index += 1; // __ident_to_string
+                    index += 1; // __to_string
                     index += 1; // '('
 
                     let mut arg_tokens = Vec::new();
@@ -719,9 +719,9 @@ impl<'a> Preprocessor<'a> {
                 }
 
                 else if current_token.kind == TokenType::Ident
-                    && current_token.text == PP_FUNCTION_IDENT_CONCAT
+                    && current_token.text == PP_FUNCTION_CONCAT
                 {
-                    index += 1; // __ident_concat
+                    index += 1; // __concat
                     index += 1; // '('
 
                     let mut concat_parts = Vec::new();
@@ -747,7 +747,6 @@ impl<'a> Preprocessor<'a> {
                             }
                             TokenType::Comma => {
                                 if depth == 1 {
-                                    // 外层逗号，分隔参数
                                     concat_parts.push(current_arg.clone());
                                     current_arg.clear();
                                 } else {
@@ -763,14 +762,11 @@ impl<'a> Preprocessor<'a> {
 
                     let mut final_ident = String::new();
                     for arg in concat_parts {
-                        if arg.len() != 1 || arg[0].kind != Ident {
-                            return Err(DiagMsg {
-                                title: format!("{:?}", TokenPassError::InvalidIdentConcat),
-                                msg: "ident concat expects only identifier arguments".to_string(),
-                                span: current_token.span.clone(),
-                            });
+                        // 关键修改：先展开，再拼接
+                        let expanded_arg = self.expand_all(arg)?;
+                        for token in expanded_arg {
+                            final_ident.push_str(&token.text);
                         }
-                        final_ident.push_str(&arg[0].text);
                     }
 
                     result.push(Token {

@@ -1,2 +1,6 @@
+type Bar [a]
+    foo: a
+
 fun main()
-    let n = 1 + 6 * 3
+    let a = 0
+    let n: Bar[Bar] = 1 + 6 * a

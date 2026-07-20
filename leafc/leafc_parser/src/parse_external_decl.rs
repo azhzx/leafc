@@ -1,8 +1,5 @@
 use std::sync::Arc;
-use leafc_coreapi::ast::{
-    GreenAnnotation, GreenChild, GreenDecl, GreenDeclKind, GreenParam, DeclRedNode,
-    TypeNameString, Visibility,
-};
+use leafc_coreapi::ast::{GreenAnnotation, GreenChild, GreenDecl, GreenDeclKind, GreenParam, DeclRedNode, TypeNameString, Visibility, IdentName};
 use leafc_coreapi::diagnostic::DiagMsg;
 use leafc_coreapi::lexer::TokenType;
 use leafc_coreapi::parser::ParserError;
@@ -32,7 +29,7 @@ impl<'a> Parser<'a> {
 
             let name_child = GreenChild {
                 relative_start: (name_start_off - decl_start_off) as usize,
-                node: Arc::new(name),
+                node: Arc::new(IdentName { name : name }),
             };
 
             let ann_children = annotations.into_iter().map(|(ga, span)| GreenChild {
@@ -96,7 +93,7 @@ impl<'a> Parser<'a> {
 
             let param_name_child = GreenChild {
                 relative_start: 0,
-                node: Arc::new(param_name_token.text.clone()),
+                node: Arc::new(IdentName { name : param_name_token.text.clone() }),
             };
             let type_str_child = GreenChild {
                 relative_start: (type_start_off - param_start_off),
@@ -153,7 +150,7 @@ impl<'a> Parser<'a> {
 
         let sym_name_child = GreenChild {
             relative_start: (sym_name_token.span.start_off - decl_start_off) as usize,
-            node: Arc::new(sym_name_token.text.clone()),
+            node: Arc::new(IdentName { name : sym_name_token.text.clone() }),
         };
 
         self.skip_token_only(TokenType::Semicolon)?;
@@ -169,7 +166,7 @@ impl<'a> Parser<'a> {
 
         let name_child = GreenChild {
             relative_start: (name_start_off - decl_start_off),
-            node: Arc::new(name_text),
+            node: Arc::new(IdentName { name : name_text }),
         };
 
         let green_decl = GreenDecl {

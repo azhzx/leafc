@@ -166,6 +166,7 @@ impl CompilerApi for NativeCompiler {
             &self.source_pool,
             &self.abs_path_source_map,
             &self.manifest_operators,
+            &self.user_op_info,
         );
         let ast = match parser.parse() {
             Ok( ast ) => {
@@ -238,12 +239,12 @@ impl CompilerApi for NativeCompiler {
                 println!("{:#?}", result.expr_type_map);
                 println!("=== === ===");
 
-                println!("=== hir ty pool ===");
-                println!("{:#?}", result.hir.type_pool);
+                println!("=== ty let map ===");
+                println!("{:#?}", result.let_type_map);
                 println!("=== === ===");
 
-                println!("=== hir ty map ===");
-                println!("{:#?}", result.hir.type_map);
+                println!("=== hir ty pool ===");
+                println!("{:#?}", result.hir.type_pool);
                 println!("=== === ===");
 
                 result
@@ -256,7 +257,6 @@ impl CompilerApi for NativeCompiler {
         };
         
         self.ast_cache = ast;
-
         *out = Some(());
         self
     }
@@ -302,7 +302,13 @@ impl IncrementalCompiler for NativeCompiler {
 
 impl NativeCompiler {
     /// 应用编辑
-    fn apply_edit(&mut self, source_id: SourceId, affected_range: std::ops::Range<usize>) {
+    fn apply_edit(
+        &mut self,
+        source_id: SourceId,
+        affected_range: std::ops::Range<usize>
+    ) {
+        let diag = Diagnostician::new(&self.source_pool, DIAG_COLORS);
+
         let old_tree = self.file_decl_trees.remove(&source_id)
             .unwrap_or_else(|| IntervalTree::from_iter(std::iter::empty::<Element<usize, Arc<GreenDecl>>>()));
 
@@ -329,11 +335,11 @@ impl NativeCompiler {
             abs_path_sources: &self.abs_path_source_map,
             ast: CrateAst { external_requires: vec![], file_units: vec![] },
             user_operators: &self.manifest_operators,
-            user_op_info: self.user_op_info.clone(),
+            user_op_info: &self.user_op_info.clone(),
         };
 
         let new_file_unit = parser.parse_file_incremental(
-            old_file_unit.green.name.node.as_ref().clone(),
+            old_file_unit.green.name.node.name.clone(),
             &old_file_unit.green,
             &old_tree,
             affected_range,

@@ -64,7 +64,7 @@ impl<'a> NamePass<'a> {
             GreenExprKind::Member { left, right, .. } => {
                 let left_red = Self::child_expr_red(&expr.span, left);
                 let (base, mut segs) = Self::collect_member_path(&left_red)?;
-                segs.push((right.node.as_ref().clone(), expr.span.clone()));
+                segs.push((right.node.as_ref().clone().name, expr.span.clone()));
                 Some((base, segs))
             }
             _ => None,
@@ -104,7 +104,7 @@ impl<'a> NamePass<'a> {
                         })?;
                         let has_public = file_unit.green.top_decls.iter().any(|decl_child| {
                             let decl = &decl_child.node;
-                            decl.name.node.as_ref() == seg_name
+                            decl.name.node.as_ref().name == *seg_name
                                 && (decl.visibility == Visibility::Public
                                 || decl.visibility == Visibility::PublicExternal)
                         });
@@ -218,7 +218,7 @@ impl<'a> NamePass<'a> {
             GreenExprKind::Let { name, expr: e, .. } => {
                 self.scope_pool.add_symbol(
                     current_scope,
-                    name.node.as_ref().clone(),
+                    name.node.as_ref().clone().name,
                     expr_red.span.clone(), // 用 let 本身的 span
                     SymbolKind::Local,
                 );
@@ -388,7 +388,7 @@ impl<'a> NamePassApi<'a> for NamePass<'a> {
             let module_name = file_unit.green.name.node.as_ref().clone();
             self.scope_pool.add_symbol(
                 crate_scope_id,
-                module_name,
+                module_name.name,
                 Span {
                     source_id: file_source_id,
                     start_off: 0,
@@ -409,7 +409,7 @@ impl<'a> NamePassApi<'a> for NamePass<'a> {
                     GreenDeclKind::Fun { params, block, .. } => {
                         self.scope_pool.add_symbol(
                             file_scope_id,
-                            decl_name.clone(),
+                            decl_name.clone().name,
                             decl_span.clone(),
                             SymbolKind::Function,
                         );
@@ -435,7 +435,7 @@ impl<'a> NamePassApi<'a> for NamePass<'a> {
                             let param_name = param_child.node.name.node.as_ref().clone();
                             self.scope_pool.add_symbol(
                                 fun_scope_id,
-                                param_name,
+                                param_name.name,
                                 param_span,
                                 SymbolKind::Local,
                             );
@@ -450,7 +450,7 @@ impl<'a> NamePassApi<'a> for NamePass<'a> {
                     GreenDeclKind::FunDecl { params, .. } => {
                         self.scope_pool.add_symbol(
                             file_scope_id,
-                            decl_name.clone(),
+                            decl_name.clone().name,
                             decl_span.clone(),
                             SymbolKind::Function,
                         );
@@ -468,7 +468,7 @@ impl<'a> NamePassApi<'a> for NamePass<'a> {
                             let gv_name = gv_child.node.name.node.as_ref().clone();
                             self.scope_pool.add_symbol(
                                 struct_scope_id,
-                                gv_name,
+                                gv_name.name,
                                 decl_span.clone(),
                                 SymbolKind::Generic,
                             );
@@ -487,7 +487,7 @@ impl<'a> NamePassApi<'a> for NamePass<'a> {
                             let field_name = field_child.node.name.node.as_ref().clone();
                             field_ids.push(self.scope_pool.add_symbol_and_get_sym_id(
                                 struct_scope_id,
-                                field_name,
+                                field_name.name,
                                 field_span,
                                 SymbolKind::Field,
                             ));
@@ -495,7 +495,7 @@ impl<'a> NamePassApi<'a> for NamePass<'a> {
 
                         self.scope_pool.add_symbol(
                             file_scope_id,
-                            decl_name.clone(),
+                            decl_name.clone().name,
                             decl_span.clone(),
                             SymbolKind::Struct { fields: field_ids },
                         );
@@ -513,7 +513,7 @@ impl<'a> NamePassApi<'a> for NamePass<'a> {
                             let gv_name = gv_child.node.name.node.as_ref().clone();
                             self.scope_pool.add_symbol(
                                 adt_scope_id,
-                                gv_name,
+                                gv_name.name,
                                 decl_span.clone(),
                                 SymbolKind::Generic,
                             );
@@ -532,14 +532,14 @@ impl<'a> NamePassApi<'a> for NamePass<'a> {
                             let ctor_name = ctor_child.node.name.node.as_ref().clone();
                             constructors.push(self.scope_pool.add_symbol_and_get_sym_id(
                                 file_scope_id,
-                                ctor_name,
+                                ctor_name.name,
                                 ctor_span,
                                 SymbolKind::Constructor,
                             ));
                         }
                         self.scope_pool.add_symbol(
                             file_scope_id,
-                            decl_name.clone(),
+                            decl_name.clone().name,
                             decl_span.clone(),
                             SymbolKind::ADT { constructors },
                         );
@@ -548,7 +548,7 @@ impl<'a> NamePassApi<'a> for NamePass<'a> {
                     GreenDeclKind::TypeAlias { .. } => {
                         self.scope_pool.add_symbol(
                             file_scope_id,
-                            decl_name.clone(),
+                            decl_name.clone().name,
                             decl_span.clone(),
                             SymbolKind::TypeAlias,
                         );
@@ -557,7 +557,7 @@ impl<'a> NamePassApi<'a> for NamePass<'a> {
                     GreenDeclKind::CType => {
                         self.scope_pool.add_symbol(
                             file_scope_id,
-                            decl_name.clone(),
+                            decl_name.clone().name,
                             decl_span.clone(),
                             SymbolKind::CTypeDef,
                         );
@@ -566,7 +566,7 @@ impl<'a> NamePassApi<'a> for NamePass<'a> {
                     GreenDeclKind::External { .. } => {
                         self.scope_pool.add_symbol(
                             file_scope_id,
-                            decl_name.clone(),
+                            decl_name.clone().name,
                             decl_span.clone(),
                             SymbolKind::External,
                         );
@@ -575,7 +575,7 @@ impl<'a> NamePassApi<'a> for NamePass<'a> {
                     GreenDeclKind::Abstract { methods, .. } => {
                         self.scope_pool.add_symbol(
                             file_scope_id,
-                            decl_name.clone(),
+                            decl_name.clone().name,
                             decl_span.clone(),
                             SymbolKind::Abstract,
                         );
@@ -597,7 +597,7 @@ impl<'a> NamePassApi<'a> for NamePass<'a> {
                             let method_name = method_child.node.name.node.as_ref().clone();
                             self.scope_pool.add_symbol(
                                 abs_scope_id,
-                                method_name,
+                                method_name.name,
                                 method_span,
                                 SymbolKind::Method,
                             );
@@ -626,7 +626,7 @@ impl<'a> NamePassApi<'a> for NamePass<'a> {
 
                 if let Some(first_seg) = req.path.first() {
                     let module_name = first_seg.node.as_ref().clone();
-                    if let Some((module_sym, _)) = self.scope_pool.lookup(crate_scope_id, &module_name) {
+                    if let Some((module_sym, _)) = self.scope_pool.lookup(crate_scope_id, &module_name.name) {
                         if let SymbolKind::File { source_id: target_src } = &module_sym.kind {
                             let target_scope = self.source_id_to_scope[target_src];
                             let target_file = self.source_to_file_unit[target_src];
@@ -634,10 +634,14 @@ impl<'a> NamePassApi<'a> for NamePass<'a> {
                             let names: Vec<String> = if req.only.is_empty() {
                                 target_file.green.top_decls.iter()
                                     .filter(|d| matches!(d.node.visibility, Visibility::Public | Visibility::PublicExternal))
-                                    .map(|d| d.node.name.node.as_ref().clone())
+                                    .map(|d|
+                                        d.node.name.node.as_ref().clone().name
+                                    )
                                     .collect()
                             } else {
-                                req.only.iter().map(|s| s.node.as_ref().clone()).collect()
+                                req.only.iter().map(|s|
+                                    s.node.as_ref().clone().name
+                                ).collect()
                             };
 
                             if req.is_open {

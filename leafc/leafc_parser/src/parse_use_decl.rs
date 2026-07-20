@@ -1,8 +1,6 @@
 use std::fs;
 use std::sync::Arc;
-use leafc_coreapi::ast::{
-    GreenChild, GreenRequire, RequireRedNode,
-};
+use leafc_coreapi::ast::{GreenChild, GreenRequire, IdentName, RequireRedNode};
 use leafc_coreapi::diagnostic::DiagMsg;
 use leafc_coreapi::lexer::TokenType;
 use leafc_coreapi::parser::{ParserError};
@@ -11,12 +9,14 @@ use crate::Parser;
 
 impl<'a> Parser<'a> {
     pub fn parse_use_decl(&mut self) -> Result<Option<RequireRedNode>, DiagMsg> {
+
         let start_span = self.current_token().span.clone();
         let require_start_off = start_span.start_off;
         self.skip_token_only(TokenType::KwUse)?;
-        let mut require_paths: Vec<GreenChild<String>> = vec![];
+
+        let mut require_paths = vec![];
         let mut is_external_module = false;
-        let mut only: Vec<GreenChild<String>> = vec![];
+        let mut only = vec![];
         let mut is_open = false;
 
         if self.current_token().kind == TokenType::At {
@@ -31,7 +31,7 @@ impl<'a> Parser<'a> {
             self.skip_token_only(TokenType::Ident)?;
             require_paths.push(GreenChild {
                 relative_start: (ident_start_off - require_start_off) as usize,
-                node: Arc::new(name),
+                node: Arc::new(IdentName { name : name }),
             });
 
             if self.current_token().kind == TokenType::Dot {
@@ -49,7 +49,7 @@ impl<'a> Parser<'a> {
                 self.skip_token_only(TokenType::Ident)?;
                 only.push(GreenChild {
                     relative_start: (ident_start_off - require_start_off) as usize,
-                    node: Arc::new(name),
+                    node: Arc::new(IdentName { name : name }),
                 });
 
                 if self.current_token().kind == TokenType::Comma {
@@ -109,11 +109,11 @@ impl<'a> Parser<'a> {
             while self.current_token().kind == TokenType::NewLine {
                 self.skip_token();
             }
-            return Ok(None);
+            Ok(None)
         } else {
             let mut file_path = self.dir_abs_path.clone();
             for path_seg in &require_paths {
-                file_path.push(path_seg.node.as_ref());
+                file_path.push(path_seg.node.name.clone());
             }
             file_path = file_path.with_extension("leaf");
 
@@ -130,7 +130,7 @@ impl<'a> Parser<'a> {
             self.index = 0;
 
             let module = self.parse_top(
-                require_paths.last().unwrap().node.as_ref().clone())?;
+                require_paths.last().unwrap().node.name.clone())?;
 
             self.ast.file_units.push(module);
 
@@ -140,7 +140,7 @@ impl<'a> Parser<'a> {
             while self.current_token().kind == TokenType::NewLine {
                 self.skip_token();
             }
-            return Ok(Some(req_red_node));
+            Ok(Some(req_red_node))
         }
     }
 }

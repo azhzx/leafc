@@ -1,8 +1,5 @@
 use std::sync::Arc;
-use leafc_coreapi::ast::{
-    GreenAnnotation, GreenChild, GreenDecl, GreenDeclKind, GreenExpr, GreenParam,
-    DeclRedNode, ExprRedNode, TypeNameString, Visibility,
-};
+use leafc_coreapi::ast::{GreenAnnotation, GreenChild, GreenDecl, GreenDeclKind, GreenExpr, GreenParam, DeclRedNode, ExprRedNode, TypeNameString, Visibility, IdentName};
 use leafc_coreapi::diagnostic::DiagMsg;
 use leafc_coreapi::lexer::{Token, TokenType};
 use leafc_coreapi::parser::ParserError;
@@ -26,9 +23,10 @@ impl<'a> Parser<'a> {
         let name_start_off = name_token.span.start_off;
         self.skip_token_only(TokenType::Ident)?;
         let name_text_len = name_token.span.len();
+
         let name_green_child = GreenChild {
             relative_start: (name_start_off - decl_start_off),
-            node: Arc::new(name_token.text.clone()),
+            node: Arc::new(IdentName { name : name_token.text.clone() }),
         };
 
         if self.current_token().kind != TokenType::Lparen {
@@ -48,7 +46,7 @@ impl<'a> Parser<'a> {
             let param_name_text_len = param_name_token.span.len();
             let param_name_child = GreenChild {
                 relative_start: 0,
-                node: Arc::new(param_name_token.text.clone()),
+                node: Arc::new(IdentName { name : param_name_token.text.clone() }),
             };
 
             let (type_str, type_start_off) = if self.current_token().kind == TokenType::Colon {

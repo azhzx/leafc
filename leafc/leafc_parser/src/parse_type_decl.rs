@@ -1,9 +1,5 @@
 use std::sync::Arc;
-use leafc_coreapi::ast::{
-    GreenAnnotation, GreenChild, GreenCtor, GreenDecl, GreenDeclKind, GreenExpr,
-    GreenField, GreenGenericVar, GreenParam, DeclRedNode, ExprRedNode,
-    TypeNameString, Visibility,
-};
+use leafc_coreapi::ast::{GreenAnnotation, GreenChild, GreenCtor, GreenDecl, GreenDeclKind, GreenExpr, GreenField, GreenGenericVar, GreenParam, DeclRedNode, ExprRedNode, TypeNameString, Visibility, IdentName};
 use leafc_coreapi::diagnostic::DiagMsg;
 use leafc_coreapi::lexer::{Token, TokenType};
 use leafc_coreapi::parser::ParserError;
@@ -26,7 +22,7 @@ impl<'a> Parser<'a> {
 
         let name_green_child = GreenChild {
             relative_start: (name_start_off - decl_start_off),
-            node: Arc::new(name_text),
+            node: Arc::new(IdentName { name : name_text }),
         };
 
         if self.current_token().kind == TokenType::Semicolon {
@@ -71,7 +67,7 @@ impl<'a> Parser<'a> {
         };
 
         // impl 列表
-        let mut impls: Vec<GreenChild<String>> = vec![];
+        let mut impls = vec![];
         if self.current_token().kind == TokenType::KwImpl {
             self.skip_token();
             while self.current_token().kind == TokenType::Ident {
@@ -81,7 +77,7 @@ impl<'a> Parser<'a> {
 
                 impls.push(GreenChild {
                     relative_start: (impl_name_start - decl_start_off) as usize,
-                    node: Arc::new(impl_name),
+                    node: Arc::new(IdentName { name : impl_name }),
                 });
 
                 if self.current_token().kind == TokenType::Plus {
@@ -181,8 +177,9 @@ impl<'a> Parser<'a> {
 
                         let name_child = GreenChild {
                             relative_start: 0,
-                            node: Arc::new(field_name_token.text.clone()),
+                            node: Arc::new(IdentName { name : field_name_token.text.clone() }),
                         };
+
                         let type_child = GreenChild {
                             relative_start: (type_start - field_start),
                             node: Arc::new(type_str),
@@ -273,7 +270,7 @@ impl<'a> Parser<'a> {
 
                         let name_child = GreenChild {
                             relative_start: 0,
-                            node: Arc::new(ctor_name_token.text.clone()),
+                            node: Arc::new(IdentName { name : ctor_name_token.text.clone() }),
                         };
                         let from_child = GreenChild {
                             relative_start: (ctor_from_start - ctor_start),

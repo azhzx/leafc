@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use crate::name_pass::NamePassResult;
 use crate::scope::{ScopeId, SymId};
 use crate::source::Span;
-use crate::type_context::{HirDeclTypeMap, TyId, TypeUnit};
+use crate::type_system::{HirDeclTypeMap, TyId, TypeNode};
 
 #[derive(Debug, Clone)]
 pub struct HirCrate {
@@ -17,9 +17,7 @@ pub struct HirCrate {
     /// 模块中对外公开的声明(PublicExternal)
     pub pub_decl_ids: Vec<HirDeclId>,
 
-    pub type_map: HirDeclTypeMap,
-
-    pub type_pool: Vec<TypeUnit>,
+    pub type_pool: Vec<TypeNode>,
 
     pub name_pass_result: Option<NamePassResult>
 }

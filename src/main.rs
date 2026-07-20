@@ -9,8 +9,8 @@ fn main() {
         .compile(&mut compile_result)
         // .edit_append(
         //     r"D:\leafc\demo_leaf_crate\main.leaf".to_string(),
-        //     "100",
-        //     24
+        //     "\n    let y = 100",
+        //     34
         // )
         ;
 }

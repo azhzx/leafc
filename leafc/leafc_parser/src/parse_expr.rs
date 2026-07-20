@@ -1,9 +1,6 @@
 use std::ops::Deref;
 use std::sync::Arc;
-use leafc_coreapi::ast::{
-    AtomExprNode, GreenChild, GreenElseIf, GreenExpr, GreenExprKind, ExprRedNode, Operator,
-    TypeNameString,
-};
+use leafc_coreapi::ast::{AtomExprNode, GreenChild, GreenElseIf, GreenExpr, GreenExprKind, ExprRedNode, Operator, TypeNameString, IdentName};
 use leafc_coreapi::diagnostic::DiagMsg;
 use leafc_coreapi::lexer::TokenType;
 use leafc_coreapi::parser::ParserError;
@@ -82,7 +79,7 @@ impl<'a> Parser<'a> {
 
         let name_child = GreenChild {
             relative_start: (name_start - let_start),
-            node: Arc::new(name),
+            node: Arc::new(IdentName {name}),
         };
 
         let expr_child = GreenChild {
@@ -811,7 +808,7 @@ impl<'a> Parser<'a> {
                     };
                     let right_child = GreenChild {
                         relative_start: (member_start - expr_start) as usize,
-                        node: Arc::new(member),
+                        node: Arc::new(IdentName { name : member}),
                     };
                     let green = GreenExpr {
                         kind: GreenExprKind::Member {

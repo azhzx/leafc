@@ -104,7 +104,7 @@ impl<'a> DiagnosticianApi<'a> for Diagnostician<'a> {
 
         // 指示器前缀：固定的箭头行，不随行号宽度变化（保持原风格）
         let indicator_prefix = format!(
-            "{}  ╭─➜  |{}",
+            "{}  ╭─➜ |{}",
             self.colors.diag_bar,
             self.colors.diag_reset
         );

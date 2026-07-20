@@ -17,5 +17,6 @@ pub mod scope;
 pub mod compiler;
 pub mod mir_mono;
 pub mod mir_borrow_checker;
-pub mod type_context;
+pub mod type_system;
 pub mod crate_meta;
+pub mod operators;

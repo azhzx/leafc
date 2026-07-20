@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use leafc_coreapi::ast::{AtomExprNode, CrateAst, DeclRedNode, ExprRedNode, FieldRedNode, FileRedUnit, GreenChild, GreenDecl, GreenDeclKind, GreenExpr, GreenExprKind, GreenElseIf, GreenField, GreenGenericVar, GreenParam, Operator, TypeNameString, Visibility, GreenCtor, GreenMethodDecl, HasTextLen};
+use leafc_coreapi::ast::{AtomExprNode, CrateAst, DeclRedNode, ExprRedNode, FieldRedNode, FileRedUnit, GreenChild, GreenDecl, GreenDeclKind, GreenExpr, GreenExprKind, GreenElseIf, GreenField, GreenGenericVar, GreenParam, Operator, TypeNameString, Visibility, GreenCtor, GreenMethodDecl, HasTextLen, IdentName};
 use leafc_coreapi::diagnostic::DiagMsg;
 use leafc_coreapi::hir::{
     HirBinOp, HirCtorDef, HirDecl, HirDeclId, HirDeclKind, HirCrate, HirExpr,
@@ -47,7 +47,9 @@ impl<'a> HirLower<'a> {
     }
 
     /// 计算 GreenChild 的绝对 Span
-    fn child_span<T: HasTextLen>(base: &Span, child: &GreenChild<T>) -> Span {
+    fn child_span<T>(base: &Span, child: &GreenChild<T>) -> Span
+    where T: HasTextLen {
+
         let start = base.start_off + child.relative_start;
         let len = child.node.text_len();
         Span {
@@ -101,10 +103,10 @@ impl<'a> HirLower<'a> {
             .map(|gv_child| {
                 let gv = &gv_child.node;
                 let gv_span = Self::child_span(parent_span, gv_child);
-                let sym = self.lookup_symbol(scope_id, &gv.name.node)
+                let sym = self.lookup_symbol(scope_id, &gv.name.node.name)
                     .ok_or_else(|| DiagMsg {
                         title: "GenericNotFound".into(),
-                        msg: format!("generic `{}` not found", gv.name.node),
+                        msg: format!("generic `{}` not found", gv.name.node.name),
                         span: gv_span.clone(),
                     })?;
                 let name = HirName {
@@ -134,10 +136,10 @@ impl<'a> HirLower<'a> {
         let field_span = Self::child_span(parent_span, field);
         let type_span = Self::child_span(&field_span, &green_field.type_str);
         let type_ann = self.type_name_to_path(&green_field.type_str.node, scope_id, type_span)?;
-        let sym = self.lookup_symbol(scope_id, &green_field.name.node)
+        let sym = self.lookup_symbol(scope_id, &green_field.name.node.name)
             .ok_or_else(|| DiagMsg {
                 title: "FieldNotFound".into(),
-                msg: format!("field `{}` not found", green_field.name.node),
+                msg: format!("field `{}` not found", green_field.name.node.name),
                 span: field_span.clone(),
             })?;
         let name = HirName {
@@ -161,10 +163,10 @@ impl<'a> HirLower<'a> {
         let green_ctor = &ctor.node;
         let ctor_span = Self::child_span(parent_span, ctor);
         let ctor_name = green_ctor.name.node.as_ref();
-        let sym = self.lookup_symbol(scope_id, ctor_name)
+        let sym = self.lookup_symbol(scope_id, &*ctor_name.name)
             .ok_or_else(|| DiagMsg {
                 title: "CtorNotFound".into(),
-                msg: format!("constructor `{}` not found", ctor_name),
+                msg: format!("constructor `{}` not found", ctor_name.name),
                 span: ctor_span.clone(),
             })?;
         let name = HirName {
@@ -208,10 +210,10 @@ impl<'a> HirLower<'a> {
         let green_method = &method.node;
         let method_span = Self::child_span(parent_span, method);
         let method_name = green_method.name.node.as_ref();
-        let sym = self.lookup_symbol(scope_id, method_name)
+        let sym = self.lookup_symbol(scope_id, &*method_name.name)
             .ok_or_else(|| DiagMsg {
                 title: "MethodNotFound".into(),
-                msg: format!("method `{}` not found", method_name),
+                msg: format!("method `{}` not found", method_name.name),
                 span: method_span.clone(),
             })?;
         let name = HirName {
@@ -250,10 +252,10 @@ impl<'a> HirLower<'a> {
     ) -> Result<HirParam, DiagMsg> {
         let green_param = &param.node;
         let param_span = Self::child_span(parent_span, param);
-        let sym = self.lookup_symbol(scope_id, &green_param.name.node)
+        let sym = self.lookup_symbol(scope_id, &green_param.name.node.name)
             .ok_or_else(|| DiagMsg {
                 title: "ParamNotFound".into(),
-                msg: format!("parameter `{}` not found", green_param.name.node),
+                msg: format!("parameter `{}` not found", green_param.name.node.name),
                 span: param_span.clone(),
             })?;
         let name = HirName {
@@ -275,10 +277,9 @@ impl<'a> HirLower<'a> {
         expr_red: &ExprRedNode,
         scope_id: ScopeId,
     ) -> Result<HirExprId, DiagMsg> {
-        let hir_id = self.hir.hir_expr_pool.len();
         let span = expr_red.span.clone();
 
-        let kind = match expr_red.kind() {
+        let kind = match &expr_red.inner.kind {
             GreenExprKind::Atom { expr: atom } => match atom {
                 AtomExprNode::Decimal { dec, .. } =>
                     HirExprKind::Lit(HirLit::Decimal(dec.clone())),
@@ -287,7 +288,7 @@ impl<'a> HirLower<'a> {
                 AtomExprNode::Str { string, .. } =>
                     HirExprKind::Lit(HirLit::Str(string.clone())),
                 AtomExprNode::Name { name, .. } => {
-                    let sym = self.lookup_symbol(scope_id, name)
+                    let sym = self.lookup_symbol(scope_id, &*name)
                         .ok_or_else(|| DiagMsg {
                             title: "NameNotFound".into(),
                             msg: format!("name `{}` not found", name),
@@ -309,62 +310,62 @@ impl<'a> HirLower<'a> {
             },
 
             GreenExprKind::Binary { left, op, right } => {
-                let left_id = self.lower_expr(&expr_red.child_red(left), scope_id)?;
-                let right_id = self.lower_expr(&expr_red.child_red(right), scope_id)?;
+                let left_id = self.lower_expr(&expr_red.child_to_red(&left), scope_id)?;
+                let right_id = self.lower_expr(&expr_red.child_to_red(&right), scope_id)?;
                 let op = Self::convert_binop(&op.node);
                 HirExprKind::Binary { left: left_id, right: right_id, op }
             }
 
             GreenExprKind::Unary { op, right } => {
-                let right_id = self.lower_expr(&expr_red.child_red(right), scope_id)?;
+                let right_id = self.lower_expr(&expr_red.child_to_red(&right), scope_id)?;
                 let op = Self::convert_unary(&op.node)?;
                 HirExprKind::Unary { op, right: right_id }
             }
 
             GreenExprKind::Move { target } => {
-                let target_id = self.lower_expr(&expr_red.child_red(target), scope_id)?;
+                let target_id = self.lower_expr(&expr_red.child_to_red(&target), scope_id)?;
                 HirExprKind::Move { target: target_id }
             }
             GreenExprKind::Copy { target } => {
-                let target_id = self.lower_expr(&expr_red.child_red(target), scope_id)?;
+                let target_id = self.lower_expr(&expr_red.child_to_red(&target), scope_id)?;
                 HirExprKind::Copy { target: target_id }
             }
             GreenExprKind::Ref { target } => {
-                let target_id = self.lower_expr(&expr_red.child_red(target), scope_id)?;
+                let target_id = self.lower_expr(&expr_red.child_to_red(&target), scope_id)?;
                 HirExprKind::Ref { target: target_id }
             }
             GreenExprKind::MutRef { target } => {
-                let target_id = self.lower_expr(&expr_red.child_red(target), scope_id)?;
+                let target_id = self.lower_expr(&expr_red.child_to_red(&target), scope_id)?;
                 HirExprKind::MutRef { target: target_id }
             }
             GreenExprKind::Share { target } => {
-                let target_id = self.lower_expr(&expr_red.child_red(target), scope_id)?;
+                let target_id = self.lower_expr(&expr_red.child_to_red(&target), scope_id)?;
                 HirExprKind::Share { target: target_id }
             }
 
             GreenExprKind::Call { callee, args } => {
-                let callee_id = self.lower_expr(&expr_red.child_red(callee), scope_id)?;
+                let callee_id = self.lower_expr(&expr_red.child_to_red(&callee), scope_id)?;
                 let arg_ids = args
                     .iter()
-                    .map(|a| self.lower_expr(&expr_red.child_red(a), scope_id))
+                    .map(|a| self.lower_expr(&expr_red.child_to_red(a), scope_id))
                     .collect::<Result<_, _>>()?;
                 HirExprKind::Call { callee: callee_id, args: arg_ids }
             }
 
             GreenExprKind::UnsafeExternalCall { callee, args } => {
-                let callee_id = self.lower_expr(&expr_red.child_red(callee), scope_id)?;
+                let callee_id = self.lower_expr(&expr_red.child_to_red(&callee), scope_id)?;
                 let arg_ids = args
                     .iter()
-                    .map(|a| self.lower_expr(&expr_red.child_red(a), scope_id))
+                    .map(|a| self.lower_expr(&expr_red.child_to_red(a), scope_id))
                     .collect::<Result<_, _>>()?;
                 HirExprKind::UnsafeExternalCall { callee: callee_id, args: arg_ids }
             }
 
             GreenExprKind::Member { left, right } => {
-                let obj_id = self.lower_expr(&expr_red.child_red(left), scope_id)?;
+                let obj_id = self.lower_expr(&expr_red.child_to_red(&left), scope_id)?;
                 HirExprKind::FieldAccess {
                     obj: obj_id,
-                    field: right.node.as_ref().clone(),
+                    field: right.node.as_ref().clone().name,
                 }
             }
 
@@ -380,17 +381,17 @@ impl<'a> HirLower<'a> {
                     .unwrap_or(scope_id);
                 let stmts = exprs
                     .iter()
-                    .map(|e| self.lower_expr(&expr_red.child_red(e), do_scope))
+                    .map(|e| self.lower_expr(&expr_red.child_to_red(e), do_scope))
                     .collect::<Result<_, _>>()?;
                 HirExprKind::Block { stmts }
             }
 
             GreenExprKind::Let { name, expr: e, type_str, mutable } => {
-                let init_id = self.lower_expr(&expr_red.child_red(e), scope_id)?;
-                let sym = self.lookup_symbol(scope_id, &name.node)
+                let init_id = self.lower_expr(&expr_red.child_to_red(&e), scope_id)?;
+                let sym = self.lookup_symbol(scope_id, &name.node.name)
                     .ok_or_else(|| DiagMsg {
                         title: "LetNameNotFound".into(),
-                        msg: format!("variable `{}` not found", name.node),
+                        msg: format!("variable `{}` not found", name.node.name),
                         span: span.clone(),
                     })?;
                 let var_name = HirName {
@@ -398,7 +399,7 @@ impl<'a> HirLower<'a> {
                     sym_id: sym.sym_id,
                 };
                 let type_ann = if let Some(ts) = type_str {
-                    let ts_span = Self::child_span(&span, ts);
+                    let ts_span = Self::child_span(&span, &ts);
                     Some(self.type_name_to_path(&ts.node, scope_id, ts_span)?)
                 } else {
                     None
@@ -412,18 +413,18 @@ impl<'a> HirLower<'a> {
             }
 
             GreenExprKind::If { cond, then_expr, elifs, else_expr } => {
-                let cond_id = self.lower_expr(&expr_red.child_red(cond), scope_id)?;
-                let then_id = self.lower_expr(&expr_red.child_red(then_expr), scope_id)?;
+                let cond_id = self.lower_expr(&expr_red.child_to_red(&cond), scope_id)?;
+                let then_id = self.lower_expr(&expr_red.child_to_red(&then_expr), scope_id)?;
                 let elifs_ids = elifs
                     .iter()
                     .map(|elif| {
-                        let c = self.lower_expr(&expr_red.child_red(&elif.cond), scope_id)?;
-                        let b = self.lower_expr(&expr_red.child_red(&elif.body), scope_id)?;
+                        let c = self.lower_expr(&expr_red.child_to_red(&elif.cond), scope_id)?;
+                        let b = self.lower_expr(&expr_red.child_to_red(&elif.body), scope_id)?;
                         Ok((c, b))
                     })
                     .collect::<Result<_, DiagMsg>>()?;
                 let else_opt = if let Some(else_e) = else_expr {
-                    Some(self.lower_expr(&expr_red.child_red(else_e), scope_id)?)
+                    Some(self.lower_expr(&expr_red.child_to_red(&else_e), scope_id)?)
                 } else {
                     None
                 };
@@ -437,7 +438,7 @@ impl<'a> HirLower<'a> {
 
             GreenExprKind::Return { expr: opt_expr } => {
                 let expr_id = if let Some(e) = opt_expr {
-                    Some(self.lower_expr(&expr_red.child_red(e), scope_id)?)
+                    Some(self.lower_expr(&expr_red.child_to_red(&e), scope_id)?)
                 } else {
                     None
                 };
@@ -445,6 +446,7 @@ impl<'a> HirLower<'a> {
             }
         };
 
+        let hir_id = self.hir.hir_expr_pool.len();
         let hir_expr = HirExpr { kind, hir_id, span };
         self.hir.hir_expr_pool.push(hir_expr);
         Ok(hir_id)
@@ -498,7 +500,7 @@ impl<'a> HirLower<'a> {
                 todo!()
             }
 
-            GreenDeclKind::Abstract { has_abst, generic_vars, methods } => {
+            GreenDeclKind::Abstract { super_abst: has_abst, generic_vars, methods } => {
                 let scope_id = decl_scope;
                 let generic_params = self.lower_generic_params(generic_vars, scope_id, &span)?;
                 let super_abstracts = has_abst
@@ -585,7 +587,7 @@ impl<'a> HirLower<'a> {
                     self.type_name_to_path(&return_type_str.node, scope_id, ret_span)?
                 };
                 HirDeclKind::External {
-                    sym_name: sym_name.node.as_ref().clone(),
+                    sym_name: sym_name.node.as_ref().clone().name,
                     params: hir_params,
                     return_type,
                 }
@@ -597,7 +599,7 @@ impl<'a> HirLower<'a> {
         };
 
         let hir_decl = HirDecl {
-            ident,
+            ident: ident.name,
             kind,
             is_pub_external,
             hir_id,
@@ -609,14 +611,14 @@ impl<'a> HirLower<'a> {
 
     fn lower_plain_type_name(
         &self,
-        name: &str,
+        name: &Arc<IdentName>,
         scope_id: ScopeId,
         span: Span,
     ) -> Result<HirTypeName, DiagMsg> {
-        let sym = self.lookup_symbol(scope_id, name)
+        let sym = self.lookup_symbol(scope_id, &*name.name)
             .ok_or_else(|| DiagMsg {
                 title: "NameNotFound".into(),
-                msg: format!("name `{}` not found", name),
+                msg: format!("name `{}` not found", name.name),
                 span: span.clone(),
             })?;
         Ok(HirTypeName {
@@ -675,7 +677,6 @@ impl<'a> HirLowerApi<'a> for HirLower<'a> {
                 hir_expr_pool: vec![],
                 hir_decl_pool: vec![],
                 pub_decl_ids: vec![],
-                type_map: HashMap::new(),
                 type_pool: vec![],
                 name_pass_result: None,
             },
@@ -700,7 +701,7 @@ impl<'a> HirLowerApi<'a> for HirLower<'a> {
                     self.hir.pub_decl_ids.push(hir_id);
                 }
                 // 查找 main 函数
-                if decl_child.node.name.node.as_ref() == "main" {
+                if decl_child.node.name.node.as_ref().name == "main" {
                     if let GreenDeclKind::Fun { .. } = &decl_child.node.kind {
                         self.hir.main_fun = Some(hir_id);
                     }
