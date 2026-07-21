@@ -697,6 +697,8 @@ impl TypeChecker {
         for decl_id in 0..self.hir_crate.hir_decl_pool.len() {
             self.check_decl(decl_id)?;
         }
+        self.hir_crate.type_pool = self.ty_pool;
+
         Ok(TypeCheckerResult {
             decl_type_map: self.decl_type_map,
             expr_type_map: self.expr_type_map,

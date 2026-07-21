@@ -1,27 +1,21 @@
 mod parse_expr;
-mod parse_type_decl;
-mod parse_use_decl;
-mod parse_fun_decl;
-mod parse_external_decl;
-mod parse_abstract_decl;
+mod parse_import;
+mod parse_decl;
 
-use std::collections::HashMap;
-use std::fs;
-use std::path::PathBuf;
-use std::sync::Arc;
+use intervaltree::IntervalTree;
 use leafc_coreapi;
-use leafc_coreapi::ast::{AtomExprNode, GreenExpr, GreenDecl, CrateAst, GreenGenericVar, GreenParam, TypeNameString, Visibility, GreenDeclKind, GreenAnnotation, DeclRedNode, FileRedUnit, Operator, GreenChild, GreenElseIf, GreenRequire, GreenFileUnit, ExprRedNode, IdentName};
-use leafc_coreapi::crate_meta::{BuiltinOperator, OperatorDef, PriorityRelation, OperatorKind};
+use leafc_coreapi::ast::{CrateAst, FileRedUnit, GreenAnnotation, GreenChild, GreenDecl, GreenFileUnit, GreenGenericVar, GreenPureStaticPath, GreenTupleElement, GreenWhereClause, GreenWhereConstraint, IdentName, TypeName, Visibility};
+use leafc_coreapi::crate_meta::{BuiltinOperator, OperatorDef, OperatorKind};
 use leafc_coreapi::diagnostic::DiagMsg;
 use leafc_coreapi::lexer::{LexerApi, Token, TokenStream, TokenType};
-use leafc_coreapi::lexer::TokenType::Lparen;
 use leafc_coreapi::parser::{ParserApi, ParserError};
-use leafc_coreapi::scope::ScopePool;
 use leafc_coreapi::source::{AbsPathSourceMap, SourceId, SourcePool, Span};
 use leafc_coreapi::tokens_pass::TokenPassApi;
 use leafc_lexer::Lexer;
 use leafc_tokenpass::Preprocessor;
-use intervaltree::{IntervalTree};
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
 
 pub struct Parser<'a> {
     pub dir_abs_path: PathBuf,
@@ -32,6 +26,7 @@ pub struct Parser<'a> {
     pub ast: CrateAst,
 
     pub user_operators: &'a HashMap<String, OperatorDef>,
+
     /// op_text => (precedence, kind)
     pub user_op_info: &'a HashMap<String, (usize, OperatorKind)>,
 }
@@ -89,54 +84,241 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
-    fn unknown_type_name(&self) -> TypeNameString {
-        TypeNameString {
-            name: "".to_string(),
+    fn get_unknown_type_name(&self) -> TypeName {
+        TypeName::Named {
+            path: GreenChild {
+                relative_start: 0,
+                node: Arc::new(GreenPureStaticPath {
+                    segments: vec![],
+                    text_len: 0,
+                }),
+            },
             generics: vec![],
-            text_len: self.current_token().span.len(),
+            text_len: 0,
         }
     }
 
-    fn handle_type_name_string(&mut self) -> Result<TypeNameString, DiagMsg> {
-        let start_token = self.current_token().clone();
-        let start_off = start_token.span.start_off;
-        self.skip_token_only(TokenType::Ident)?;
-        let mut generics = vec![];
+    fn parse_type_name(&mut self) -> Result<TypeName, DiagMsg> {
+        let start_off = self.current_token().span.start_off;
 
-        if self.current_token().kind == TokenType::Lbracket {
-            self.skip_token();
-
-            while self.current_token().kind != TokenType::Rbracket {
-                let typename = self.handle_type_name_string()?;
-                if self.current_token().kind == TokenType::Comma {
+        match self.current_token().kind {
+            TokenType::KwRef => {
+                self.skip_token(); // 'ref'
+                let is_mut = if self.current_token().kind == TokenType::KwMut {
                     self.skip_token();
-                    generics.push(typename);
-                } else if self.current_token().kind == TokenType::Rbracket {
-                    generics.push(typename);
-                    break;
+                    true
                 } else {
-                    return Err(DiagMsg{
-                        title: format!("{:?}", ParserError::InvalidGenericList),
-                        msg: "invalid generic list".to_string(),
-                        span: self.current_token().span.clone(),
-                    })
+                    false
+                };
+                let inner_start = self.current_token().span.start_off;
+                let inner = self.parse_type_name()?;
+                let end_off = self.tokens.data[self.index - 1].span.end_off;
+                let text_len = (end_off - start_off) as usize;
+                let inner_child = GreenChild {
+                    relative_start: (inner_start - start_off) as usize,
+                    node: Arc::new(inner),
+                };
+                if is_mut {
+                    Ok(TypeName::MutRef { inner: inner_child, text_len })
+                } else {
+                    Ok(TypeName::Ref { inner: inner_child, text_len })
                 }
             }
-            self.skip_token(); // ']'
+
+            TokenType::KwShare => {
+                self.skip_token(); // 'share'
+                let inner_start = self.current_token().span.start_off;
+                let inner = self.parse_type_name()?;
+                let end_off = self.tokens.data[self.index - 1].span.end_off;
+                let text_len = (end_off - start_off) as usize;
+                let inner_child = GreenChild {
+                    relative_start: (inner_start - start_off) as usize,
+                    node: Arc::new(inner),
+                };
+                Ok(TypeName::Share { inner: inner_child, text_len })
+            }
+
+            TokenType::Lparen => {
+                let mut peek_idx = self.index + 1;
+                while peek_idx < self.tokens.data.len()
+                    && self.tokens.data[peek_idx].kind == TokenType::NewLine
+                {
+                    peek_idx += 1;
+                }
+                self.parse_tuple_type(start_off)
+            }
+
+            TokenType::KwImpl => {
+                self.skip_token(); // 'impl'
+                let trait_start = self.current_token().span.start_off;
+                let trait_type = self.parse_type_name()?;
+                let end_off = self.tokens.data[self.index - 1].span.end_off;
+                let text_len = (end_off - start_off) as usize;
+                let trait_child = GreenChild {
+                    relative_start: (trait_start - start_off) as usize,
+                    node: Arc::new(trait_type),
+                };
+                Ok(TypeName::Impl { trait_type: trait_child, text_len })
+            }
+
+            TokenType::KwFun => {
+                self.parse_fun_type(start_off)
+            }
+
+            _ => {
+                // 命名类型
+                let path_start = self.current_token().span.start_off;
+                let path_node = self.parse_pure_static_path()?;
+                let mut generics = vec![];
+
+                if self.current_token().kind == TokenType::Lbracket {
+                    self.skip_token(); // '['
+                    while self.current_token().kind != TokenType::Rbracket {
+                        let ty = self.parse_type_name()?;
+                        generics.push(ty);
+                        if self.current_token().kind == TokenType::Comma {
+                            self.skip_token();
+                        } else if self.current_token().kind == TokenType::Rbracket {
+                            break;
+                        } else {
+                            return Err(DiagMsg {
+                                title: format!("{:?}", ParserError::InvalidGenericList),
+                                msg: "invalid generic list".to_string(),
+                                span: self.current_token().span.clone(),
+                            });
+                        }
+                    }
+                    self.skip_token(); // ']'
+                }
+
+                let end_off = self.tokens.data[self.index - 1].span.end_off;
+                let text_len = (end_off - start_off) as usize;
+
+                let path_child = GreenChild {
+                    relative_start: (path_start - start_off) as usize,
+                    node: Arc::new(path_node),
+                };
+
+                Ok(TypeName::Named { path: path_child, generics, text_len })
+            }
+        }
+    }
+
+    fn parse_tuple_type(&mut self, start_off: usize) -> Result<TypeName, DiagMsg> {
+        self.skip_token_only(TokenType::Lparen)?;
+        let mut elements = vec![];
+
+        while self.current_token().kind != TokenType::Rparen {
+            let elem_start = self.current_token().span.start_off;
+            let ty_start = self.current_token().span.start_off;
+            let ty = self.parse_type_name()?;
+            let mut repeat = None;
+
+            if self.current_token().kind == TokenType::Star {
+                self.skip_token(); // '*'
+                let num_token = self.current_token().clone();
+                if num_token.kind != TokenType::Int {
+                    return Err(DiagMsg {
+                        title: format!("{:?}", ParserError::InvalidTupleElement),
+                        msg: "expected integer for tuple repeat count".to_string(),
+                        span: num_token.span.clone(),
+                    });
+                }
+                let count: usize = num_token.text.parse().map_err(|_| DiagMsg {
+                    title: format!("{:?}", ParserError::InvalidTupleElement),
+                    msg: "invalid repeat count".to_string(),
+                    span: num_token.span.clone(),
+                })?;
+                repeat = Some(count);
+                self.skip_token();
+            }
+
+            let elem_end = self.tokens.data[self.index - 1].span.end_off;
+            let text_len = (elem_end - elem_start);
+
+            let ty_child = GreenChild {
+                relative_start: (ty_start - elem_start),
+                node: Arc::new(ty),
+            };
+
+            elements.push(GreenTupleElement {
+                ty: ty_child,
+                repeat,
+                text_len,
+            });
+
+            if self.current_token().kind == TokenType::Comma {
+                self.skip_token();
+            } else if self.current_token().kind == TokenType::Rparen {
+                break;
+            } else {
+                return Err(DiagMsg {
+                    title: format!("{:?}", ParserError::InvalidTupleElement),
+                    msg: "unexpected token in tuple type".to_string(),
+                    span: self.current_token().span.clone(),
+                });
+            }
         }
 
-        let end_off = self.current_token().span.end_off;
-        let prev_token = &self.tokens.data[self.index - 1];
-        let end_off = prev_token.span.end_off;
-        Ok(TypeNameString {
-            name: start_token.text.clone(),
-            generics,
-            text_len: (end_off - start_off) as usize,
+        self.skip_token_only(TokenType::Rparen)?;
+        let end_off = self.tokens.data[self.index - 1].span.end_off;
+        let text_len = (end_off - start_off) as usize;
+
+        Ok(TypeName::Tuple { elements, text_len })
+    }
+
+    fn parse_fun_type(&mut self, start_off: usize) -> Result<TypeName, DiagMsg> {
+
+        self.skip_token_only(TokenType::KwFun)?; // 'fun'
+
+        self.skip_token_only(TokenType::Lparen)?;
+        let mut params = vec![];
+
+        while self.current_token().kind != TokenType::Rparen {
+            let param_start = self.current_token().span.start_off;
+            let param_type = self.parse_type_name()?;
+            params.push(GreenChild {
+                relative_start: (param_start - start_off),
+                node: Arc::new(param_type),
+            });
+
+            if self.current_token().kind == TokenType::Comma {
+                self.skip_token();
+            } else if self.current_token().kind == TokenType::Rparen {
+                break;
+            } else {
+                return Err(DiagMsg {
+                    title: format!("{:?}", ParserError::InvalidFunctionType),
+                    msg: "unexpected token in function type parameters".to_string(),
+                    span: self.current_token().span.clone(),
+                });
+            }
+        }
+        self.skip_token_only(TokenType::Rparen)?; // ')'
+
+        self.skip_token_only(TokenType::Arrow)?;
+        let ret_start = self.current_token().span.start_off;
+        let return_type = self.parse_type_name()?;
+
+        let end_off;
+        end_off = self.tokens.data[self.index - 1].span.end_off;
+
+        let text_len = (end_off - start_off);
+
+        let ret_child = GreenChild {
+            relative_start: (ret_start - start_off),
+            node: Arc::new(return_type),
+        };
+
+        Ok(TypeName::Fun {
+            params,
+            return_type: ret_child,
+            text_len,
         })
     }
 
-    fn handle_generic_param(&mut self)
-                            -> Result<(Vec<GreenChild<GreenGenericVar>>, usize), DiagMsg> {
+    fn parse_generic_param(&mut self)
+        -> Result<(Vec<GreenChild<GreenGenericVar>>, usize), DiagMsg> {
 
         let list_start_off = self.current_token().span.start_off; // '['
         self.skip_token_only(TokenType::Lbracket)?;
@@ -186,28 +368,39 @@ impl<'a> Parser<'a> {
         Ok((children, list_start_off))
     }
 
-    fn handle_where(
+    fn parse_where(
         &mut self,
-        mut generics: Vec<GreenGenericVar>,
         base_offset: usize,
-    ) -> Result<Vec<GreenGenericVar>, DiagMsg> {
+    ) -> Result<Option<GreenChild<GreenWhereClause>>, DiagMsg> {
+        if self.current_token().kind != TokenType::KwWhere {
+            return Ok(None);
+        }
 
-        self.skip_token_only(TokenType::KwWhere)?;
-        let mut current_generic_index = 0;
+        let where_start_off = self.current_token().span.start_off;
+        self.skip_token(); // 'where'
+        let mut constraints = vec![];
 
         while self.current_token().kind == TokenType::Ident {
-            let mut constraint = vec![];
+            let constraint_start_off = self.current_token().span.start_off;
 
-            self.skip_token();
+            let name_start_off = self.current_token().span.start_off;
+            let name_text = self.current_token().text.clone();
+            self.skip_token_only(TokenType::Ident)?;
+            let name_child = GreenChild {
+                relative_start: 0,
+                node: Arc::new(IdentName { name: name_text }),
+            };
+
+            // ':'
             self.skip_token_only(TokenType::Colon)?;
 
-            while self.current_token().kind != TokenType::NewLine {
-                let type_start_off = self.current_token().span.start_off;
-                let type_str = self.handle_type_name_string()?;
-
-                constraint.push(GreenChild {
-                    relative_start: (type_start_off - base_offset) as usize,
-                    node: Arc::new(type_str),
+            let mut bounds = vec![];
+            loop {
+                let bound_start_off = self.current_token().span.start_off;
+                let bound_type = self.parse_type_name()?;
+                bounds.push(GreenChild {
+                    relative_start: (bound_start_off - constraint_start_off) as usize,
+                    node: Arc::new(bound_type),
                 });
 
                 if self.current_token().kind == TokenType::Plus {
@@ -217,38 +410,76 @@ impl<'a> Parser<'a> {
                 }
             }
 
-            if self.current_token().kind == TokenType::Comma {
-                if current_generic_index >= generics.len() {
-                    return Err(DiagMsg{
-                        title: format!("{:?}", ParserError::WhereBodyGenericMissingMatchGenericParameterList),
-                        msg: "where body generic missing generic parameter list".to_string(),
-                        span: self.current_token().span.clone(),
-                    })
-                }
+            let constraint_end_off = self.tokens.data[self.index - 1].span.end_off;
+            let constraint_text_len = (constraint_end_off - constraint_start_off) as usize;
 
-                generics[current_generic_index].constraint = constraint;
+            let constraint = GreenWhereConstraint {
+                name: name_child,
+                bounds,
+                text_len: constraint_text_len,
+            };
+
+            constraints.push(GreenChild {
+                relative_start: (constraint_start_off - base_offset) as usize,
+                node: Arc::new(constraint),
+            });
+
+            if self.current_token().kind == TokenType::Comma {
                 self.skip_token();
             } else if self.current_token().kind == TokenType::NewLine {
-                if current_generic_index >= generics.len() {
-                    return Err(DiagMsg{
-                        title: format!("{:?}", ParserError::WhereBodyGenericMissingMatchGenericParameterList),
-                        msg: "where body generic missing generic parameter list".to_string(),
-                        span: self.current_token().span.clone(),
-                    })
-                }
+                self.skip_token_if_newlines()?;
+            } else {
+                break;
+            }
+        }
 
-                generics[current_generic_index].constraint = constraint;
+        let where_end_off = self.tokens.data[self.index - 1].span.end_off;
+        let where_clause = GreenWhereClause {
+            constraints,
+            text_len: (where_end_off - where_start_off) as usize,
+        };
+
+        Ok(Some(GreenChild {
+            relative_start: (where_start_off - base_offset) as usize,
+            node: Arc::new(where_clause),
+        }))
+    }
+
+    /// 解析纯静态路径例如 'moduleA.moduleB.Type'
+    fn parse_pure_static_path(&mut self) -> Result<GreenPureStaticPath, DiagMsg> {
+        let start_off = self.current_token().span.start_off;
+        let mut segments = vec![];
+
+        if self.current_token().kind != TokenType::Ident {
+            return Err(DiagMsg {
+                title: format!("{:?}", ParserError::TokenExpect),
+                msg: "expected identifier in type path".to_string(),
+                span: self.current_token().span.clone(),
+            });
+        }
+
+        loop {
+            let ident_start_off = self.current_token().span.start_off;
+            let name = self.current_token().text.clone();
+            self.skip_token(); // 消费标识符
+
+            segments.push(GreenChild {
+                relative_start: (ident_start_off - start_off),
+                node: Arc::new(IdentName { name }),
+            });
+
+            if self.current_token().kind == TokenType::Dot {
                 self.skip_token();
             } else {
-                return Err(DiagMsg{
-                    title: format!("{:?}", ParserError::InvalidWhereBody),
-                    msg: "invalid where body".to_string(),
-                    span: self.current_token().span.clone(),
-                })
+                break;
             }
-            current_generic_index += 1;
         }
-        Ok(generics)
+
+        let end_off = self.tokens.data[self.index - 1].span.end_off;
+        Ok(GreenPureStaticPath {
+            segments,
+            text_len: (end_off - start_off),
+        })
     }
 
     pub fn lexer(
@@ -284,12 +515,14 @@ impl<'a> Parser<'a> {
         let mut file_unit_requires_green_children = vec![];
 
         while self.current_token().kind != TokenType::Eof {
-            // handle ann
-            let mut anns = self.parse_annotations()?;
+            let anns = self.parse_annotations()?;
 
             let visibility = self.parse_visibility()?;
 
-            let decl_start_off = self.current_token().span.start_off;
+            let first_ann_start = anns.first().map(|(_, sp)| sp.start_off);
+
+            let decl_start_off = first_ann_start.unwrap_or_else(|| self.current_token().span.start_off);
+
             match self.current_token().kind {
                 TokenType::KwUse => {
                     if let Some(req_red) = self.parse_use_decl()? {
@@ -343,6 +576,30 @@ impl<'a> Parser<'a> {
                         node: Arc::clone(&decl_red.inner),
                     });
                 },
+                TokenType::KwEffect => {
+                    let decl_red = self.parse_effect_decl(visibility, anns, decl_start_off)?;
+                    let relative_start = (decl_red.span.start_off - file_start_off) as usize;
+                    top_decl_green_children.push(GreenChild {
+                        relative_start,
+                        node: Arc::clone(&decl_red.inner),
+                    });
+                }
+                TokenType::KwConst => {
+                    let decl_red = self.parse_const_decl(visibility, anns, decl_start_off)?;
+                    let relative_start = (decl_red.span.start_off - file_start_off) as usize;
+                    top_decl_green_children.push(GreenChild {
+                        relative_start,
+                        node: Arc::clone(&decl_red.inner),
+                    });
+                }
+                TokenType::KwGlobal => {
+                    let decl_red = self.parse_global_decl(visibility, anns, decl_start_off)?;
+                    let relative_start = (decl_red.span.start_off - file_start_off) as usize;
+                    top_decl_green_children.push(GreenChild {
+                        relative_start,
+                        node: Arc::clone(&decl_red.inner),
+                    });
+                }
                 TokenType::NewLine => self.skip_token(),
                 _ => {
                     return Err(DiagMsg{
@@ -429,7 +686,10 @@ impl<'a> Parser<'a> {
 
             let visibility = self.parse_visibility()?;
 
-            let decl_start_off = self.current_token().span.start_off;
+            let first_ann_start = anns.first().map(|(_, sp)| sp.start_off);
+
+            let decl_start_off = first_ann_start.unwrap_or_else(|| self.current_token().span.start_off);
+
             match self.current_token().kind {
                 TokenType::KwUse => {
                     if let Some(req_red) = self.parse_use_decl()? {
@@ -466,6 +726,30 @@ impl<'a> Parser<'a> {
                 }
                 TokenType::KwAbst => {
                     let decl_red = self.parse_abstract_decl(visibility, anns, decl_start_off)?;
+                    let relative_start = (decl_red.span.start_off - file_start_off) as usize;
+                    top_decl_green_children.push(GreenChild {
+                        relative_start,
+                        node: Arc::clone(&decl_red.inner),
+                    });
+                }
+                TokenType::KwEffect => {
+                    let decl_red = self.parse_effect_decl(visibility, anns, decl_start_off)?;
+                    let relative_start = (decl_red.span.start_off - file_start_off) as usize;
+                    top_decl_green_children.push(GreenChild {
+                        relative_start,
+                        node: Arc::clone(&decl_red.inner),
+                    });
+                }
+                TokenType::KwConst => {
+                    let decl_red = self.parse_const_decl(visibility, anns, decl_start_off)?;
+                    let relative_start = (decl_red.span.start_off - file_start_off) as usize;
+                    top_decl_green_children.push(GreenChild {
+                        relative_start,
+                        node: Arc::clone(&decl_red.inner),
+                    });
+                }
+                TokenType::KwGlobal => {
+                    let decl_red = self.parse_global_decl(visibility, anns, decl_start_off)?;
                     let relative_start = (decl_red.span.start_off - file_start_off) as usize;
                     top_decl_green_children.push(GreenChild {
                         relative_start,
@@ -593,7 +877,6 @@ impl<'a> ParserApi<'a> for Parser<'a> {
     }
 
 
-    /// main dispatcher
     fn parse(mut self) -> Result<CrateAst, DiagMsg> {
         let main_file_path = self.dir_abs_path.join("main.leaf");
 

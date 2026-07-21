@@ -1,6 +1,11 @@
-type Bar [a]
-    foo: a
+#lang("IntType")
+type Int32;
 
-fun main()
-    let a = 0
-    let n: Bar[Bar] = 1 + 6 * a
+type Int = Int32
+
+type Foo [a]
+    a_field: Int
+    b_field: a
+
+fun main[T]()
+    let a = Foo { a_field: 0, b_field: 100 }

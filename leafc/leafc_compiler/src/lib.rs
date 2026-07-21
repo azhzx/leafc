@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use leafc_coreapi::compiler::{CompilerApi, IncrementalCompiler};
-use leafc_coreapi::diagnostic::{DiagTextColor, DiagnosticianApi};
+use leafc_coreapi::diagnostic::{DiagMsg, DiagTextColor, DiagnosticianApi};
 use leafc_coreapi::hir_lower::HirLowerApi;
 use leafc_coreapi::name_pass::{NamePassApi, NamePassResult};
 use leafc_coreapi::parser::ParserApi;
@@ -16,7 +16,10 @@ use std::sync::Arc;
 use intervaltree::{Element, IntervalTree};
 use leafc_coreapi::ast::{CrateAst, GreenDecl};
 use leafc_coreapi::crate_meta::{CrateManifest, OperatorDef, OperatorKind};
+use leafc_coreapi::mir::MirCrate;
+use leafc_coreapi::mir_lower::MirLowerApi;
 use leafc_coreapi::type_checker::TypeCheckerApi;
+use leafc_mirlower::MirLower;
 use leafc_typechecker::TypeChecker;
 use realworld_io_api::RealWorldIOApi;
 
@@ -248,6 +251,21 @@ impl CompilerApi for NativeCompiler {
                 println!("=== === ===");
 
                 result
+            }
+            Err(e) => {
+                println!("{}", diag.report(e));
+                *out = None;
+                return self;
+            }
+        };
+
+        let mir_lower = MirLower::new(ty_map);
+        let mir = match mir_lower.lower() {
+            Ok(mir) => {
+                println!("=== mir ===");
+                println!("{:#?}", mir);
+                println!("=== === ===");
+                mir
             }
             Err(e) => {
                 println!("{}", diag.report(e));

@@ -26,6 +26,11 @@ pub enum ParserError {
     InvalidExpression,
     InvalidOperator,
     InvalidCallArgumentList,
+    InvalidTupleElement,
+    InvalidFunctionType,
+    InvalidStructInit,
+    InvalidPattern,
+    InvalidCatch,
 }
 
 

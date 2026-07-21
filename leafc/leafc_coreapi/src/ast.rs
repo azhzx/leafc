@@ -1,13 +1,26 @@
 use std::sync::Arc;
-use crate::source::{SourceId, Span};
+use crate::operators::Operator;
+use crate::source::{Span};
+
+// ===----------------------------
+// Text Len
+// ===----------------------------
 
 pub type TextLen = usize;
+
+// ===----------------------------
+// Crate
+// ===----------------------------
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct CrateAst {
     pub external_requires: Vec<RequireRedNode>,
     pub file_units: Vec<FileRedUnit>,
 }
+
+// ===----------------------------
+// File Unit
+// ===----------------------------
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct GreenFileUnit {
@@ -24,6 +37,9 @@ pub struct FileRedUnit {
     pub green: Arc<GreenFileUnit>,
 }
 
+// ===----------------------------
+// Require
+// ===----------------------------
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct GreenRequire {
@@ -60,16 +76,51 @@ pub struct GreenChild<T> {
 // ===----------------------------
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct TypeNameString {
-    pub name: String,
-    pub generics: Vec<TypeNameString>,
+pub enum TypeName {
+    Named {
+        path: GreenChild<GreenPureStaticPath>,
+        generics: Vec<TypeName>,
+        text_len: TextLen,
+    },
+    Ref {
+        inner: GreenChild<TypeName>,
+        text_len: TextLen,
+    },
+    MutRef {
+        inner: GreenChild<TypeName>,
+        text_len: TextLen,
+    },
+    Share {
+        inner: GreenChild<TypeName>,
+        text_len: TextLen,
+    },
+    Tuple {
+        elements: Vec<GreenTupleElement>,
+        text_len: TextLen,
+    },
+    Fun {
+        params: Vec<GreenChild<TypeName>>,
+        return_type: GreenChild<TypeName>,
+        text_len: TextLen,
+    },
+    Impl {
+        trait_type: GreenChild<TypeName>,
+        text_len: TextLen,
+    },
+}
+
+/// 元组
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct GreenTupleElement {
+    pub ty: GreenChild<TypeName>,
+    pub repeat: Option<usize>,
     pub text_len: TextLen,
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct TypeNameRedNode {
     pub span: Span,
-    pub green: Arc<TypeNameString>,
+    pub green: Arc<TypeName>,
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
@@ -94,53 +145,97 @@ pub struct OperatorRedNode {
     pub op: Operator,
 }
 
+// ===----------------------------
+// Static Path
+// ===----------------------------
+
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub enum Operator {
-    Add,
-    Sub,
-    Mul,
-    Div,
-    Mod,
-    And,
-    Or,
-    Not,
-    Eq,
-    Neq,
-    Lt,
-    Gt,
-    Le,
-    Ge,
-    UserOp(String),
+pub struct GreenPureStaticPath {
+    pub segments: Vec<GreenChild<IdentName>>,
+    pub text_len: TextLen,
 }
 
-impl Operator {
-    pub fn text_len(&self) -> TextLen {
-        match self {
-            Operator::UserOp(s) => s.len(),
-            _ => self.keyword().len(),
-        }
-    }
 
-    pub fn keyword(&self) -> &str {
-        match self {
-            Operator::Add => "+",
-            Operator::Sub => "-",
-            Operator::Mul => "*",
-            Operator::Div => "/",
-            Operator::Mod => "%",
-            Operator::And => "&&",
-            Operator::Or => "||",
-            Operator::Not => "!",
-            Operator::Eq => "==",
-            Operator::Neq => "!=",
-            Operator::Lt => "<",
-            Operator::Gt => ">",
-            Operator::Le => "<=",
-            Operator::Ge => ">=",
-            Operator::UserOp(s) => s.as_str(),
-        }
-    }
+// ===----------------------------
+// Where
+// ===----------------------------
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct GreenWhereClause {
+    pub constraints: Vec<GreenChild<GreenWhereConstraint>>,
+    pub text_len: TextLen,
 }
+
+
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct GreenWhereConstraint {
+    pub name: GreenChild<IdentName>,
+    pub bounds: Vec<GreenChild<TypeName>>,
+    pub text_len: TextLen,
+}
+
+
+
+// ===----------------------------
+// Init Struct Fields
+// ===----------------------------
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct GreenStructFieldInit {
+    pub name: GreenChild<IdentName>,
+    pub value: GreenChild<GreenExpr>,
+    pub text_len: TextLen,
+}
+
+
+// ===----------------------------
+// Pattern
+// ===----------------------------
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub enum GreenPattern {
+    Wildcard,
+    Literal(AtomExprNode),
+    Binding(IdentName),
+    Constructor {
+        type_name: GreenChild<TypeName>,
+        args: Vec<GreenChild<GreenPattern>>,
+        text_len: TextLen,
+    },
+}
+
+// ===----------------------------
+// Match
+// ===----------------------------
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct GreenMatchArm {
+    pub pattern: GreenChild<GreenPattern>,
+    pub guard: Option<GreenChild<GreenExpr>>,
+    pub body: GreenChild<GreenExpr>,
+    pub text_len: TextLen,
+}
+
+// ===----------------------------
+// Effect
+// ===----------------------------
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct GreenEffectControl {
+    pub name: GreenChild<IdentName>,
+    pub params: Vec<GreenChild<GreenParam>>,
+    pub return_type: GreenChild<TypeName>,
+    pub text_len: TextLen,
+}
+
+// ===----------------------------
+// Catch clause (for with expression)
+// ===----------------------------
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct GreenCatchClause {
+    pub effect_path: GreenChild<GreenPureStaticPath>,
+    pub control_name: GreenChild<IdentName>,
+    pub params: Vec<GreenChild<GreenPattern>>,
+    pub body: GreenChild<GreenExpr>,
+    pub text_len: TextLen,
+}
+
 
 // ===----------------------------
 // Expr
@@ -237,13 +332,20 @@ pub enum GreenExprKind {
         callee: GreenChild<GreenExpr>,
         args: Vec<GreenChild<GreenExpr>>,
     },
-    Member {
+    StaticPath {
+        path: GreenChild<GreenPureStaticPath>,
+    },
+    MemberAccess {
         left: GreenChild<GreenExpr>,
-        right: GreenChild<IdentName>,
+        member: GreenChild<IdentName>,
+    },
+    MakeStruct {
+        path: GreenChild<GreenExpr>,
+        fields: Vec<GreenChild<GreenStructFieldInit>>,
     },
     TypeCast {
         expr: GreenChild<GreenExpr>,
-        into_type: GreenChild<GreenExpr>,
+        into_type: GreenChild<TypeName>,
     },
     Do {
         exprs: Vec<GreenChild<GreenExpr>>,
@@ -251,7 +353,7 @@ pub enum GreenExprKind {
     Let {
         name: GreenChild<IdentName>,
         expr: GreenChild<GreenExpr>,
-        type_str: Option<GreenChild<TypeNameString>>,
+        type_str: Option<GreenChild<TypeName>>,
         mutable: bool,
     },
     If {
@@ -262,6 +364,26 @@ pub enum GreenExprKind {
     },
     Return {
         expr: Option<GreenChild<GreenExpr>>,
+    },
+    Match {
+        for_match: GreenChild<GreenExpr>,
+        arms: Vec<GreenChild<GreenMatchArm>>,
+    },
+    Is {
+        expr: GreenChild<GreenExpr>,
+        pattern: GreenChild<GreenPattern>,
+    },
+    Raise {
+        effect_path: GreenChild<GreenPureStaticPath>,
+        control_name: GreenChild<IdentName>,
+        args: Vec<GreenChild<GreenExpr>>,
+    },
+    With {
+        handler_expr: GreenChild<GreenExpr>,
+        clauses: Vec<GreenChild<GreenCatchClause>>,
+    },
+    Resume {
+        expr: GreenChild<GreenExpr>,
     },
 }
 
@@ -279,7 +401,7 @@ pub struct GreenElseIf {
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct GreenParam {
     pub name: GreenChild<IdentName>,
-    pub type_str: GreenChild<TypeNameString>,
+    pub type_str: GreenChild<TypeName>,
     pub text_len: TextLen,
 }
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
@@ -300,7 +422,7 @@ pub struct FieldRedNode {
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct GreenField {
     pub name: GreenChild<IdentName>,
-    pub type_str: GreenChild<TypeNameString>,
+    pub type_str: GreenChild<TypeName>,
     pub text_len: TextLen,
 }
 
@@ -316,7 +438,7 @@ pub struct GenericVarRedNode {
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct GreenGenericVar {
     pub name: GreenChild<IdentName>,
-    pub constraint: Vec<GreenChild<TypeNameString>>,
+    pub constraint: Vec<GreenChild<TypeName>>,
     pub text_len: TextLen,
 }
 
@@ -334,7 +456,7 @@ pub struct MethodRedNode {
 pub struct GreenMethodDecl {
     pub name: GreenChild<IdentName>,
     pub params: Vec<GreenChild<GreenParam>>,
-    pub return_type_str: GreenChild<TypeNameString>,
+    pub return_type_str: GreenChild<TypeName>,
     pub visibility: Visibility,
     pub text_len: TextLen,
 }
@@ -368,8 +490,8 @@ pub struct CtorRedNode {
 pub struct GreenCtor {
     pub name: GreenChild<IdentName>,
     pub generic_vars: Vec<GreenChild<GreenGenericVar>>,
-    pub from_type_str: GreenChild<TypeNameString>,
-    pub return_type_str: GreenChild<TypeNameString>,
+    pub from_type_str: GreenChild<TypeName>,
+    pub return_type_str: GreenChild<TypeName>,
     pub visibility: Visibility,
     pub text_len: TextLen,
 }
@@ -378,7 +500,6 @@ pub struct GreenCtor {
 // ===----------------------------
 // Decl
 // ===----------------------------
-
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct DeclRedNode {
@@ -399,44 +520,62 @@ pub struct GreenDecl {
 pub enum GreenDeclKind {
     Fun {
         params: Vec<GreenChild<GreenParam>>,
-        return_type_str: GreenChild<TypeNameString>,
+        return_type_str: GreenChild<TypeName>,
+        generic_vars: Vec<GreenChild<GreenGenericVar>>,
         block: Vec<GreenChild<GreenExpr>>,
+        where_clause: Option<GreenChild<GreenWhereClause>>,
     },
     FunDecl {
         params: Vec<GreenChild<GreenParam>>,
-        return_type_str: GreenChild<TypeNameString>,
-    },
-    Abstract {
-        super_abst: Vec<GreenChild<IdentName>>,
+        return_type_str: GreenChild<TypeName>,
         generic_vars: Vec<GreenChild<GreenGenericVar>>,
-        methods: Vec<GreenChild<GreenMethodDecl>>,
+        where_clause: Option<GreenChild<GreenWhereClause>>,
     },
     TypeStruct {
         fields: Vec<GreenChild<GreenField>>,
         has_abst: Vec<GreenChild<IdentName>>,
         generic_vars: Vec<GreenChild<GreenGenericVar>>,
+        where_clause: Option<GreenChild<GreenWhereClause>>,
     },
     TypeAlias {
-        ref_to: GreenChild<TypeNameString>,
+        ref_to: GreenChild<TypeName>,
         has_abst: Vec<GreenChild<IdentName>>,
         generic_vars: Vec<GreenChild<GreenGenericVar>>,
+        where_clause: Option<GreenChild<GreenWhereClause>>,
     },
-    TypeDecl,
+    Abstract {
+        super_abst: Vec<GreenChild<IdentName>>,
+        generic_vars: Vec<GreenChild<GreenGenericVar>>,
+        methods: Vec<GreenChild<GreenMethodDecl>>,
+        where_clause: Option<GreenChild<GreenWhereClause>>,
+    },
     ADT {
         has_abst: Vec<GreenChild<IdentName>>,
         generic_vars: Vec<GreenChild<GreenGenericVar>>,
         ctors: Vec<GreenChild<GreenCtor>>,
+        where_clause: Option<GreenChild<GreenWhereClause>>,
     },
+    Const {
+        expr: GreenChild<GreenExpr>,
+    },
+    Global {
+        expr: GreenChild<GreenExpr>,
+    },
+    Effect {
+        controls: Vec<GreenChild<GreenEffectControl>>,
+    },
+    TypeDecl,
     CType,
     External {
         sym_name: GreenChild<IdentName>,
         params: Vec<GreenChild<GreenParam>>,
-        return_type_str: GreenChild<TypeNameString>,
+        return_type_str: GreenChild<TypeName>,
     },
 }
 
+
 // ===----------------------------
-// Text Length
+// Text Len
 // ===----------------------------
 
 pub trait HasTextLen {
@@ -450,14 +589,53 @@ impl HasTextLen for GreenGenericVar { fn text_len(&self) -> TextLen { self.text_
 impl HasTextLen for GreenCtor { fn text_len(&self) -> TextLen { self.text_len } }
 impl HasTextLen for GreenMethodDecl { fn text_len(&self) -> TextLen { self.text_len } }
 impl HasTextLen for GreenAnnotation { fn text_len(&self) -> TextLen { self.text_len } }
-impl HasTextLen for TypeNameString { fn text_len(&self) -> TextLen { self.text_len } }
-
+impl HasTextLen for GreenStructFieldInit { fn text_len(&self) -> TextLen { self.text_len } }
+impl HasTextLen for GreenWhereConstraint { fn text_len(&self) -> TextLen { self.text_len } }
+impl HasTextLen for GreenPureStaticPath { fn text_len(&self) -> TextLen { self.text_len } }
+impl HasTextLen for GreenWhereClause { fn text_len(&self) -> TextLen { self.text_len } }
 impl HasTextLen for GreenDecl { fn text_len(&self) -> TextLen { self.text_len } }
-
 impl HasTextLen for GreenElseIf { fn text_len(&self) -> TextLen { self.text_len } }
-
 impl HasTextLen for GreenRequire { fn text_len(&self) -> TextLen { self.text_len } }
-
 impl HasTextLen for GreenFileUnit { fn text_len(&self) -> TextLen { self.text_len } }
-
 impl HasTextLen for IdentName { fn text_len(&self) -> usize { self.name.len() } }
+impl HasTextLen for GreenMatchArm { fn text_len(&self) -> TextLen { self.text_len } }
+impl HasTextLen for GreenCatchClause { fn text_len(&self) -> TextLen { self.text_len } }
+impl HasTextLen for GreenEffectControl { fn text_len(&self) -> TextLen { self.text_len } }
+impl HasTextLen for GreenTupleElement { fn text_len(&self) -> TextLen { self.text_len } }
+impl HasTextLen for GreenPattern {
+    fn text_len(&self) -> TextLen {
+        match self {
+            GreenPattern::Wildcard => 1,
+            GreenPattern::Literal(lit) => lit.text_len(),
+            GreenPattern::Binding(id) => id.text_len(),
+            GreenPattern::Constructor { text_len, .. } => *text_len,
+        }
+    }
+}
+
+impl HasTextLen for AtomExprNode {
+    fn text_len(&self) -> TextLen {
+        match self {
+            AtomExprNode::Decimal { text_len, .. } => *text_len,
+            AtomExprNode::Int { text_len, .. } => *text_len,
+            AtomExprNode::Str { text_len, .. } => *text_len,
+            AtomExprNode::Name { text_len, .. } => *text_len,
+            AtomExprNode::Tuple { text_len, .. } => *text_len,
+            AtomExprNode::Ellipsis { text_len } => *text_len,
+        }
+    }
+}
+
+impl HasTextLen for TypeName {
+    fn text_len(&self) -> TextLen {
+        match self {
+            TypeName::Named { text_len, .. }
+            | TypeName::Ref { text_len, .. }
+            | TypeName::MutRef { text_len, .. }
+            | TypeName::Share { text_len, .. }
+            | TypeName::Tuple { text_len, .. }
+            | TypeName::Impl { text_len, .. }
+            | TypeName::Fun { text_len, .. } => *text_len,
+        }
+    }
+}

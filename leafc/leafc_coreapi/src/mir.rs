@@ -10,7 +10,8 @@ pub type TagId = usize;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MirCrate {
-    pub functions: Vec<MirFun>
+    pub functions: Vec<MirFun>,
+    pub blocks: Vec<BasicBlock>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -18,7 +19,7 @@ pub struct MirFun {
     pub name: String,
     pub signature: FnSig,
     pub local_decls: Vec<LocalDecl>,
-    pub blocks: Vec<BasicBlockId>,
+    pub blocks: Vec<BasicBlockId>, // MirCrate.blocks的下标
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

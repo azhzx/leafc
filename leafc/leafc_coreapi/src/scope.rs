@@ -16,6 +16,7 @@ pub enum ScopeKind {
     Block,
     Struct,
     Crate,
+    Effect
 }
 
 pub type SymId = usize;
@@ -55,6 +56,10 @@ pub enum SymbolKind {
     Abstract,
 
     Generic,
+
+    Control,
+
+    Effect,
 
     /// an ADT Constructor
     Constructor,

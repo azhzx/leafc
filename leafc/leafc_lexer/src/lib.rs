@@ -4,6 +4,7 @@ use unicode_xid::UnicodeXID;
 use leafc_coreapi::diagnostic::DiagMsg;
 use leafc_coreapi::lexer::{Document, DocumentString, LexerApi, LexerError, Token, TokenStream, TokenType};
 use leafc_coreapi::lexer::LexerError::{InvalidChar, InvalidString};
+use leafc_coreapi::operators::build_operator_tables;
 use leafc_coreapi::source::{SourceId, Span};
 
 pub enum LexerState {
@@ -50,6 +51,7 @@ impl<'a> Lexer<'a> {
 
     fn keyword_map(&self, s: &String) -> TokenType {
         match s.as_str() {
+            "is" => TokenType::KwIs,
             "use" => TokenType::KwUse,
             "of" => TokenType::KwOf,
             "ref" => TokenType::KwRef,
@@ -63,14 +65,17 @@ impl<'a> Lexer<'a> {
             "symexpr" => TokenType::KwSymExpr,
             "abst" => TokenType::KwAbst,
             "mut" => TokenType::KwMut,
+            "with" => TokenType::KwWith,
             "let" => TokenType::KwLet,
             "const" => TokenType::KwConst,
             "bindto" => TokenType::KwBindTo,
+            "binding" => TokenType::KwBinding,
             "move" => TokenType::KwMove,
             "copy" => TokenType::KwCopy,
             "do" => TokenType::KwDo,
             "it" => TokenType::KwIt,
-            "shared" => TokenType::KwShared,
+            "global" => TokenType::KwGlobal,
+            "share" => TokenType::KwShare,
             "if" => TokenType::KwIf,
             "then" => TokenType::KwThen,
             "else" => TokenType::KwElse,
@@ -96,6 +101,40 @@ impl<'a> Lexer<'a> {
             "basetype" => TokenType::KwBaseType,
             _ => TokenType::Error,
         }
+    }
+
+    fn handle_escape(&mut self) -> Result<char, DiagMsg> {
+        let ch = match self.current_char() {
+            Some(c) => c,
+            None => return Err(DiagMsg {
+                title: format!("{:?}", InvalidString),
+                msg: "Unexpected end of input in escape sequence".to_string(),
+                span: Span {
+                    source_id: self.source,
+                    start_off: self.current_offset(),
+                    end_off: self.current_offset(),
+                },
+            }),
+        };
+        let result = match ch {
+            'n' => '\n',
+            't' => '\t',
+            'r' => '\r',
+            '\\' => '\\',
+            '"' => '\"',
+            '0' => '\0',
+            _ => return Err(DiagMsg {
+                title: format!("{:?}", InvalidString),
+                msg: format!("Invalid escape sequence \\{}", ch),
+                span: Span {
+                    source_id: self.source,
+                    start_off: self.current_offset() - 1,
+                    end_off: self.current_offset(),
+                },
+            }),
+        };
+        self.next_char();
+        Ok(result)
     }
 
     fn current_char(&self) -> Option<char> {
@@ -202,37 +241,39 @@ impl<'a> Lexer<'a> {
                     let mut closed = false;
                     let mut text = String::new();
                     while self.index < self.code.len() {
-                        let c = self.code.get(self.index).unwrap();
-                        if * c == '"' {
+                        let c = *self.code.get(self.index).unwrap();
+                        if c == '"' {
                             closed = true;
                             self.next_char();
                             break;
+                        } else if c == '\\' {
+                            self.next_char();
+                            text.push(self.handle_escape()?);
+                        } else {
+                            text.push(c);
+                            self.next_char();
                         }
-                        text.push(*c);
-                        self.next_char();
                     }
-                    if ! closed {
-                        return Err( DiagMsg {
-                            title : format!("{:?}", InvalidString),
-                            msg : "Unclosed string literal".to_string(),
-                            span : Span {
+                    if !closed {
+                        return Err(DiagMsg {
+                            title: format!("{:?}", InvalidString),
+                            msg: "Unclosed string literal".to_string(),
+                            span: Span {
                                 start_off: start_offset,
                                 end_off: self.current_offset(),
                                 source_id: self.source
                             },
                         });
                     }
-                    tokens.push(
-                        Token {
-                            kind: TokenType::String,
-                            span: Span {
-                                start_off: start_offset,
-                                end_off: self.current_offset(),
-                                source_id: self.source
-                            },
-                            text,
-                        }
-                    );
+                    tokens.push(Token {
+                        kind: TokenType::String,
+                        span: Span {
+                            start_off: start_offset,
+                            end_off: self.current_offset(),
+                            source_id: self.source
+                        },
+                        text,
+                    });
                     state = LexerState::Start;
                 }
                 LexerState::Number => {
@@ -436,74 +477,10 @@ impl<'a> LexerApi<'a> for Lexer<'a> {
         text: &String,
         user_operators: &'a HashMap<String, OperatorDef>,
     ) -> Self {
-        let code = text.chars().collect();
+        let code: Vec<char> = text.chars().collect();
 
-        let builtin_ops: &[(&str, TokenType)] = &[
-            ("+", TokenType::Plus),
-            ("-", TokenType::Minus),
-            ("*", TokenType::Star),
-            ("/", TokenType::Slash),
-            ("%", TokenType::Percent),
-            ("&", TokenType::Amp),
-            ("|", TokenType::Pipe),
-            ("^", TokenType::Caret),
-            ("!", TokenType::Not),
-            ("=", TokenType::Eq),
-            ("==", TokenType::EqEq),
-            ("!=", TokenType::Ne),
-            ("<", TokenType::Lt),
-            (">", TokenType::Gt),
-            ("<=", TokenType::Le),
-            (">=", TokenType::Ge),
-            ("&&", TokenType::And),
-            ("||", TokenType::Or),
-            ("<<", TokenType::Shl),
-            (">>", TokenType::Shr),
-            ("+=", TokenType::PlusEq),
-            ("-=", TokenType::MinusEq),
-            ("*=", TokenType::StarEq),
-            ("/=", TokenType::SlashEq),
-            ("%=", TokenType::PercentEq),
-            ("&=", TokenType::AmpEq),
-            ("|=", TokenType::PipeEq),
-            ("^=", TokenType::CaretEq),
-            ("<<=", TokenType::ShlEq),
-            (">>=", TokenType::ShrEq),
-            ("->", TokenType::Arrow),
-            ("=>", TokenType::FatArrow),
-            (".", TokenType::Dot),
-            ("..", TokenType::DotDot),
-            ("...", TokenType::DotDotDot),
-            ("(", TokenType::Lparen),
-            (")", TokenType::Rparen),
-            ("{", TokenType::Lbrace),
-            ("}", TokenType::Rbrace),
-            ("[", TokenType::Lbracket),
-            ("]", TokenType::Rbracket),
-            (",", TokenType::Comma),
-            (":", TokenType::Colon),
-            (";", TokenType::Semicolon),
-            ("#", TokenType::Hash),
-            ("@", TokenType::At),
-            ("_", TokenType::Underline),
-        ];
-
-        let mut operator_table = HashMap::new();
-        for (text, tt) in builtin_ops {
-            operator_table.insert(text.to_string(), tt.clone());
-        }
-
-        for def in user_operators.values() {
-            operator_table.insert(def.text.clone(), TokenType::UserOp);
-        }
-
-        // 构建前缀集合
-        let mut operator_prefixes = HashSet::new();
-        for key in operator_table.keys() {
-            for end in 1..=key.len() {
-                operator_prefixes.insert(key[..end].to_string());
-            }
-        }
+        let (operator_table, operator_prefixes) =
+            build_operator_tables(user_operators);
 
         Lexer {
             index: 0,
@@ -514,7 +491,7 @@ impl<'a> LexerApi<'a> for Lexer<'a> {
             docstrings: Document { data: Vec::new() },
             operator_table,
             operator_prefixes,
-            user_operators: user_operators,
+            user_operators,
         }
     }
 

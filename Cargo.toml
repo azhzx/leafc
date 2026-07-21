@@ -10,5 +10,5 @@ leafc_lexer = { path = "leafc/leafc_lexer" }
 leafc_parser = { path = "leafc/leafc_parser" }
 leafc_namepass = { path = "leafc/leafc_namepass" }
 leafc_hirlower = { path = "leafc/leafc_hirlower" }
-leafc_diag = { path = "leafc/leafc_diag" }
+leafc_diag = { path = "leafc/leafc_diagnostic" }
 leafc_tokenpass = { path = "leafc/leafc_tokenpass" }

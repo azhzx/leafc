@@ -1,11 +1,10 @@
-use std::fs;
-use std::sync::Arc;
+use crate::Parser;
 use leafc_coreapi::ast::{GreenChild, GreenRequire, IdentName, RequireRedNode};
 use leafc_coreapi::diagnostic::DiagMsg;
 use leafc_coreapi::lexer::TokenType;
-use leafc_coreapi::parser::{ParserError};
+use leafc_coreapi::parser::ParserError;
 use leafc_coreapi::source::Span;
-use crate::Parser;
+use std::sync::Arc;
 
 impl<'a> Parser<'a> {
     pub fn parse_use_decl(&mut self) -> Result<Option<RequireRedNode>, DiagMsg> {

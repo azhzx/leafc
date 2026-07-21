@@ -23,7 +23,7 @@ pub enum TokenType {
     KwCopy,
     KwDo,
     KwIt,
-    KwShared,
+    KwShare,
     KwIf,
     KwThen,
     KwElse,
@@ -109,6 +109,10 @@ pub enum TokenType {
     Dedent,
     Error,
     UserOp,
+    KwGlobal,
+    KwBinding,
+    KwWith,
+    KwIs,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
