@@ -1,8 +1,6 @@
-use leafc_coreapi::ast::{AtomExprNode, CrateAst, DeclRedNode, ExprRedNode, FileRedUnit, GreenCatchClause, GreenChild, GreenDecl, GreenDeclKind, GreenExpr, GreenExprKind, GreenMatchArm, GreenPattern, GreenPureStaticPath, HasTextLen, RequireRedNode, TypeName, Visibility};
+use leafc_coreapi::ast::{child_decl_red, child_expr_red, child_span, AtomExprNode, CrateAst, DeclRedNode, ExprRedNode, FileRedUnit, GreenCatchClause, GreenChild, GreenDecl, GreenDeclKind, GreenExpr, GreenExprKind, GreenMatchArm, GreenPattern, GreenPureStaticPath, HasTextLen, RequireRedNode, TypeName, Visibility};
 use leafc_coreapi::diagnostic::DiagMsg;
-use leafc_coreapi::name_pass::{
-    DoScopeMap, FunScopeMap, NamePassApi, NamePassError, NamePassResult,
-};
+use leafc_coreapi::name_pass::{ArmScopeMap, CatchScopeMap, DoScopeMap, FunScopeMap, NamePassApi, NamePassError, NamePassResult};
 use leafc_coreapi::scope::{ScopeId, ScopeKind, ScopePool, SymbolKind};
 use leafc_coreapi::source::{SourceId, Span};
 use std::collections::HashMap;
@@ -19,10 +17,10 @@ pub struct NamePass<'a> {
     fun_scope_map: FunScopeMap,
 
     /// MatchArm => Scope (for guard/body)
-    arm_scope_map: HashMap<Arc<GreenMatchArm>, ScopeId>,
+    arm_scope_map: ArmScopeMap,
 
     /// CatchClause => Scope (for body)
-    catch_scope_map: HashMap<Arc<GreenCatchClause>, ScopeId>,
+    catch_scope_map: CatchScopeMap,
 
     /// source_id => FileUnit
     source_to_file_unit: HashMap<SourceId, &'a FileRedUnit>,
@@ -32,44 +30,15 @@ pub struct NamePass<'a> {
 }
 
 impl<'a> NamePass<'a> {
-    fn child_expr_red(parent_span: &Span, child: &GreenChild<GreenExpr>) -> ExprRedNode {
-        let start = parent_span.start_off + child.relative_start;
-        let len = child.node.text_len;
-        ExprRedNode {
-            span: Span {
-                source_id: parent_span.source_id,
-                start_off: start,
-                end_off: start + len,
-            },
-            inner: Arc::clone(&child.node),
-        }
-    }
-
-    fn child_decl_red(parent_span: &Span, child: &GreenChild<GreenDecl>) -> DeclRedNode {
-        let start = parent_span.start_off + child.relative_start;
-        let len = child.node.text_len;
-        DeclRedNode {
-            span: Span {
-                source_id: parent_span.source_id,
-                start_off: start,
-                end_off: start + len,
-            },
-            inner: Arc::clone(&child.node),
-        }
-    }
-
-    fn child_span(parent_span: &Span, relative_start: usize, text_len: usize) -> Span {
-        Span {
-            source_id: parent_span.source_id,
-            start_off: parent_span.start_off + relative_start,
-            end_off: parent_span.start_off + relative_start + text_len,
-        }
-    }
 
     fn collect_pattern_bindings(pattern: &GreenPattern, bindings: &mut Vec<(String, Span)>) {
         match pattern {
             GreenPattern::Binding(ident) => {
-                todo!()
+                bindings.push((ident.name.clone(), Span {
+                    source_id: 0,
+                    start_off: 0,
+                    end_off: 0,
+                }));
             }
             GreenPattern::Constructor { args, .. } => {
                 for arg in args {
@@ -93,12 +62,12 @@ impl<'a> NamePass<'a> {
             GreenPattern::Constructor { type_name, args, .. } => {
                 if let TypeName::Named { path, .. } = type_name.node.as_ref() {
 
-                    let path_child_span = Self::child_span(parent_span, type_name.relative_start, type_name.node.text_len());
+                    let path_child_span = child_span(parent_span, type_name.relative_start, type_name.node.text_len());
                     self.resolve_static_path_with_span(&path.node, &path_child_span, current_scope)?;
 
                 }
                 for arg in args {
-                    let arg_child_span = Self::child_span(parent_span, arg.relative_start, arg.node.text_len());
+                    let arg_child_span = child_span(parent_span, arg.relative_start, arg.node.text_len());
                     self.resolve_pattern(arg, &arg_child_span, current_scope)?;
                 }
             }
@@ -146,6 +115,7 @@ impl<'a> NamePass<'a> {
             };
 
             match &sym.kind {
+
                 SymbolKind::File { source_id } => {
 
                     let file_scope = self.source_id_to_scope[source_id];
@@ -182,36 +152,36 @@ impl<'a> NamePass<'a> {
             GreenExprKind::Atom { .. } => {}
 
             GreenExprKind::Binary { left, op: _, right } => {
-                self.build_expr_scope(&Self::child_expr_red(&expr_red.span, left), current_scope)?;
-                self.build_expr_scope(&Self::child_expr_red(&expr_red.span, right), current_scope)?;
+                self.build_expr_scope(&child_expr_red(&expr_red.span, left), current_scope)?;
+                self.build_expr_scope(&child_expr_red(&expr_red.span, right), current_scope)?;
             }
 
             GreenExprKind::Unary { op: _, right } => {
-                self.build_expr_scope(&Self::child_expr_red(&expr_red.span, right), current_scope)?;
+                self.build_expr_scope(&child_expr_red(&expr_red.span, right), current_scope)?;
             }
 
             GreenExprKind::Call { callee, args, .. } | GreenExprKind::UnsafeExternalCall { callee, args, .. } => {
-                self.build_expr_scope(&Self::child_expr_red(&expr_red.span, callee), current_scope)?;
+                self.build_expr_scope(&child_expr_red(&expr_red.span, callee), current_scope)?;
                 for arg in args {
-                    self.build_expr_scope(&Self::child_expr_red(&expr_red.span, arg), current_scope)?;
+                    self.build_expr_scope(&child_expr_red(&expr_red.span, arg), current_scope)?;
                 }
             }
 
             GreenExprKind::StaticPath { .. } => {}
 
             GreenExprKind::MemberAccess { left, .. } => {
-                self.build_expr_scope(&Self::child_expr_red(&expr_red.span, left), current_scope)?;
+                self.build_expr_scope(&child_expr_red(&expr_red.span, left), current_scope)?;
             }
 
             GreenExprKind::MakeStruct { path, fields } => {
-                self.build_expr_scope(&Self::child_expr_red(&expr_red.span, path), current_scope)?;
+                self.build_expr_scope(&child_expr_red(&expr_red.span, path), current_scope)?;
                 for field in fields {
-                    self.build_expr_scope(&Self::child_expr_red(&expr_red.span, &field.node.value), current_scope)?;
+                    self.build_expr_scope(&child_expr_red(&expr_red.span, &field.node.value), current_scope)?;
                 }
             }
 
             GreenExprKind::TypeCast { expr: e, into_type } => {
-                self.build_expr_scope(&Self::child_expr_red(&expr_red.span, e), current_scope)?;
+                self.build_expr_scope(&child_expr_red(&expr_red.span, e), current_scope)?;
             }
 
             GreenExprKind::Move { target }
@@ -219,7 +189,7 @@ impl<'a> NamePass<'a> {
             | GreenExprKind::Ref { target }
             | GreenExprKind::MutRef { target }
             | GreenExprKind::Share { target } => {
-                self.build_expr_scope(&Self::child_expr_red(&expr_red.span, target), current_scope)?;
+                self.build_expr_scope(&child_expr_red(&expr_red.span, target), current_scope)?;
             }
 
             GreenExprKind::Do { exprs, .. } => {
@@ -231,49 +201,49 @@ impl<'a> NamePass<'a> {
                 );
                 self.do_scope_map.insert(Arc::clone(&expr_red.inner), new_scope_id);
                 for e in exprs {
-                    self.build_expr_scope(&Self::child_expr_red(&expr_red.span, e), new_scope_id)?;
+                    self.build_expr_scope(&child_expr_red(&expr_red.span, e), new_scope_id)?;
                 }
             }
 
             GreenExprKind::Let { name, expr: e, .. } => {
-                let name_span = Self::child_span(&expr_red.span, name.relative_start, name.node.text_len());
+                let name_span = child_span(&expr_red.span, name.relative_start, name.node.text_len());
                 self.scope_pool.add_symbol(
                     current_scope,
                     name.node.as_ref().clone().name,
                     name_span,
                     SymbolKind::Local,
                 );
-                self.build_expr_scope(&Self::child_expr_red(&expr_red.span, e), current_scope)?;
+                self.build_expr_scope(&child_expr_red(&expr_red.span, e), current_scope)?;
             }
 
             GreenExprKind::If {
                 cond, then_expr, elifs, else_expr
             } => {
-                self.build_expr_scope(&Self::child_expr_red(&expr_red.span, cond), current_scope)?;
-                self.build_expr_scope(&Self::child_expr_red(&expr_red.span, then_expr), current_scope)?;
+                self.build_expr_scope(&child_expr_red(&expr_red.span, cond), current_scope)?;
+                self.build_expr_scope(&child_expr_red(&expr_red.span, then_expr), current_scope)?;
                 for elif in elifs {
-                    self.build_expr_scope(&Self::child_expr_red(&expr_red.span, &elif.cond), current_scope)?;
-                    self.build_expr_scope(&Self::child_expr_red(&expr_red.span, &elif.body), current_scope)?;
+                    self.build_expr_scope(&child_expr_red(&expr_red.span, &elif.cond), current_scope)?;
+                    self.build_expr_scope(&child_expr_red(&expr_red.span, &elif.body), current_scope)?;
                 }
                 if let Some(else_e) = else_expr {
-                    self.build_expr_scope(&Self::child_expr_red(&expr_red.span, else_e), current_scope)?;
+                    self.build_expr_scope(&child_expr_red(&expr_red.span, else_e), current_scope)?;
                 }
             }
 
             GreenExprKind::Return { expr: opt_expr } => {
                 if let Some(e) = opt_expr {
-                    self.build_expr_scope(&Self::child_expr_red(&expr_red.span, e), current_scope)?;
+                    self.build_expr_scope(&child_expr_red(&expr_red.span, e), current_scope)?;
                 }
             }
 
             GreenExprKind::Match { for_match, arms } => {
 
-                self.build_expr_scope(&Self::child_expr_red(&expr_red.span, for_match), current_scope)?;
+                self.build_expr_scope(&child_expr_red(&expr_red.span, for_match), current_scope)?;
 
                 for arm_child in arms {
 
                     let arm = &arm_child.node;
-                    let arm_span = Self::child_span(&expr_red.span, arm_child.relative_start, arm.text_len);
+                    let arm_span = child_span(&expr_red.span, arm_child.relative_start, arm.text_len);
                     let arm_scope = self.scope_pool.push_scope(
                         Some(current_scope),
                         ScopeKind::Block,
@@ -287,22 +257,22 @@ impl<'a> NamePass<'a> {
                     Self::collect_pattern_bindings(&arm.pattern.node, &mut bindings);
 
                     let pattern_child = &arm.pattern;
-                    let pattern_abs_span = Self::child_span(&arm_span, pattern_child.relative_start, pattern_child.node.text_len());
+                    let pattern_abs_span = child_span(&arm_span, pattern_child.relative_start, pattern_child.node.text_len());
                     for (name, _) in bindings {
                         self.scope_pool.add_symbol(arm_scope, name, pattern_abs_span.clone(), SymbolKind::Local);
                     }
 
                     if let Some(guard) = &arm.guard {
-                        self.build_expr_scope(&Self::child_expr_red(&arm_span, guard), arm_scope)?;
+                        self.build_expr_scope(&child_expr_red(&arm_span, guard), arm_scope)?;
                     }
-                    self.build_expr_scope(&Self::child_expr_red(&arm_span, &arm.body), arm_scope)?;
+                    self.build_expr_scope(&child_expr_red(&arm_span, &arm.body), arm_scope)?;
                 }
             }
             GreenExprKind::Is { expr: e, pattern } => {
 
-                self.build_expr_scope(&Self::child_expr_red(&expr_red.span, e), current_scope)?;
+                self.build_expr_scope(&child_expr_red(&expr_red.span, e), current_scope)?;
 
-                let pattern_abs_span = Self::child_span(&expr_red.span, pattern.relative_start, pattern.node.text_len());
+                let pattern_abs_span = child_span(&expr_red.span, pattern.relative_start, pattern.node.text_len());
                 let mut bindings = Vec::new();
                 Self::collect_pattern_bindings(&pattern.node, &mut bindings);
                 for (name, _) in bindings {
@@ -311,16 +281,15 @@ impl<'a> NamePass<'a> {
             }
             GreenExprKind::Raise { effect_path, control_name, args } => {
                 for arg in args {
-                    self.build_expr_scope(&Self::child_expr_red(&expr_red.span, arg), current_scope)?;
+                    self.build_expr_scope(&child_expr_red(&expr_red.span, arg), current_scope)?;
                 }
             }
             GreenExprKind::With { handler_expr, clauses } => {
-                self.build_expr_scope(&Self::child_expr_red(&expr_red.span, handler_expr), current_scope)?;
+                self.build_expr_scope(&child_expr_red(&expr_red.span, handler_expr), current_scope)?;
 
                 for clause_child in clauses {
-
                     let clause = &clause_child.node;
-                    let clause_span = Self::child_span(&expr_red.span, clause_child.relative_start, clause.text_len);
+                    let clause_span = child_span(&expr_red.span, clause_child.relative_start, clause.text_len);
                     let catch_scope = self.scope_pool.push_scope(
                         Some(current_scope),
                         ScopeKind::Block,
@@ -330,7 +299,7 @@ impl<'a> NamePass<'a> {
                     self.catch_scope_map.insert(clause.clone(), catch_scope);
 
                     for param_child in &clause.params {
-                        let param_abs_span = Self::child_span(&clause_span, param_child.relative_start, param_child.node.text_len());
+                        let param_abs_span = child_span(&clause_span, param_child.relative_start, param_child.node.text_len());
                         let mut bindings = Vec::new();
                         Self::collect_pattern_bindings(&param_child.node, &mut bindings);
                         for (name, _) in bindings {
@@ -338,11 +307,11 @@ impl<'a> NamePass<'a> {
                         }
                     }
 
-                    self.build_expr_scope(&Self::child_expr_red(&clause_span, &clause.body), catch_scope)?;
+                    self.build_expr_scope(&child_expr_red(&clause_span, &clause.body), catch_scope)?;
                 }
             }
             GreenExprKind::Resume { expr: e } => {
-                self.build_expr_scope(&Self::child_expr_red(&expr_red.span, e), current_scope)?;
+                self.build_expr_scope(&child_expr_red(&expr_red.span, e), current_scope)?;
             }
         }
         Ok(())
@@ -363,47 +332,47 @@ impl<'a> NamePass<'a> {
                 }
             }
             GreenExprKind::Binary { left, op: _, right } => {
-                self.resolve_expr(&Self::child_expr_red(&expr_red.span, left), current_scope)?;
-                self.resolve_expr(&Self::child_expr_red(&expr_red.span, right), current_scope)?;
+                self.resolve_expr(&child_expr_red(&expr_red.span, left), current_scope)?;
+                self.resolve_expr(&child_expr_red(&expr_red.span, right), current_scope)?;
             }
             GreenExprKind::Unary { op: _, right } => {
-                self.resolve_expr(&Self::child_expr_red(&expr_red.span, right), current_scope)?;
+                self.resolve_expr(&child_expr_red(&expr_red.span, right), current_scope)?;
             }
             GreenExprKind::Call { callee, args, .. } => {
-                self.resolve_expr(&Self::child_expr_red(&expr_red.span, callee), current_scope)?;
+                self.resolve_expr(&child_expr_red(&expr_red.span, callee), current_scope)?;
                 for arg in args {
-                    self.resolve_expr(&Self::child_expr_red(&expr_red.span, arg), current_scope)?;
+                    self.resolve_expr(&child_expr_red(&expr_red.span, arg), current_scope)?;
                 }
             }
             GreenExprKind::UnsafeExternalCall { .. } => {}
             GreenExprKind::StaticPath { path } => {
-                let path_span = Self::child_span(&expr_red.span, path.relative_start, path.node.text_len);
+                let path_span = child_span(&expr_red.span, path.relative_start, path.node.text_len);
                 self.resolve_static_path_with_span(&path.node, &path_span, current_scope)?;
             }
             GreenExprKind::MemberAccess { left, .. } => {
-                self.resolve_expr(&Self::child_expr_red(&expr_red.span, left), current_scope)?;
+                self.resolve_expr(&child_expr_red(&expr_red.span, left), current_scope)?;
             }
             GreenExprKind::MakeStruct { path, fields } => {
-                self.resolve_expr(&Self::child_expr_red(&expr_red.span, path), current_scope)?;
+                self.resolve_expr(&child_expr_red(&expr_red.span, path), current_scope)?;
                 for field in fields {
-                    self.resolve_expr(&Self::child_expr_red(&expr_red.span, &field.node.value), current_scope)?;
+                    self.resolve_expr(&child_expr_red(&expr_red.span, &field.node.value), current_scope)?;
                 }
             }
             GreenExprKind::TypeCast { expr: e, into_type } => {
-                self.resolve_expr(&Self::child_expr_red(&expr_red.span, e), current_scope)?;
+                self.resolve_expr(&child_expr_red(&expr_red.span, e), current_scope)?;
             }
             GreenExprKind::Move { target }
             | GreenExprKind::Copy { target }
             | GreenExprKind::Ref { target }
             | GreenExprKind::MutRef { target }
             | GreenExprKind::Share { target } => {
-                self.resolve_expr(&Self::child_expr_red(&expr_red.span, target), current_scope)?;
+                self.resolve_expr(&child_expr_red(&expr_red.span, target), current_scope)?;
             }
             GreenExprKind::Do { .. } => {
                 if let Some(&do_scope) = self.do_scope_map.get(&expr_red.inner) {
                     if let GreenExprKind::Do { exprs, .. } = &expr.kind {
                         for e in exprs {
-                            self.resolve_expr(&Self::child_expr_red(&expr_red.span, e), do_scope)?;
+                            self.resolve_expr(&child_expr_red(&expr_red.span, e), do_scope)?;
                         }
                     }
                 } else {
@@ -411,83 +380,86 @@ impl<'a> NamePass<'a> {
                 }
             }
             GreenExprKind::Let { expr: e, .. } => {
-                self.resolve_expr(&Self::child_expr_red(&expr_red.span, e), current_scope)?;
+                self.resolve_expr(&child_expr_red(&expr_red.span, e), current_scope)?;
             }
 
             GreenExprKind::If {
                 cond, then_expr, elifs, else_expr
             } => {
 
-                self.resolve_expr(&Self::child_expr_red(&expr_red.span, cond), current_scope)?;
-                self.resolve_expr(&Self::child_expr_red(&expr_red.span, then_expr), current_scope)?;
+                self.resolve_expr(&child_expr_red(&expr_red.span, cond), current_scope)?;
+                self.resolve_expr(&child_expr_red(&expr_red.span, then_expr), current_scope)?;
                 for elif in elifs {
-                    self.resolve_expr(&Self::child_expr_red(&expr_red.span, &elif.cond), current_scope)?;
-                    self.resolve_expr(&Self::child_expr_red(&expr_red.span, &elif.body), current_scope)?;
+                    self.resolve_expr(&child_expr_red(&expr_red.span, &elif.cond), current_scope)?;
+                    self.resolve_expr(&child_expr_red(&expr_red.span, &elif.body), current_scope)?;
                 }
                 if let Some(else_e) = else_expr {
-                    self.resolve_expr(&Self::child_expr_red(&expr_red.span, else_e), current_scope)?;
+                    self.resolve_expr(&child_expr_red(&expr_red.span, else_e), current_scope)?;
                 }
             }
 
             GreenExprKind::Return { expr: opt_expr } => {
                 if let Some(e) = opt_expr {
-                    self.resolve_expr(&Self::child_expr_red(&expr_red.span, e), current_scope)?;
+                    self.resolve_expr(&child_expr_red(&expr_red.span, e), current_scope)?;
                 }
             }
 
             GreenExprKind::Match { for_match, arms } => {
-                self.resolve_expr(&Self::child_expr_red(&expr_red.span, for_match), current_scope)?;
+                self.resolve_expr(&child_expr_red(&expr_red.span, for_match), current_scope)?;
 
                 for arm_child in arms {
 
                     let arm = &arm_child.node;
-                    let arm_span = Self::child_span(&expr_red.span, arm_child.relative_start, arm.text_len);
+                    let arm_span = child_span(&expr_red.span, arm_child.relative_start, arm.text_len);
                     let arm_scope = self.arm_scope_map.get(&arm.clone())
                         .expect("arm scope must be recorded during build");
                     let pattern_child = &arm.pattern;
-                    let pattern_abs_span = Self::child_span(&arm_span, pattern_child.relative_start, pattern_child.node.text_len());
+                    let pattern_abs_span = child_span(&arm_span, pattern_child.relative_start, pattern_child.node.text_len());
                     self.resolve_pattern(pattern_child, &pattern_abs_span, *arm_scope)?;
 
                     if let Some(guard) = &arm.guard {
-                        self.resolve_expr(&Self::child_expr_red(&arm_span, guard), *arm_scope)?;
+                        self.resolve_expr(&child_expr_red(&arm_span, guard), *arm_scope)?;
                     }
-                    self.resolve_expr(&Self::child_expr_red(&arm_span, &arm.body), *arm_scope)?;
+                    self.resolve_expr(&child_expr_red(&arm_span, &arm.body), *arm_scope)?;
                 }
             }
             GreenExprKind::Is { expr: e, pattern } => {
-                self.resolve_expr(&Self::child_expr_red(&expr_red.span, e), current_scope)?;
-                let pattern_abs_span = Self::child_span(&expr_red.span, pattern.relative_start, pattern.node.text_len());
+                self.resolve_expr(&child_expr_red(&expr_red.span, e), current_scope)?;
+                let pattern_abs_span = child_span(&expr_red.span, pattern.relative_start, pattern.node.text_len());
                 self.resolve_pattern(pattern, &pattern_abs_span, current_scope)?;
             }
             GreenExprKind::Raise { effect_path, control_name, args } => {
-                let path_span = Self::child_span(&expr_red.span, effect_path.relative_start, effect_path.node.text_len);
+                let path_span = child_span(&expr_red.span, effect_path.relative_start, effect_path.node.text_len);
                 self.resolve_static_path_with_span(&effect_path.node, &path_span, current_scope)?;
                 for arg in args {
-                    self.resolve_expr(&Self::child_expr_red(&expr_red.span, arg), current_scope)?;
+                    self.resolve_expr(&child_expr_red(&expr_red.span, arg), current_scope)?;
                 }
             }
             GreenExprKind::With { handler_expr, clauses } => {
-                self.resolve_expr(&Self::child_expr_red(&expr_red.span, handler_expr), current_scope)?;
+                self.resolve_expr(&child_expr_red(&expr_red.span, handler_expr), current_scope)?;
 
                 for clause_child in clauses {
-
                     let clause = &clause_child.node;
-                    let clause_span = Self::child_span(&expr_red.span, clause_child.relative_start, clause.text_len);
+                    let clause_span = child_span(&expr_red.span, clause_child.relative_start, clause.text_len);
                     let catch_scope = self.catch_scope_map.get(&clause.clone())
                         .expect("catch scope must be recorded during build");
 
-                    let effect_path_child = &clause.effect_path;
-                    let path_span = Self::child_span(&clause_span, effect_path_child.relative_start, effect_path_child.node.text_len);
-                    self.resolve_static_path_with_span(&effect_path_child.node, &path_span, *catch_scope)?;
+                    let control_path_child = &clause.control_static_path;
+                    let path_span = child_span(&clause_span, control_path_child.relative_start, control_path_child.node.text_len);
+                    self.resolve_static_path_with_span(&control_path_child.node, &path_span, *catch_scope)?;
+
+                    // pattern
                     for param_child in &clause.params {
-                        let param_abs_span = Self::child_span(&clause_span, param_child.relative_start, param_child.node.text_len());
+                        let param_abs_span = child_span(&clause_span, param_child.relative_start, param_child.node.text_len());
                         self.resolve_pattern(param_child, &param_abs_span, *catch_scope)?;
                     }
-                    self.resolve_expr(&Self::child_expr_red(&clause_span, &clause.body), *catch_scope)?;
+
+                    // body
+                    self.resolve_expr(&child_expr_red(&clause_span, &clause.body), *catch_scope)?;
                 }
             }
             GreenExprKind::Resume { expr: e } => {
-                self.resolve_expr(&Self::child_expr_red(&expr_red.span, e), current_scope)?;
+                self.resolve_expr(&child_expr_red(&expr_red.span, e), current_scope)?;
             }
         }
         Ok(())
@@ -564,7 +536,7 @@ impl<'a> NamePassApi<'a> for NamePass<'a> {
             // Process top-level declarations
             for decl_child in &file_unit.green.top_decls {
 
-                let decl_red = Self::child_decl_red(&file_unit.span, decl_child);
+                let decl_red = child_decl_red(&file_unit.span, decl_child);
                 let decl = &decl_red.inner;
                 let decl_span = decl_red.span.clone();
                 let decl_name = decl.name.node.as_ref().clone();
@@ -588,7 +560,7 @@ impl<'a> NamePassApi<'a> for NamePass<'a> {
 
                         // Generic params
                         for gv in generic_vars {
-                            let gv_span = Self::child_span(&decl_span, gv.relative_start, gv.node.text_len);
+                            let gv_span = child_span(&decl_span, gv.relative_start, gv.node.text_len);
                             self.scope_pool.add_symbol(
                                 fun_scope_id,
                                 gv.node.name.node.as_ref().name.clone(),
@@ -599,7 +571,7 @@ impl<'a> NamePassApi<'a> for NamePass<'a> {
 
                         // Function parameters
                         for param_child in params {
-                            let param_span = Self::child_span(&decl_span, param_child.relative_start, param_child.node.text_len);
+                            let param_span = child_span(&decl_span, param_child.relative_start, param_child.node.text_len);
                             let param_name = param_child.node.name.node.as_ref().clone();
                             self.scope_pool.add_symbol(
                                 fun_scope_id,
@@ -611,19 +583,18 @@ impl<'a> NamePassApi<'a> for NamePass<'a> {
 
                         // Body
                         for stmt_child in block {
-                            let stmt_red = Self::child_expr_red(&decl_span, stmt_child);
+                            let stmt_red = child_expr_red(&decl_span, stmt_child);
                             self.build_expr_scope(&stmt_red, fun_scope_id)?;
                         }
                     }
 
-                    GreenDeclKind::FunDecl { params, generic_vars, where_clause, .. } => {
+                    GreenDeclKind::FunDecl { .. } => {
                         self.scope_pool.add_symbol(
                             file_scope_id,
                             decl_name.name.clone(),
                             decl_span.clone(),
                             SymbolKind::Function,
                         );
-                        // No body, but still need to register generic params? Not necessary for name resolution.
                     }
 
                     GreenDeclKind::TypeStruct { fields, generic_vars, has_abst, where_clause } => {
@@ -635,7 +606,7 @@ impl<'a> NamePassApi<'a> for NamePass<'a> {
                         );
 
                         for gv in generic_vars {
-                            let gv_span = Self::child_span(&decl_span, gv.relative_start, gv.node.text_len);
+                            let gv_span = child_span(&decl_span, gv.relative_start, gv.node.text_len);
                             self.scope_pool.add_symbol(
                                 struct_scope_id,
                                 gv.node.name.node.as_ref().name.clone(),
@@ -646,7 +617,7 @@ impl<'a> NamePassApi<'a> for NamePass<'a> {
 
                         let mut field_ids = vec![];
                         for field_child in fields {
-                            let field_span = Self::child_span(&decl_span, field_child.relative_start, field_child.node.text_len);
+                            let field_span = child_span(&decl_span, field_child.relative_start, field_child.node.text_len);
                             let field_name = field_child.node.name.node.as_ref().clone();
                             field_ids.push(self.scope_pool.add_symbol_and_get_sym_id(
                                 struct_scope_id,
@@ -673,7 +644,7 @@ impl<'a> NamePassApi<'a> for NamePass<'a> {
                         );
 
                         for gv in generic_vars {
-                            let gv_span = Self::child_span(&decl_span, gv.relative_start, gv.node.text_len);
+                            let gv_span = child_span(&decl_span, gv.relative_start, gv.node.text_len);
                             self.scope_pool.add_symbol(
                                 adt_scope_id,
                                 gv.node.name.node.as_ref().name.clone(),
@@ -684,7 +655,7 @@ impl<'a> NamePassApi<'a> for NamePass<'a> {
 
                         let mut constructors = vec![];
                         for ctor_child in ctors {
-                            let ctor_span = Self::child_span(&decl_span, ctor_child.relative_start, ctor_child.node.text_len);
+                            let ctor_span = child_span(&decl_span, ctor_child.relative_start, ctor_child.node.text_len);
                             let ctor_name = ctor_child.node.name.node.as_ref().clone();
                             constructors.push(self.scope_pool.add_symbol_and_get_sym_id(
                                 file_scope_id,
@@ -742,7 +713,7 @@ impl<'a> NamePassApi<'a> for NamePass<'a> {
                             Some(decl_span.clone()),
                         );
                         for method_child in methods {
-                            let method_span = Self::child_span(&decl_span, method_child.relative_start, method_child.node.text_len);
+                            let method_span = child_span(&decl_span, method_child.relative_start, method_child.node.text_len);
                             let method_name = method_child.node.name.node.as_ref().clone();
                             self.scope_pool.add_symbol(
                                 abs_scope_id,
@@ -767,7 +738,7 @@ impl<'a> NamePassApi<'a> for NamePass<'a> {
                             Some(decl_span.clone()),
                         );
                         for ctrl_child in controls {
-                            let ctrl_span = Self::child_span(&decl_span, ctrl_child.relative_start, ctrl_child.node.text_len);
+                            let ctrl_span = child_span(&decl_span, ctrl_child.relative_start, ctrl_child.node.text_len);
                             let ctrl_name = ctrl_child.node.name.node.as_ref().clone();
                             self.scope_pool.add_symbol(
                                 effect_scope_id,
@@ -783,10 +754,9 @@ impl<'a> NamePassApi<'a> for NamePass<'a> {
                             file_scope_id,
                             decl_name.name.clone(),
                             decl_span.clone(),
-                            SymbolKind::Local, // Consider adding SymbolKind::Constant if desired
+                            SymbolKind::Const,
                         );
-                        // Resolve constant expression
-                        let expr_red = Self::child_expr_red(&decl_span, e);
+                        let expr_red = child_expr_red(&decl_span, &e);
                         self.build_expr_scope(&expr_red, file_scope_id)?;
                     }
 
@@ -795,13 +765,20 @@ impl<'a> NamePassApi<'a> for NamePass<'a> {
                             file_scope_id,
                             decl_name.name.clone(),
                             decl_span.clone(),
-                            SymbolKind::Local,
+                            SymbolKind::Global,
                         );
-                        let expr_red = Self::child_expr_red(&decl_span, e);
+                        let expr_red = child_expr_red(&decl_span, e);
                         self.build_expr_scope(&expr_red, file_scope_id)?;
                     }
 
-                    GreenDeclKind::TypeDecl => {}
+                    GreenDeclKind::TypeDecl => {
+                        self.scope_pool.add_symbol(
+                            file_scope_id,
+                            decl_name.name.clone(),
+                            decl_span.clone(),
+                            SymbolKind::TypeDecl,
+                        );
+                    }
                 }
             }
 
@@ -864,26 +841,26 @@ impl<'a> NamePassApi<'a> for NamePass<'a> {
     fn resolve(&mut self) -> Result<(), DiagMsg> {
         for file_unit in &self.ast_module.file_units {
             for decl_child in &file_unit.green.top_decls {
-                let decl_red = Self::child_decl_red(&file_unit.span, decl_child);
+                let decl_red = child_decl_red(&file_unit.span, decl_child);
                 let decl = &decl_red.inner;
 
                 match &decl.kind {
                     GreenDeclKind::Fun { block, .. } => {
                         if let Some(&fun_scope) = self.fun_scope_map.get(&decl_red.inner) {
                             for stmt_child in block {
-                                let stmt_red = Self::child_expr_red(&decl_red.span, stmt_child);
+                                let stmt_red = child_expr_red(&decl_red.span, stmt_child);
                                 self.resolve_expr(&stmt_red, fun_scope)?;
                             }
                         }
                     }
                     GreenDeclKind::Const { expr: e } => {
-                        let expr_red = Self::child_expr_red(&decl_red.span, e);
+                        let expr_red = child_expr_red(&decl_red.span, e);
                         // Resolve in file scope (constant initializer can't refer to local variables)
                         let file_scope = self.source_id_to_scope[&decl_red.span.source_id];
                         self.resolve_expr(&expr_red, file_scope)?;
                     }
                     GreenDeclKind::Global { expr: e } => {
-                        let expr_red = Self::child_expr_red(&decl_red.span, e);
+                        let expr_red = child_expr_red(&decl_red.span, e);
                         let file_scope = self.source_id_to_scope[&decl_red.span.source_id];
                         self.resolve_expr(&expr_red, file_scope)?;
                     }
@@ -901,6 +878,8 @@ impl<'a> NamePassApi<'a> for NamePass<'a> {
             pool: self.scope_pool,
             do_scope_map: self.do_scope_map,
             fun_scope_map: self.fun_scope_map,
+            arm_scope_map: self.arm_scope_map,
+            catch_scope_map: self.catch_scope_map,
             source_id_to_scope: self.source_id_to_scope,
         })
     }

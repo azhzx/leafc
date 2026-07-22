@@ -1,8 +1,7 @@
-use std::collections::HashMap;
 use crate::name_pass::NamePassResult;
-use crate::scope::{ScopeId, SymId};
+use crate::scope::SymId;
 use crate::source::Span;
-use crate::type_system::{HirDeclTypeMap, TyId, TypeNode};
+use crate::type_system::TypeNode;
 
 #[derive(Debug, Clone)]
 pub struct HirCrate {
@@ -33,9 +32,20 @@ pub struct HirName { // 具体的SymbolId
 }
 
 #[derive(Debug, Clone)]
-pub struct HirTypeName {
-    pub name: HirName,
-    pub args: Vec<HirTypeName>,
+pub enum HirTypeName {
+    Named {
+        path: HirName,
+        generics: Vec<HirTypeName>,
+    },
+    Ref(Box<HirTypeName>),
+    MutRef(Box<HirTypeName>),
+    Share(Box<HirTypeName>),
+    Tuple(Vec<HirTypeName>),
+    Fun {
+        params: Vec<HirTypeName>,
+        return_type: Box<HirTypeName>,
+    },
+    Impl(Box<HirTypeName>),
 }
 
 #[derive(Debug, Clone)]
@@ -81,11 +91,21 @@ pub enum HirDeclKind {
         methods: Vec<HirMethodDecl>,
         super_abstracts: Vec<HirTypeName>,
     },
+    TypeDecl,
     CType,
     External {
         sym_name: String,
         params: Vec<HirParam>,
         return_type: HirTypeName,
+    },
+    Effect {
+        controls: Vec<(String, Vec<HirParam>, Option<HirTypeName>)>,
+    },
+    Const {
+        expr: HirExprId,
+    },
+    Global {
+        expr: HirExprId,
     },
 }
 
@@ -121,6 +141,34 @@ pub struct HirCtorDef {
     pub from_type: Option<HirTypeName>,
     pub return_type: Option<HirTypeName>,
     pub is_pub_external: bool,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub enum HirPattern {
+    Wildcard,
+    Literal(HirLit),
+    Binding(HirName),
+    Constructor {
+        type_name: HirTypeName,
+        args: Vec<HirPattern>,
+        span: Span,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct HirMatchArm {
+    pub pattern: HirPattern,
+    pub guard: Option<HirExprId>,
+    pub body: HirExprId,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct HirCatchClause {
+    pub control_path: HirName,
+    pub params: Vec<HirPattern>,
+    pub body: HirExprId,
     pub span: Span,
 }
 
@@ -198,6 +246,30 @@ pub enum HirExprKind {
         expr: Option<HirExprId>,
     },
     Ellipsis,
+    Raise {
+        control_name: HirName,
+        args: Vec<HirExprId>,
+    },
+    With {
+        handler: HirExprId,
+        clauses: Vec<HirCatchClause>,
+    },
+    /// resume expr
+    Resume {
+        expr: HirExprId,
+    },
+    Match {
+        scrutinee: HirExprId,
+        arms: Vec<HirMatchArm>,
+    },
+    Is {
+        expr: HirExprId,
+        pattern: HirPattern,
+    },
+    MakeStruct {
+        path: HirExprId,
+        fields: Vec<(String, HirExprId)>,
+    },
 }
 
 #[derive(Debug, Clone)]

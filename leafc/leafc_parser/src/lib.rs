@@ -317,57 +317,6 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_generic_param(&mut self)
-        -> Result<(Vec<GreenChild<GreenGenericVar>>, usize), DiagMsg> {
-
-        let list_start_off = self.current_token().span.start_off; // '['
-        self.skip_token_only(TokenType::Lbracket)?;
-        let mut children = vec![];
-
-        while self.current_token().kind != TokenType::Rbracket {
-            let param_start_off = self.current_token().span.start_off;
-            let param_name_token = self.current_token().clone();
-            self.skip_token_only(TokenType::Ident)?;
-
-            let end_off = if self.current_token().kind == TokenType::Comma {
-                self.current_token().span.start_off
-            } else if self.current_token().kind == TokenType::Rbracket {
-                self.current_token().span.start_off
-            } else {
-                return Err(DiagMsg{
-                    title: format!("{:?}", ParserError::InvalidGenericParameterList),
-                    msg: "invalid generic parameter list".to_string(),
-                    span: self.current_token().span.clone(),
-                });
-            };
-
-            let param_text_len = (end_off - param_start_off) as usize;
-            let name_child = GreenChild {
-                relative_start: 0, // 名字在参数开头
-                node: Arc::new(IdentName{ name: param_name_token.text.clone()}),
-            };
-
-            let green_var = GreenGenericVar {
-                name: name_child,
-                constraint: vec![],
-                text_len: param_text_len,
-            };
-
-            children.push(GreenChild {
-                relative_start: (param_start_off - list_start_off) as usize,
-                node: Arc::new(green_var),
-            });
-
-            if self.current_token().kind == TokenType::Comma {
-                self.skip_token();
-            } else if self.current_token().kind == TokenType::Rbracket {
-                break;
-            }
-        }
-        self.skip_token_only(TokenType::Rbracket)?;
-        Ok((children, list_start_off))
-    }
-
     fn parse_where(
         &mut self,
         base_offset: usize,
@@ -445,7 +394,7 @@ impl<'a> Parser<'a> {
         }))
     }
 
-    /// 解析纯静态路径例如 'moduleA.moduleB.Type'
+    /// parse pure static like 'moduleA.moduleB.Type'
     fn parse_pure_static_path(&mut self) -> Result<GreenPureStaticPath, DiagMsg> {
         let start_off = self.current_token().span.start_off;
         let mut segments = vec![];

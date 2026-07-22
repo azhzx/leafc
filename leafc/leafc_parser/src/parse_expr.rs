@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 impl<'a> Parser<'a> {
 
-    /// 解析 match 模式
+    /// pattern
     fn parse_pattern(&mut self) -> Result<GreenPattern, DiagMsg> {
         let start_off = self.current_token().span.start_off;
         let current = self.current_token().clone();
@@ -102,6 +102,7 @@ impl<'a> Parser<'a> {
         })
     }
 
+    /// pattern => expr
     fn parse_match_arm(&mut self, match_start: usize) -> Result<GreenMatchArm, DiagMsg> {
         let arm_start = self.current_token().span.start_off;
         let pattern = self.parse_pattern()?;
@@ -144,6 +145,7 @@ impl<'a> Parser<'a> {
         })
     }
 
+    /// when expr
     pub fn parse_match_expr(&mut self) -> Result<ExprRedNode, DiagMsg> {
         let match_token = self.current_token().clone();
         let match_start = match_token.span.start_off;
@@ -199,6 +201,7 @@ impl<'a> Parser<'a> {
         })
     }
 
+    /// raise expr
     pub fn parse_raise_expr(&mut self) -> Result<ExprRedNode, DiagMsg> {
         let raise_token = self.current_token().clone();
         let raise_start = raise_token.span.start_off;
@@ -270,6 +273,7 @@ impl<'a> Parser<'a> {
         })
     }
 
+    /// AE handler
     pub fn parse_with_expr(&mut self) -> Result<ExprRedNode, DiagMsg> {
         let with_token = self.current_token().clone();
         let with_start = with_token.span.start_off;
@@ -282,40 +286,26 @@ impl<'a> Parser<'a> {
             node: handler_red.inner.clone(),
         };
 
-        self.skip_token_only(TokenType::NewLine)?;
+        self.skip_token_if_newlines()?;
 
         let mut clauses = vec![];
         while self.current_token().kind == TokenType::KwCatch {
             self.skip_token_only(TokenType::KwCatch)?;
-
             let catch_start = self.current_token().span.start_off;
-            let path = self.parse_pure_static_path()?;
-            let segments = &path.segments;
 
-            let effect_path_end = segments.len() - 1;
-            let effect_segments = segments[..effect_path_end].to_vec();
-            let effect_path = GreenPureStaticPath {
-                segments: effect_segments,
-                text_len: 0,
-            };
-            let effect_path_child = GreenChild {
-                relative_start: (segments[0].relative_start) as usize,
-                node: Arc::new(effect_path),
+            let control_path = self.parse_pure_static_path()?;
+            let control_path_child = GreenChild {
+                relative_start: 0,
+                node: Arc::new(control_path),
             };
 
-            let control_name_seg = segments.last().unwrap();
-            let control_name_child = GreenChild {
-                relative_start: (catch_start + control_name_seg.relative_start - with_start) as usize,
-                node: control_name_seg.node.clone(),
-            };
-
-            // 参数列表
             self.skip_token_only(TokenType::Lparen)?;
             let mut params = vec![];
             while self.current_token().kind != TokenType::Rparen {
+                let pat_start = self.current_token().span.start_off;
                 let pat = self.parse_pattern()?;
                 params.push(GreenChild {
-                    relative_start: 0,
+                    relative_start: (pat_start - catch_start),
                     node: Arc::new(pat),
                 });
                 if self.current_token().kind == TokenType::Comma {
@@ -332,35 +322,36 @@ impl<'a> Parser<'a> {
             }
             self.skip_token_only(TokenType::Rparen)?;
 
-            // catch body 是一个表达式
             self.skip_token_only(TokenType::NewLine)?;
-            self.skip_token_only(TokenType::Indent)?;
-            let body_red = self.parse_expr()?;
+            let body_red = self.parse_block_expr()?;
+            let body_start = body_red.span.start_off;
             let body_child = GreenChild {
-                relative_start: body_red.span.start_off - with_start,
+                relative_start: (body_start - catch_start),
                 node: body_red.inner.clone(),
             };
-            self.skip_token_only(TokenType::NewLine)?;
-            self.skip_token_only(TokenType::Dedent)?;
 
-            let catch_end = self.tokens.data[self.index - 1].span.end_off;
-            let catch_text_len = (catch_end - catch_start);
+            let catch_end = catch_start + body_child.relative_start + body_child.node.text_len;
+            let catch_text_len = catch_end - catch_start;
 
             let catch_clause = GreenCatchClause {
-                effect_path: effect_path_child,
-                control_name: control_name_child,
+                control_static_path: control_path_child,
                 params,
                 body: body_child,
                 text_len: catch_text_len,
             };
+
             clauses.push(GreenChild {
                 relative_start: (catch_start - with_start),
                 node: Arc::new(catch_clause),
             });
         }
 
-        let end_off = self.tokens.data[self.index - 1].span.end_off;
-        let text_len = (end_off - with_start);
+        let end_off = if let Some(last_clause) = clauses.last() {
+            with_start + last_clause.relative_start + last_clause.node.text_len
+        } else {
+            handler_child.relative_start + handler_child.node.text_len + with_start
+        };
+        let text_len = end_off - with_start;
 
         let green = GreenExpr {
             kind: GreenExprKind::With {
@@ -380,17 +371,16 @@ impl<'a> Parser<'a> {
         })
     }
 
+    /// resume
     pub fn parse_resume_expr(&mut self) -> Result<ExprRedNode, DiagMsg> {
-
         let resume_token = self.current_token().clone();
         let resume_start = resume_token.span.start_off;
-
         self.skip_token_only(TokenType::KwResume)?;
 
         let expr_red = self.parse_expr()?;
         let expr_start = expr_red.span.start_off;
         let end_off = expr_red.span.end_off;
-        let text_len = (end_off - resume_start);
+        let text_len = end_off - resume_start;
 
         let expr_child = GreenChild {
             relative_start: expr_start - resume_start,
@@ -412,6 +402,7 @@ impl<'a> Parser<'a> {
         })
     }
 
+    /// block
     pub fn parse_block_expr(&mut self) -> Result<ExprRedNode, DiagMsg> {
         let start_off = self.current_token().span.start_off; // 'indent' token
         self.skip_token_only(TokenType::Indent)?;
@@ -736,6 +727,7 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// LBP
     /// 中缀运算符左绑定优先级
     fn lbp(token: TokenType) -> Option<usize> {
         match token {
@@ -754,6 +746,7 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// RBP
     /// 前缀一元运算符右绑定优先级
     fn rbp(token: TokenType) -> Option<usize> {
         match token {
@@ -762,7 +755,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// 表达式入口
+    /// main dispatcher
     pub fn parse_expr(&mut self) -> Result<ExprRedNode, DiagMsg> {
         match self.current_token().kind {
             TokenType::KwIf => return self.parse_if_expr(),
@@ -778,7 +771,7 @@ impl<'a> Parser<'a> {
         self.parse_expr_bp(0)
     }
 
-    /// Pratt 解析核心
+    /// Pratt Core
     fn parse_expr_bp(&mut self, min_bp: usize) -> Result<ExprRedNode, DiagMsg> {
         let token = self.current_token().clone();
         let kind = token.kind;
@@ -1297,7 +1290,7 @@ impl<'a> Parser<'a> {
                         let name_start = field_name_token.span.start_off;
                         let name = field_name_token.text.clone();
                         self.skip_token(); // field name
-                        self.skip_token_only(TokenType::Colon)?; // ':'
+                        self.skip_token_only(TokenType::Eq)?; // '='
                         let value_red = self.parse_expr()?;
                         let value_start = value_red.span.start_off;
                         let field_end = value_red.span.end_off;

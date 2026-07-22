@@ -11,6 +11,8 @@ use leafc_coreapi::source::Span;
 use std::sync::Arc;
 
 impl<'a> Parser<'a> {
+    /// fun name [T, U,...] ...
+    /// type name [T, U, ...] ...
     fn parse_generic_params(&mut self)
         -> Result<(Vec<GreenChild<GreenGenericVar>>, usize), DiagMsg> {
         let list_start_off = self.current_token().span.start_off;
@@ -34,7 +36,7 @@ impl<'a> Parser<'a> {
                 });
             };
 
-            let param_text_len = (end_off - param_start_off) as usize;
+            let param_text_len = (end_off - param_start_off) ;
             let name_child = GreenChild {
                 relative_start: 0,
                 node: Arc::new(IdentName { name: param_name_token.text.clone() }),
@@ -42,7 +44,7 @@ impl<'a> Parser<'a> {
 
             let green_var = GreenGenericVar {
                 name: name_child,
-                constraint: vec![], // 行内约束暂不处理，统一由 where 子句承载
+                constraint: vec![],
                 text_len: param_text_len,
             };
 
@@ -135,14 +137,14 @@ impl<'a> Parser<'a> {
         self.skip_token_only(TokenType::NewLine)?;
 
         let decl_end_off = self.tokens.data[self.index - 1].span.end_off;
-        let text_len = (decl_end_off - decl_start_off) as usize;
+        let text_len = (decl_end_off - decl_start_off);
 
         let name_child = GreenChild {
-            relative_start: (name_start_off - decl_start_off) as usize,
+            relative_start: (name_start_off - decl_start_off),
             node: Arc::new(IdentName { name: name_token.text.clone() }),
         };
         let expr_child = GreenChild {
-            relative_start: (expr_start - decl_start_off) as usize,
+            relative_start: (expr_start - decl_start_off),
             node: expr_red.inner.clone(),
         };
 
@@ -176,6 +178,7 @@ impl<'a> Parser<'a> {
         annotations: Vec<(GreenAnnotation, Span)>,
         decl_start_off: usize,
     ) -> Result<DeclRedNode, DiagMsg> {
+
         let effect_token = self.current_token().clone();
         self.skip_token_only(TokenType::KwEffect)?;
 
@@ -1009,7 +1012,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// 解析外部声明
+    /// external fun / external ctype
     pub fn parse_external_decl(
         &mut self,
         visibility: Visibility,

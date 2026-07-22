@@ -1,14 +1,18 @@
-use std::collections::HashMap;
-use crate::diagnostic::DiagMsg;
 use crate::hir::{HirDeclId, HirExprId};
-use crate::source::Span;
+use crate::lang_builtins::BuiltinType;
+use crate::scope::SymId;
+use std::collections::HashMap;
 
 pub type TyId = usize;
 
 /// 将声明 id 映射到其类型 id
 pub type HirDeclTypeMap = HashMap<HirDeclId, TypeScheme>;
+
 /// 将表达式 id 映射到其类型 id
 pub type HirExprTypeMap = HashMap<HirExprId, TyId>;
+
+/// sym => scheme
+pub type NameTypeSchemeMap = HashMap<SymId, TypeScheme>;
 
 /// let expr id => let decl type
 pub type LetExprIdTypeMap = HashMap<HirExprId, TyId>;
@@ -17,6 +21,9 @@ pub type LetExprIdTypeMap = HashMap<HirExprId, TyId>;
 pub enum TypeNodeKind {
     Var,
     Builtin(BuiltinType),
+    Ref(TyId),
+    MutRef(TyId),
+    Share(TyId),
     Fun {
         param_tys: Vec<TyId>,
         return_ty: TyId,
@@ -28,21 +35,6 @@ pub enum TypeNodeKind {
     Tuple(Vec<TyId>),
     Never,
     Unit,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum BuiltinType {
-    Int8,
-    Int16,
-    Int32,
-    Int64,
-    UInt8,
-    UInt16,
-    UInt32,
-    UInt64,
-    Float32,
-    Float64,
-    Bool,
 }
 
 #[derive(Debug, Clone)]

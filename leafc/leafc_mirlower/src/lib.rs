@@ -1,8 +1,5 @@
 use leafc_coreapi::diagnostic::DiagMsg;
-use leafc_coreapi::hir::{
-    HirBinOp, HirCrate, HirDeclId, HirDeclKind, HirExpr, HirExprId, HirExprKind,
-    HirLit, HirName, HirTypeName, HirUnaryOp,
-};
+use leafc_coreapi::hir::{HirBinOp, HirDeclKind, HirExpr, HirExprId, HirExprKind, HirLit, HirUnaryOp};
 use leafc_coreapi::mir::{
     BasicBlock, BasicBlockId, BinOp, Const, FnSig, LocalDecl, LocalId,
     MirCrate, MirFun, MirStmt, MirStmtKind, Place, Rvalue,

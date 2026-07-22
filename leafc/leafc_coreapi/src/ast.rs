@@ -2,10 +2,6 @@ use std::sync::Arc;
 use crate::operators::Operator;
 use crate::source::{Span};
 
-// ===----------------------------
-// Text Len
-// ===----------------------------
-
 pub type TextLen = usize;
 
 // ===----------------------------
@@ -225,17 +221,15 @@ pub struct GreenEffectControl {
 }
 
 // ===----------------------------
-// Catch clause (for with expression)
+// Catch clause (for 'with expression')
 // ===----------------------------
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct GreenCatchClause {
-    pub effect_path: GreenChild<GreenPureStaticPath>,
-    pub control_name: GreenChild<IdentName>,
+    pub control_static_path: GreenChild<GreenPureStaticPath>,
     pub params: Vec<GreenChild<GreenPattern>>,
     pub body: GreenChild<GreenExpr>,
     pub text_len: TextLen,
 }
-
 
 // ===----------------------------
 // Expr
@@ -602,6 +596,8 @@ impl HasTextLen for GreenMatchArm { fn text_len(&self) -> TextLen { self.text_le
 impl HasTextLen for GreenCatchClause { fn text_len(&self) -> TextLen { self.text_len } }
 impl HasTextLen for GreenEffectControl { fn text_len(&self) -> TextLen { self.text_len } }
 impl HasTextLen for GreenTupleElement { fn text_len(&self) -> TextLen { self.text_len } }
+
+
 impl HasTextLen for GreenPattern {
     fn text_len(&self) -> TextLen {
         match self {
@@ -637,5 +633,53 @@ impl HasTextLen for TypeName {
             | TypeName::Impl { text_len, .. }
             | TypeName::Fun { text_len, .. } => *text_len,
         }
+    }
+}
+
+// ===----------------------------
+// Helper Functions
+// ===----------------------------
+
+pub fn child_expr_red(parent_span: &Span, child: &GreenChild<GreenExpr>) -> ExprRedNode {
+    let start = parent_span.start_off + child.relative_start;
+    let len = child.node.text_len;
+    ExprRedNode {
+        span: Span {
+            source_id: parent_span.source_id,
+            start_off: start,
+            end_off: start + len,
+        },
+        inner: Arc::clone(&child.node),
+    }
+}
+
+pub fn child_decl_red(parent_span: &Span, child: &GreenChild<GreenDecl>) -> DeclRedNode {
+    let start = parent_span.start_off + child.relative_start;
+    let len = child.node.text_len;
+    DeclRedNode {
+        span: Span {
+            source_id: parent_span.source_id,
+            start_off: start,
+            end_off: start + len,
+        },
+        inner: Arc::clone(&child.node),
+    }
+}
+
+pub fn child_span(parent_span: &Span, relative_start: usize, text_len: usize) -> Span {
+    Span {
+        source_id: parent_span.source_id,
+        start_off: parent_span.start_off + relative_start,
+        end_off: parent_span.start_off + relative_start + text_len,
+    }
+}
+
+pub fn child_span_of<T: HasTextLen>(base: &Span, child: &GreenChild<T>) -> Span {
+    let start = base.start_off + child.relative_start;
+    let len = child.node.text_len();
+    Span {
+        source_id: base.source_id,
+        start_off: start,
+        end_off: start + len,
     }
 }

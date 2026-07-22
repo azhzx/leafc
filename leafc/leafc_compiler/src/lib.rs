@@ -219,9 +219,30 @@ impl CompilerApi for NativeCompiler {
 
         let hir = match hir_lower.lower() {
             Ok(hir) => {
-                println!("=== hir ===");
-                println!("{:#?}", hir);
+                println!("=== hir name ===");
+                println!("{:#?}", hir.name);
                 println!("=== === ===");
+
+                println!("=== hir ty pool ===");
+                println!("{:#?}", hir.type_pool);
+                println!("=== === ===");
+
+                println!("=== hir main fun ===");
+                println!("{:#?}", hir.main_fun);
+                println!("=== === ===");
+
+                println!("=== hir pub externals  ===");
+                println!("{:#?}", hir.pub_decl_ids);
+                println!("=== === ===");
+
+                println!("=== hir exprs  ===");
+                println!("{:#?}", hir.hir_expr_pool);
+                println!("=== === ===");
+
+                println!("=== hir decls  ===");
+                println!("{:#?}", hir.hir_decl_pool);
+                println!("=== === ===");
+
                 hir
             }
             Err(e) => {
@@ -247,7 +268,9 @@ impl CompilerApi for NativeCompiler {
                 println!("=== === ===");
 
                 println!("=== hir ty pool ===");
-                println!("{:#?}", result.hir.type_pool);
+                for (index, ty) in result.hir.type_pool.iter().enumerate() {
+                    println!("{} => {:?}", index, ty);
+                }
                 println!("=== === ===");
 
                 result

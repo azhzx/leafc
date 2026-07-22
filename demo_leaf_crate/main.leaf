@@ -1,11 +1,10 @@
-#lang("IntType")
-type Int32;
+#lang("builtin_i64_type")
+type Int;
 
-type Int = Int32
+type Foo [_a]
+    first: _a
 
-type Foo [a]
-    a_field: Int
-    b_field: a
-
-fun main[T]()
-    let a = Foo { a_field: 0, b_field: 100 }
+fun main()
+    let a = Foo { first=1 }
+    let b = a.first
+    let x = #[ 1, 0.1 ]

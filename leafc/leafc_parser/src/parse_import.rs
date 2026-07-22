@@ -7,6 +7,8 @@ use leafc_coreapi::source::Span;
 use std::sync::Arc;
 
 impl<'a> Parser<'a> {
+
+    /// use x.y only foo *
     pub fn parse_use_decl(&mut self) -> Result<Option<RequireRedNode>, DiagMsg> {
 
         let start_span = self.current_token().span.clone();

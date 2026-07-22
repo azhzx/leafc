@@ -60,6 +60,12 @@ pub enum SymbolKind {
     Control,
 
     Effect,
+    
+    Const,
+    
+    Global,
+    
+    TypeDecl,
 
     /// an ADT Constructor
     Constructor,
