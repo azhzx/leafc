@@ -1,10 +1,8 @@
-#lang("builtin_i64_type")
-type Int;
+#lang("builtin_i32_type")
+type Int32;
 
-type Foo [_a]
-    first: _a
+fun foo(aa)
+    return aa
 
 fun main()
-    let a = Foo { first=1 }
-    let b = a.first
-    let x = #[ 1, 0.1 ]
+    let local = foo(100)

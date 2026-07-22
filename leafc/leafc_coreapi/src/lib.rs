@@ -20,4 +20,4 @@ pub mod mir_lifetime_checker;
 pub mod type_system;
 pub mod crate_meta;
 pub mod operators;
-pub mod lang_builtins;
+pub mod lang_items;

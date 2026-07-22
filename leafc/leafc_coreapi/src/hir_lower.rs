@@ -3,8 +3,22 @@ use crate::diagnostic::DiagMsg;
 use crate::hir::{HirCrate};
 use crate::name_pass::NamePassResult;
 
+#[derive(Debug)]
 pub enum HirLowerError {
-    
+    EmptyPath,
+    PathNotFound,
+    ModuleScopeNotFound,
+    FieldNotFound,
+    ConstructorNotFound,
+    ControlNotFound,
+    InvalidPath,
+    GenericNotFound,
+    BindingNotFound,
+    ParamNotFound,
+    MethodNotFound,
+    CtorNotFound,
+    NameNotFound,
+    LetNameNotFound,
 }
 
 

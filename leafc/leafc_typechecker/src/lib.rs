@@ -3,11 +3,11 @@ use leafc_coreapi::hir::{
     HirBinOp, HirCrate, HirDeclId, HirDeclKind, HirExprId, HirExprKind,
     HirFieldDef, HirGenericParam, HirLit, HirName, HirParam, HirTypeName, HirUnaryOp,
 };
-use leafc_coreapi::lang_builtins::BuiltinType;
+use leafc_coreapi::lang_items::BuiltinType;
 use leafc_coreapi::name_pass::NamePassResult;
 use leafc_coreapi::scope::SymId;
 use leafc_coreapi::source::Span;
-use leafc_coreapi::type_checker::{TypeCheckerApi, TypeCheckerResult};
+use leafc_coreapi::type_checker::{TypeCheckerApi, TypeCheckerError, TypeCheckerResult};
 use leafc_coreapi::type_system::{HirDeclTypeMap, HirExprTypeMap, LetExprIdTypeMap, NameTypeSchemeMap, TyId, TypeNode, TypeNodeKind, TypeScheme};
 use std::collections::HashMap;
 
@@ -52,16 +52,16 @@ impl TypeChecker {
             ty_pool.push(TypeNode { kind, parent: id, level: 0 });
             id
         };
-        let int8 = push(TypeNodeKind::Builtin(BuiltinType::Int8));
-        let int16 = push(TypeNodeKind::Builtin(BuiltinType::Int16));
-        let int32 = push(TypeNodeKind::Builtin(BuiltinType::Int32));
-        let int64 = push(TypeNodeKind::Builtin(BuiltinType::Int64));
-        let uint8 = push(TypeNodeKind::Builtin(BuiltinType::UInt8));
-        let uint16 = push(TypeNodeKind::Builtin(BuiltinType::UInt16));
-        let uint32 = push(TypeNodeKind::Builtin(BuiltinType::UInt32));
-        let uint64 = push(TypeNodeKind::Builtin(BuiltinType::UInt64));
-        let float32 = push(TypeNodeKind::Builtin(BuiltinType::Float32));
-        let float64 = push(TypeNodeKind::Builtin(BuiltinType::Float64));
+        let int8 = push(TypeNodeKind::Builtin(BuiltinType::I8));
+        let int16 = push(TypeNodeKind::Builtin(BuiltinType::I16));
+        let int32 = push(TypeNodeKind::Builtin(BuiltinType::I32));
+        let int64 = push(TypeNodeKind::Builtin(BuiltinType::I64));
+        let uint8 = push(TypeNodeKind::Builtin(BuiltinType::U8));
+        let uint16 = push(TypeNodeKind::Builtin(BuiltinType::U16));
+        let uint32 = push(TypeNodeKind::Builtin(BuiltinType::U32));
+        let uint64 = push(TypeNodeKind::Builtin(BuiltinType::U64));
+        let float32 = push(TypeNodeKind::Builtin(BuiltinType::F32));
+        let float64 = push(TypeNodeKind::Builtin(BuiltinType::F64));
         let bool_ty = push(TypeNodeKind::Builtin(BuiltinType::Bool));
         let unit = push(TypeNodeKind::Unit);
         let never = push(TypeNodeKind::Never);
@@ -118,6 +118,35 @@ impl TypeChecker {
         match name {
 
             HirTypeName::Named { path, generics } => {
+
+                if let Some(builtin_ty) =
+                    self.name_pass_result.lang_items.get_builtin_type_by_sym(path.sym_id) {
+
+                    if !generics.is_empty() {
+                        return Err(DiagMsg {
+                            title: format!("{:?}", TypeCheckerError::GenericArityMismatch),
+                            msg: format!("built-in type does not accept generic arguments, got {}", generics.len()),
+                            span,
+                        });
+                    }
+
+                    let ty_id = match builtin_ty {
+                        BuiltinType::I8  => self.builtin.int8,
+                        BuiltinType::I16 => self.builtin.int16,
+                        BuiltinType::I32 => self.builtin.int32,
+                        BuiltinType::I64 => self.builtin.int64,
+                        BuiltinType::U8  => self.builtin.uint8,
+                        BuiltinType::U16 => self.builtin.uint16,
+                        BuiltinType::U32 => self.builtin.uint32,
+                        BuiltinType::U64 => self.builtin.uint64,
+                        BuiltinType::F32 => self.builtin.float32,
+                        BuiltinType::F64 => self.builtin.float64,
+                        BuiltinType::Bool => self.builtin.bool_ty,
+                        BuiltinType::Never => self.builtin.never,
+                        BuiltinType::Ptr => todo!("pointer type not yet implemented"),
+                    };
+                    return Ok(ty_id);
+                }
 
                 if let Some(scheme) = self.name_type_map.get(&path.sym_id).cloned() {
                     if !generics.is_empty() {
@@ -874,10 +903,6 @@ impl TypeChecker {
                 }
             }
         }
-    }
-
-    fn lower_type_name_to_ty(&mut self, type_name: &HirTypeName, span: &Span) -> Result<TyId, DiagMsg> {
-        self.resolve_type_name(type_name, span.clone())
     }
 }
 

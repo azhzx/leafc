@@ -1,5 +1,5 @@
 use crate::hir::{HirDeclId, HirExprId};
-use crate::lang_builtins::BuiltinType;
+use crate::lang_items::BuiltinType;
 use crate::scope::SymId;
 use std::collections::HashMap;
 

@@ -7,7 +7,7 @@ use leafc_coreapi::hir::{
     HirExpr, HirExprId, HirExprKind, HirFieldDef, HirGenericParam, HirLit, HirMatchArm,
     HirMethodDecl, HirName, HirParam, HirPattern, HirTypeName, HirUnaryOp,
 };
-use leafc_coreapi::hir_lower::HirLowerApi;
+use leafc_coreapi::hir_lower::{HirLowerApi, HirLowerError};
 use leafc_coreapi::name_pass::NamePassResult;
 use leafc_coreapi::operators::Operator;
 use leafc_coreapi::scope::{ScopeId, SymbolKind};
@@ -36,7 +36,7 @@ impl<'a> HirLower<'a> {
         let segments = &path.segments;
         if segments.is_empty() {
             return Err(DiagMsg {
-                title: "EmptyPath".into(),
+                title: format!("{:?}", HirLowerError::EmptyPath),
                 msg: "empty path in expression".into(),
                 span: span.clone(),
             });
@@ -50,7 +50,7 @@ impl<'a> HirLower<'a> {
             .pool
             .lookup(scope_id, first_name)
             .ok_or_else(|| DiagMsg {
-                title: "PathNotFound".into(),
+                title: format!("{:?}", HirLowerError::PathNotFound),
                 msg: format!("name `{}` not found", first_name),
                 span: first_span.clone(),
             })?;
@@ -62,14 +62,14 @@ impl<'a> HirLower<'a> {
                 SymbolKind::File { source_id } => {
                     let file_scope = *self.name_pass_result.source_id_to_scope.get(source_id)
                         .ok_or_else(|| DiagMsg {
-                            title: "ModuleScopeNotFound".into(),
+                            title: format!("{:?}", HirLowerError::ModuleScopeNotFound),
                             msg: format!("module scope not found for source_id {:?}", source_id),
                             span: seg_span.clone(),
                         })?;
                     let (found_sym, found_scope) = self.name_pass_result.pool
                         .lookup(file_scope, seg_name)
                         .ok_or_else(|| DiagMsg {
-                            title: "PathNotFound".into(),
+                            title: format!("{:?}", HirLowerError::PathNotFound),
                             msg: format!("name `{}` not found in module", seg_name),
                             span: seg_span.clone(),
                         })?;
@@ -82,7 +82,7 @@ impl<'a> HirLower<'a> {
                         .filter_map(|&sid| self.name_pass_result.pool.get_symbol_by_id(sid))
                         .find(|s| s.name == *seg_name)
                         .ok_or_else(|| DiagMsg {
-                            title: "FieldNotFound".into(),
+                            title: format!("{:?}", HirLowerError::FieldNotFound),
                             msg: format!("struct `{}` has no field named `{}`", sym.name, seg_name),
                             span: seg_span.clone(),
                         })?;
@@ -94,7 +94,7 @@ impl<'a> HirLower<'a> {
                         .filter_map(|&sid| self.name_pass_result.pool.get_symbol_by_id(sid))
                         .find(|s| s.name == *seg_name)
                         .ok_or_else(|| DiagMsg {
-                            title: "ConstructorNotFound".into(),
+                            title: format!("{:?}", HirLowerError::ConstructorNotFound),
                             msg: format!("ADT `{}` has no constructor named `{}`", sym.name, seg_name),
                             span: seg_span.clone(),
                         })?;
@@ -105,7 +105,7 @@ impl<'a> HirLower<'a> {
                     let (found_sym, found_scope) = self.name_pass_result.pool
                         .lookup(effect_scope, seg_name)
                         .ok_or_else(|| DiagMsg {
-                            title: "ControlNotFound".into(),
+                            title: format!("{:?}", HirLowerError::ControlNotFound),
                             msg: format!("effect `{}` has no control named `{}`", sym.name, seg_name),
                             span: seg_span.clone(),
                         })?;
@@ -114,7 +114,7 @@ impl<'a> HirLower<'a> {
                 }
                 _ => {
                     return Err(DiagMsg {
-                        title: "InvalidPath".into(),
+                        title: format!("{:?}", HirLowerError::InvalidPath),
                         msg: format!("cannot access member of `{}`", sym.name),
                         span: seg_span.clone(),
                     });
@@ -218,7 +218,7 @@ impl<'a> HirLower<'a> {
                 let sym = self
                     .lookup_symbol(scope_id, &gv.name.node.name)
                     .ok_or_else(|| DiagMsg {
-                        title: "GenericNotFound".into(),
+                        title: format!("{:?}", HirLowerError::GenericNotFound),
                         msg: format!("generic `{}` not found", gv.name.node.name),
                         span: gv_span.clone(),
                     })?;
@@ -257,7 +257,7 @@ impl<'a> HirLower<'a> {
                 let sym = self
                     .lookup_symbol(scope_id, &ident.name)
                     .ok_or_else(|| DiagMsg {
-                        title: "BindingNotFound".into(),
+                        title: format!("{:?}", HirLowerError::BindingNotFound),
                         msg: format!("binding `{}` not found", ident.name),
                         span: span.clone(),
                     })?;
@@ -311,7 +311,7 @@ impl<'a> HirLower<'a> {
         let sym = self
             .lookup_symbol(scope_id, &green_field.name.node.name)
             .ok_or_else(|| DiagMsg {
-                title: "FieldNotFound".into(),
+                title: format!("{:?}", HirLowerError::FieldNotFound),
                 msg: format!("field `{}` not found", green_field.name.node.name),
                 span: field_span.clone(),
             })?;
@@ -339,7 +339,7 @@ impl<'a> HirLower<'a> {
         let sym = self
             .lookup_symbol(scope_id, &green_param.name.node.name)
             .ok_or_else(|| DiagMsg {
-                title: "ParamNotFound".into(),
+                title: format!("{:?}", HirLowerError::ParamNotFound),
                 msg: format!("parameter `{}` not found", green_param.name.node.name),
                 span: param_span.clone(),
             })?;
@@ -347,7 +347,9 @@ impl<'a> HirLower<'a> {
             name: sym.name.clone(),
             sym_id: sym.sym_id,
         };
-        let type_ann = {
+        let type_ann = if Self::is_type_empty(&green_param.type_str.node) {
+            None
+        } else {
             let type_span = child_span_of(&param_span, &green_param.type_str);
             Some(self.lower_type_name(&green_param.type_str.node, scope_id, type_span)?)
         };
@@ -368,7 +370,7 @@ impl<'a> HirLower<'a> {
         let sym = self
             .lookup_symbol(scope_id, &method_name.name)
             .ok_or_else(|| DiagMsg {
-                title: "MethodNotFound".into(),
+                title: format!("{:?}", HirLowerError::MethodNotFound),
                 msg: format!("method `{}` not found", method_name.name),
                 span: method_span.clone(),
             })?;
@@ -411,7 +413,7 @@ impl<'a> HirLower<'a> {
         let sym = self
             .lookup_symbol(scope_id, &ctor_name.name)
             .ok_or_else(|| DiagMsg {
-                title: "CtorNotFound".into(),
+                title: format!("{:?}", HirLowerError::CtorNotFound),
                 msg: format!("constructor `{}` not found", ctor_name.name),
                 span: ctor_span.clone(),
             })?;
@@ -522,7 +524,7 @@ impl<'a> HirLower<'a> {
                     let sym = self
                         .lookup_symbol(scope_id, name)
                         .ok_or_else(|| DiagMsg {
-                            title: "NameNotFound".into(),
+                            title: format!("{:?}", HirLowerError::NameNotFound),
                             msg: format!("name `{}` not found", name),
                             span: span.clone(),
                         })?;
@@ -597,7 +599,7 @@ impl<'a> HirLower<'a> {
                 let segments = &path.node.segments;
                 if segments.is_empty() {
                     return Err(DiagMsg {
-                        title: "EmptyPath".into(),
+                        title: format!("{:?}", HirLowerError::EmptyPath),
                         msg: "empty static path".into(),
                         span: span.clone(),
                     });
@@ -624,7 +626,7 @@ impl<'a> HirLower<'a> {
                         }
                         None => {
                             return Err(DiagMsg {
-                                title: "PathNotFound".into(),
+                                title: format!("{:?}", HirLowerError::PathNotFound),
                                 msg: format!("name `{}` not found", seg_name),
                                 span: seg_span.clone(),
                             });
@@ -748,7 +750,7 @@ impl<'a> HirLower<'a> {
                 let sym = self
                     .lookup_symbol(scope_id, &name.node.name)
                     .ok_or_else(|| DiagMsg {
-                        title: "LetNameNotFound".into(),
+                        title: format!("{:?}", HirLowerError::LetNameNotFound),
                         msg: format!("variable `{}` not found", name.node.name),
                         span: span.clone(),
                     })?;

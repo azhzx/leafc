@@ -5,6 +5,7 @@ use leafc_coreapi::scope::{ScopeId, ScopeKind, ScopePool, SymbolKind};
 use leafc_coreapi::source::{SourceId, Span};
 use std::collections::HashMap;
 use std::sync::Arc;
+use leafc_coreapi::lang_items::{LangItems, STR_TO_BUILTIN};
 
 pub struct NamePass<'a> {
     ast_module: &'a CrateAst,
@@ -27,6 +28,9 @@ pub struct NamePass<'a> {
 
     /// source_id => ScopeId
     source_id_to_scope: HashMap<SourceId, ScopeId>,
+
+    /// lang item
+    lang_items: LangItems,
 }
 
 impl<'a> NamePass<'a> {
@@ -494,6 +498,7 @@ impl<'a> NamePassApi<'a> for NamePass<'a> {
             catch_scope_map: HashMap::new(),
             source_to_file_unit: HashMap::new(),
             source_id_to_scope: HashMap::new(),
+            lang_items: LangItems::new(),
         }
     }
 
@@ -772,12 +777,21 @@ impl<'a> NamePassApi<'a> for NamePass<'a> {
                     }
 
                     GreenDeclKind::TypeDecl => {
-                        self.scope_pool.add_symbol(
+                        let lang_type = decl_child.node.annotations.iter()
+                            .find(|ann| ann.node.name == "lang" && ann.node.args.len() == 1)
+                            .and_then(|ann| ann.node.args.first())
+                            .and_then(|arg| STR_TO_BUILTIN.get(arg)); // 适配 String
+
+                        let sym_id = self.scope_pool.add_symbol_and_get_sym_id(
                             file_scope_id,
                             decl_name.name.clone(),
                             decl_span.clone(),
                             SymbolKind::TypeDecl,
                         );
+
+                        if let Some(ty) = lang_type {
+                            self.lang_items.register_builtin_sym_by_type(*ty, sym_id);
+                        }
                     }
                 }
             }
@@ -881,6 +895,7 @@ impl<'a> NamePassApi<'a> for NamePass<'a> {
             arm_scope_map: self.arm_scope_map,
             catch_scope_map: self.catch_scope_map,
             source_id_to_scope: self.source_id_to_scope,
+            lang_items: self.lang_items,
         })
     }
 }

@@ -8,7 +8,8 @@ use crate::type_system::{HirDeclTypeMap, HirExprTypeMap, LetExprIdTypeMap};
 pub enum TypeCheckerError {
    DuplicateType,
    InfiniteType,
-   TypeMismatch
+   TypeMismatch,
+    GenericArityMismatch,
 }
 
 pub struct TypeCheckerResult {
