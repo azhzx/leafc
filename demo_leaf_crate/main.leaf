@@ -1,8 +1,17 @@
 #lang("builtin_i32_type")
 type Int32;
 
-fun foo(aa)
-    return aa
+#lang("builtin_i64_type")
+type Int64;
+
+#lang("builtin_never_type")
+type Never;
+
+type Maybe [T]
+    | Just of T
+    | Nothing
 
 fun main()
-    let local = foo(100)
+    let none = Maybe.Nothing
+    let some_int32 = Maybe.Just(100 as Int32)
+    let some_int64 = Maybe.Just(100 as Int64)

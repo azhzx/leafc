@@ -2,10 +2,11 @@ use std::collections::{HashMap, HashSet};
 use leafc_coreapi::crate_meta::OperatorDef;
 use unicode_xid::UnicodeXID;
 use leafc_coreapi::diagnostic::DiagMsg;
-use leafc_coreapi::lexer::{Document, DocumentString, LexerApi, LexerError, Token, TokenStream, TokenType};
+use leafc_coreapi::lexer::{Document, DocumentString, LexerApi, LexerError, TokenStream};
 use leafc_coreapi::lexer::LexerError::{InvalidChar, InvalidString};
 use leafc_coreapi::operators::build_operator_tables;
 use leafc_coreapi::source::{SourceId, Span};
+use leafc_coreapi::token::{Token, TokenType};
 
 pub enum LexerState {
     Start,
@@ -500,6 +501,22 @@ impl<'a> LexerApi<'a> for Lexer<'a> {
 
         self.main_loop(&mut tokens)?;
 
+        // 补全末尾的NewLine
+        if let Some(last) = tokens.last() {
+            if last.kind != TokenType::NewLine {
+                let off = self.current_offset();
+                tokens.push(Token {
+                    kind: TokenType::NewLine,
+                    span: Span {
+                        source_id: self.source,
+                        start_off: off,
+                        end_off: off,
+                    },
+                    text: "\n".to_string(),
+                });
+            }
+        }
+
         let off = self.current_offset();
         for _ in 0..self.indent_level {
             tokens.push(Token {
@@ -513,9 +530,7 @@ impl<'a> LexerApi<'a> for Lexer<'a> {
             });
         }
 
-        // EOF
         tokens.push(self.eof());
-
         Ok(TokenStream { data: tokens })
     }
 

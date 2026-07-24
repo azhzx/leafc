@@ -165,54 +165,55 @@ impl FnBuilder {
             }
 
             HirExprKind::Let { name, init, .. } => {
-                let init_place = self.compile_expr(*init, hir_pool);
-                // fixme: 优先用 let_type_map，回退到 expr_type_map
-                let ty = self
-                    .let_types
-                    .get(&expr_id)
-                    .or_else(|| self.expr_types.get(init))
-                    .copied()
-                    .expect("let binding missing type");
-                let local = self.alloc_local(ty, false, Some(name.name.clone()));
-                self.push_stmt(MirStmt {
-                    kind: MirStmtKind::Assign {
-                        place: self.place_for_local(local),
-                        rvalue: self.place_to_rvalue(init_place),
-                    },
-                });
-                let unit_ty = self
-                    .type_pool
-                    .iter()
-                    .position(|n| n.kind == TypeNodeKind::Unit)
-                    .unwrap();
-                let tmp = self.alloc_local(unit_ty, false, None);
-                self.push_stmt(MirStmt {
-                    kind: MirStmtKind::Assign {
-                        place: self.place_for_local(tmp),
-                        rvalue: Rvalue::Constant(Const::Bool(false)), // 占位
-                    },
-                });
-                self.place_for_local(tmp)
+                // let init_place = self.compile_expr(*init, hir_pool);
+                // // fixme: 优先用 let_type_map，回退到 expr_type_map
+                // let ty = self
+                //     .let_types
+                //     .get(&expr_id)
+                //     .or_else(|| self.expr_types.get(init))
+                //     .copied()
+                //     .expect("let binding missing type");
+                // let local = self.alloc_local(ty, false, Some(name.name.clone()));
+                // self.push_stmt(MirStmt {
+                //     kind: MirStmtKind::Assign {
+                //         place: self.place_for_local(local),
+                //         rvalue: self.place_to_rvalue(init_place),
+                //     },
+                // });
+                // let unit_ty = self
+                //     .type_pool
+                //     .iter()
+                //     .position(|n| n.kind == TypeNodeKind::Unit)
+                //     .unwrap();
+                // let tmp = self.alloc_local(unit_ty, false, None);
+                // self.push_stmt(MirStmt {
+                //     kind: MirStmtKind::Assign {
+                //         place: self.place_for_local(tmp),
+                //         rvalue: Rvalue::Constant(Const::Bool(false)), // 占位
+                //     },
+                // });
+                // self.place_for_local(tmp)
+                todo!()
             }
 
             HirExprKind::Block { stmts } => {
-                if stmts.is_empty() {
-                    let unit_ty = self
-                        .type_pool
-                        .iter()
-                        .position(|n| n.kind == TypeNodeKind::Unit)
-                        .unwrap();
-                    let tmp = self.alloc_local(unit_ty, false, None);
-                    return self.place_for_local(tmp);
-                }
-                let len = stmts.len();
-                for (i, &stmt_id) in stmts.iter().enumerate() {
-                    if i == len - 1 {
-                        return self.compile_expr(stmt_id, hir_pool);
-                    } else {
-                        self.compile_expr(stmt_id, hir_pool);
-                    }
-                }
+                // if stmts.is_empty() {
+                //     let unit_ty = self
+                //         .type_pool
+                //         .iter()
+                //         .position(|n| n.kind == TypeNodeKind::Unit)
+                //         .unwrap();
+                //     let tmp = self.alloc_local(unit_ty, false, None);
+                //     return self.place_for_local(tmp);
+                // }
+                // let len = stmts.len();
+                // for (i, &stmt_id) in stmts.iter().enumerate() {
+                //     if i == len - 1 {
+                //         return self.compile_expr(stmt_id, hir_pool);
+                //     } else {
+                //         self.compile_expr(stmt_id, hir_pool);
+                //     }
+                // }
                 unreachable!()
             }
 
@@ -263,22 +264,23 @@ impl FnBuilder {
     }
 
     fn finish(mut self) -> (MirFun, Vec<BasicBlock>) {
-        let last = self.basic_blocks.last_mut().unwrap();
-        let ret_is_unit = self
-            .type_pool
-            .get(self.signature.return_ty)
-            .map_or(false, |n| n.kind == TypeNodeKind::Unit);
-        if matches!(last.terminator, TerminatorKind::Unreachable) {
-            last.terminator = TerminatorKind::Return;
-        }
-        let local_ids: Vec<BasicBlockId> = (0..self.basic_blocks.len()).collect();
-        let fun = MirFun {
-            name: self.name,
-            signature: self.signature,
-            local_decls: self.locals,
-            blocks: local_ids,
-        };
-        (fun, self.basic_blocks)
+    //     let last = self.basic_blocks.last_mut().unwrap();
+    //     let ret_is_unit = self
+    //         .type_pool
+    //         .get(self.signature.return_ty)
+    //         .map_or(false, |n| n.kind == TypeNodeKind::Unit);
+    //     if matches!(last.terminator, TerminatorKind::Unreachable) {
+    //         last.terminator = TerminatorKind::Return;
+    //     }
+    //     let local_ids: Vec<BasicBlockId> = (0..self.basic_blocks.len()).collect();
+    //     let fun = MirFun {
+    //         name: self.name,
+    //         signature: self.signature,
+    //         local_decls: self.locals,
+    //         blocks: local_ids,
+    //     };
+    //     (fun, self.basic_blocks)
+        todo!()
     }
 }
 
@@ -296,64 +298,64 @@ impl MirLowerApi for MirLower {
         let mut functions: Vec<MirFun> = vec![];
 
         let type_pool = &self.result.hir.type_pool;
-
-        for (decl_id, decl) in self.result.hir.hir_decl_pool.iter().enumerate() {
-            if let HirDeclKind::Fun {
-                params,
-                return_type,
-                body,
-                ..
-            } = &decl.kind
-            {
-                let scheme = self.result.decl_type_map.get(&decl_id).unwrap();
-                let fun_ty_id = scheme.body;
-                let ret_ty = if let TypeNodeKind::Fun { return_ty, .. } = &type_pool[fun_ty_id].kind {
-                    *return_ty
-                } else {
-                    type_pool
-                        .iter()
-                        .position(|n| n.kind == TypeNodeKind::Unit)
-                        .unwrap() // 后备
-                };
-
-                let mut builder = FnBuilder::new(
-                    decl.ident.clone(),
-                    ret_ty,
-                    type_pool.clone(),
-                    self.result.expr_type_map.clone(),
-                    self.result.let_type_map.clone(),
-                );
-
-                // param
-                if let TypeNodeKind::Fun { param_tys, .. } = &type_pool[fun_ty_id].kind {
-                    for (i, p) in params.iter().enumerate() {
-                        let ty = param_tys[i];
-                        builder.alloc_local(ty, false, Some(p.name.name.clone()));
-                        // TODO: 记录参数名→local 映射，以便支持 Ident
-                    }
-                }
-
-                if body.is_empty() {
-                    builder.set_terminator(TerminatorKind::Return);
-                } else {
-                    let last_idx = body.len().saturating_sub(1);
-                    for (i, &expr_id) in body.iter().enumerate() {
-                        builder.compile_expr(expr_id, &self.result.hir.hir_expr_pool);
-                    }
-                }
-
-                let (mut fun, local_blocks) = builder.finish();
-                // 将本地块合并到全局块池，并重映射索引
-                let base = global_blocks.len();
-                let new_blocks: Vec<BasicBlockId> =
-                    fun.blocks.iter().map(|&local| base + local).collect();
-                global_blocks.extend(local_blocks);
-                fun.blocks = new_blocks;
-                functions.push(fun);
-            } else if let HirDeclKind::External { .. } = &decl.kind {
-                todo!()
-            }
-        }
+        //
+        // for (decl_id, decl) in self.result.hir.hir_decl_pool.iter().enumerate() {
+        //     if let HirDeclKind::Fun {
+        //         params,
+        //         return_type,
+        //         body,
+        //         ..
+        //     } = &decl.kind
+        //     {
+        //         let scheme = self.result.decl_type_map.get(&decl_id).unwrap();
+        //         let fun_ty_id = scheme.body;
+        //         let ret_ty = if let TypeNodeKind::Fun { return_ty, .. } = &type_pool[fun_ty_id].kind {
+        //             *return_ty
+        //         } else {
+        //             type_pool
+        //                 .iter()
+        //                 .position(|n| n.kind == TypeNodeKind::Unit)
+        //                 .unwrap() // 后备
+        //         };
+        //
+        //         let mut builder = FnBuilder::new(
+        //             decl.ident.clone(),
+        //             ret_ty,
+        //             type_pool.clone(),
+        //             self.result.expr_type_map.clone(),
+        //             self.result.let_type_map.clone(),
+        //         );
+        //
+        //         // param
+        //         if let TypeNodeKind::Fun { param_tys, .. } = &type_pool[fun_ty_id].kind {
+        //             for (i, p) in params.iter().enumerate() {
+        //                 let ty = param_tys[i];
+        //                 builder.alloc_local(ty, false, Some(p.name.name.clone()));
+        //                 // TODO: 记录参数名→local 映射，以便支持 Ident
+        //             }
+        //         }
+        //
+        //         if body.is_empty() {
+        //             builder.set_terminator(TerminatorKind::Return);
+        //         } else {
+        //             let last_idx = body.len().saturating_sub(1);
+        //             for (i, &expr_id) in body.iter().enumerate() {
+        //                 builder.compile_expr(expr_id, &self.result.hir.hir_expr_pool);
+        //             }
+        //         }
+        //
+        //         let (mut fun, local_blocks) = builder.finish();
+        //         // 将本地块合并到全局块池，并重映射索引
+        //         let base = global_blocks.len();
+        //         let new_blocks: Vec<BasicBlockId> =
+        //             fun.blocks.iter().map(|&local| base + local).collect();
+        //         global_blocks.extend(local_blocks);
+        //         fun.blocks = new_blocks;
+        //         functions.push(fun);
+        //     } else if let HirDeclKind::External { .. } = &decl.kind {
+        //         todo!()
+        //     }
+        // }
 
         Ok(MirCrate {
             functions,

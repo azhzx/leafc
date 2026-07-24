@@ -678,6 +678,23 @@ impl<'a> NamePassApi<'a> for NamePass<'a> {
                     }
 
                     GreenDeclKind::TypeAlias { ref_to, generic_vars, has_abst, where_clause } => {
+                        let alias_scope_id = self.scope_pool.push_scope(
+                            Some(file_scope_id),
+                            ScopeKind::TypeAlias,
+                            Some(Arc::clone(&decl_red.inner)),
+                            Some(decl_span.clone()),
+                        );
+
+                        for gv in generic_vars {
+                            let gv_span = child_span(&decl_span, gv.relative_start, gv.node.text_len);
+                            self.scope_pool.add_symbol(
+                                alias_scope_id,
+                                gv.node.name.node.as_ref().name.clone(),
+                                gv_span,
+                                SymbolKind::Generic,
+                            );
+                        }
+
                         self.scope_pool.add_symbol(
                             file_scope_id,
                             decl_name.name.clone(),

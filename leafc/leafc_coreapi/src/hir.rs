@@ -212,6 +212,10 @@ pub enum HirExprKind {
         callee: HirExprId,
         args: Vec<HirExprId>,
     },
+    BuildVariant {
+        variant_name: HirName,
+        target: HirExprId,
+    },
     UnsafeExternalCall {
         callee: HirExprId,
         args: Vec<HirExprId>,

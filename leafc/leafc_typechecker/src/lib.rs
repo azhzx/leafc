@@ -1,8 +1,5 @@
 use leafc_coreapi::diagnostic::DiagMsg;
-use leafc_coreapi::hir::{
-    HirBinOp, HirCrate, HirDeclId, HirDeclKind, HirExprId, HirExprKind,
-    HirFieldDef, HirGenericParam, HirLit, HirName, HirParam, HirTypeName, HirUnaryOp,
-};
+use leafc_coreapi::hir::{HirBinOp, HirCrate, HirCtorDef, HirDeclId, HirDeclKind, HirExprId, HirExprKind, HirFieldDef, HirGenericParam, HirLit, HirName, HirParam, HirTypeName, HirUnaryOp};
 use leafc_coreapi::lang_items::BuiltinType;
 use leafc_coreapi::name_pass::NamePassResult;
 use leafc_coreapi::scope::SymId;
@@ -63,8 +60,8 @@ impl TypeChecker {
         let float32 = push(TypeNodeKind::Builtin(BuiltinType::F32));
         let float64 = push(TypeNodeKind::Builtin(BuiltinType::F64));
         let bool_ty = push(TypeNodeKind::Builtin(BuiltinType::Bool));
-        let unit = push(TypeNodeKind::Unit);
         let never = push(TypeNodeKind::Never);
+        let unit = push(TypeNodeKind::Tuple(vec![]));
         BuiltinTypes {
             int8, int16, int32, int64, uint8, uint16, uint32, uint64,
             float32, float64, bool_ty, unit, never,
@@ -119,6 +116,17 @@ impl TypeChecker {
 
             HirTypeName::Named { path, generics } => {
 
+                if let Some(scheme) = self.name_type_map.get(&path.sym_id).cloned() {
+                    if !generics.is_empty() {
+                        return Err(DiagMsg {
+                            title: format!("{:?}", TypeCheckerError::GenericArityMismatch),
+                            msg: format!("expected 0 type arguments, got {}", generics.len()),
+                            span: span.clone(),
+                        });
+                    }
+                    return Ok(self.instantiate(&scheme));
+                }
+
                 if let Some(builtin_ty) =
                     self.name_pass_result.lang_items.get_builtin_type_by_sym(path.sym_id) {
 
@@ -148,34 +156,23 @@ impl TypeChecker {
                     return Ok(ty_id);
                 }
 
-                if let Some(scheme) = self.name_type_map.get(&path.sym_id).cloned() {
-                    if !generics.is_empty() {
-                        return Err(DiagMsg {
-                            title: "GenericArityMismatch".into(),
-                            msg: format!("expected 0 type arguments, got {}", generics.len()),
-                            span: span.clone(),
-                        });
-                    }
-                    return Ok(self.instantiate(&scheme));
-                }
-
                 let decl_id = *self.sym_to_decl.get(&path.sym_id)
                     .ok_or_else(|| DiagMsg {
-                        title: "UndefinedType".into(),
+                        title: format!("{:?}", TypeCheckerError::UndefinedType),
                         msg: format!("type `{}` (sym {}) not declared in this crate", path.name, path.sym_id),
                         span: span.clone(),
                     })?;
 
                 let scheme = self.decl_type_map.get(&decl_id)
                     .ok_or_else(|| DiagMsg {
-                        title: "TypeNotChecked".into(),
+                        title: format!("{:?}", TypeCheckerError::TypeNotChecked),
                         msg: format!("type `{}` not yet fully checked", path.name),
                         span: span.clone(),
                     })?.clone();
 
                 if scheme.quantified.len() != generics.len() {
                     return Err(DiagMsg {
-                        title: "GenericArityMismatch".into(),
+                        title: format!("{:?}", TypeCheckerError::GenericArityMismatch),
                         msg: format!(
                             "expected {} type arguments, got {}",
                             scheme.quantified.len(),
@@ -196,59 +193,33 @@ impl TypeChecker {
 
             HirTypeName::Ref(inner) => {
                 let inner_ty = self.resolve_type_name(inner, span.clone())?;
-                Ok(self.intern_type(TypeNode {
-                    kind: TypeNodeKind::Ref(inner_ty),
-                    parent: 0,
-                    level: 0,
-                }))
+                Ok(self.new_compound(TypeNodeKind::Ref(inner_ty)))
             }
             HirTypeName::MutRef(inner) => {
                 let inner_ty = self.resolve_type_name(inner, span.clone())?;
-                Ok(self.intern_type(TypeNode {
-                    kind: TypeNodeKind::MutRef(inner_ty),
-                    parent: 0,
-                    level: 0,
-                }))
+                Ok(self.new_compound(TypeNodeKind::MutRef(inner_ty)))
             }
             HirTypeName::Share(inner) => {
                 let inner_ty = self.resolve_type_name(inner, span.clone())?;
-                Ok(self.intern_type(TypeNode {
-                    kind: TypeNodeKind::Share(inner_ty),
-                    parent: 0,
-                    level: 0,
-                }))
+                Ok(self.new_compound(TypeNodeKind::Share(inner_ty)))
             }
             HirTypeName::Tuple(elements) => {
                 let types: Vec<TyId> = elements.iter()
                     .map(|e| self.resolve_type_name(e, span.clone()))
                     .collect::<Result<_, _>>()?;
-                Ok(self.intern_type(TypeNode {
-                    kind: TypeNodeKind::Tuple(types),
-                    parent: 0,
-                    level: 0,
-                }))
+                Ok(self.new_compound(TypeNodeKind::Tuple(types)))
             }
             HirTypeName::Fun { params, return_type } => {
                 let param_tys: Vec<TyId> = params.iter()
                     .map(|p| self.resolve_type_name(p, span.clone()))
                     .collect::<Result<_, _>>()?;
                 let ret_ty = self.resolve_type_name(return_type, span.clone())?;
-                Ok(self.intern_type(TypeNode {
-                    kind: TypeNodeKind::Fun { param_tys, return_ty: ret_ty },
-                    parent: 0,
-                    level: 0,
-                }))
+                Ok(self.new_compound(TypeNodeKind::Fun { param_tys, return_ty: ret_ty }))
             }
             HirTypeName::Impl(inner) => {
                 todo!()
             }
         }
-    }
-
-    fn intern_type(&mut self, node: TypeNode) -> TyId {
-        let id = self.type_pool.len();
-        self.type_pool.push(node);
-        id
     }
 
     fn copy_type_with_subst(&mut self, ty: TyId, subst: &HashMap<TyId, TyId>) -> Result<TyId, DiagMsg> {
@@ -261,7 +232,7 @@ impl TypeChecker {
                     Ok(root)
                 }
             }
-            TypeNodeKind::Builtin(_) | TypeNodeKind::Never | TypeNodeKind::Unit => Ok(root),
+            TypeNodeKind::Builtin(_) | TypeNodeKind::Never => Ok(root),
             TypeNodeKind::Fun { param_tys, return_ty } => {
                 let new_params: Result<Vec<_>, _> = param_tys.iter()
                     .map(|&p| self.copy_type_with_subst(p, subst))
@@ -289,7 +260,16 @@ impl TypeChecker {
             },
             TypeNodeKind::Ref(_) => todo!(),
             TypeNodeKind::MutRef(_) => todo!(),
-            TypeNodeKind::Share(_) => todo!()
+            TypeNodeKind::Share(_) => todo!(),
+            TypeNodeKind::ADT { decl_id, subst: existing_subst } => {
+                let new_subst: Result<Vec<_>, _> = existing_subst.iter()
+                    .map(|&s| self.copy_type_with_subst(s, subst))
+                    .collect();
+                Ok(self.new_compound(TypeNodeKind::ADT {
+                    decl_id: decl_id,
+                    subst: new_subst?,
+                }))
+            }
         }
     }
 
@@ -301,11 +281,8 @@ impl TypeChecker {
         let k2 = self.type_pool[r2].kind.clone();
         match (&k1, &k2) {
             (TypeNodeKind::Never, _) => {
+                // Never <: T
                 self.type_pool[r1].parent = r2;
-                Ok(())
-            }
-            (_, TypeNodeKind::Never) => {
-                self.type_pool[r2].parent = r1;
                 Ok(())
             }
             (TypeNodeKind::Var, TypeNodeKind::Var) => {
@@ -333,8 +310,8 @@ impl TypeChecker {
                 TypeNodeKind::Fun { param_tys: p2, return_ty: r2 }) => {
                 if p1.len() != p2.len() {
                     return Err(DiagMsg {
-                        title: "ArityMismatch".into(),
-                        msg: format!("function arity mismatch: {} vs {}", p1.len(), p2.len()),
+                        title: format!("{:?}", TypeCheckerError::ArityMismatch),
+                        msg: format!("function arity mismatch: expect {}, got {}", p1.len(), p2.len()),
                         span,
                     });
                 }
@@ -344,7 +321,13 @@ impl TypeChecker {
                 self.unify(*r1, *r2, span)
             }
             (TypeNodeKind::Tuple(e1), TypeNodeKind::Tuple(e2)) => {
-                if e1.len() != e2.len() { /* ... */ }
+                if e1.len() != e2.len() {
+                    return Err(DiagMsg {
+                        title: format!("{:?}", TypeCheckerError::ArityMismatch),
+                        msg: format!("tuple arity mismatch: expect {}, got {}", e1.len(), e2.len()),
+                        span,
+                    });
+                }
                 for (&a, &b) in e1.iter().zip(e2.iter()) {
                     self.unify(a, b, span.clone())?;
                 }
@@ -352,15 +335,59 @@ impl TypeChecker {
             }
             (TypeNodeKind::Struct { decl_id: d1, subst: s1 },
                 TypeNodeKind::Struct { decl_id: d2, subst: s2 }) if d1 == d2 => {
-                if s1.len() != s2.len() { /* ... */ }
+                if s1.len() != s2.len() {
+                    return Err(DiagMsg {
+                        title: format!("{:?}", TypeCheckerError::ArityMismatch),
+                        msg: format!("struct arity mismatch: expect {}, got {}", s1.len(), s2.len()),
+                        span,
+                    });
+                }
                 for (&a, &b) in s1.iter().zip(s2.iter()) {
-                    self.unify(a, b, span.clone())?;
+                    if let Err(e) = self.unify(a, b, span.clone()) {
+                        return Err(DiagMsg {
+                            title: format!("{:?}", TypeCheckerError::TypeMismatch),
+                            msg: format!(
+                                "expected {}, but got {}",
+                                self.ty_to_string(t2),
+                                self.ty_to_string(t1)
+                            ),
+                            span,
+                        });
+                    }
+                }
+                Ok(())
+            }
+            (TypeNodeKind::ADT { decl_id: d1, subst: s1 },
+                TypeNodeKind::ADT { decl_id: d2, subst: s2 }) if d1 == d2 => {
+                if s1.len() != s2.len() {
+                    return Err(DiagMsg {
+                        title: format!("{:?}", TypeCheckerError::ArityMismatch),
+                        msg: format!("ADT arity mismatch: expect {}, got {}", s1.len(), s2.len()),
+                        span,
+                    });
+                }
+                for (&a, &b) in s1.iter().zip(s2.iter()) {
+                    if let Err(e) = self.unify(a, b, span.clone()) {
+                        return Err(DiagMsg {
+                            title: format!("{:?}", TypeCheckerError::TypeMismatch),
+                            msg: format!(
+                                "expected {}, but got {}",
+                                self.ty_to_string(t2),
+                                self.ty_to_string(t1)
+                            ),
+                            span,
+                        });
+                    }
                 }
                 Ok(())
             }
             _ => Err(DiagMsg {
-                title: "TypeMismatch".into(),
-                msg: format!("cannot unify {:?} with {:?}", k1, k2),
+                title: format!("{:?}", TypeCheckerError::TypeMismatch),
+                msg: format!(
+                    "expected \"{}\", but got \"{}\"",
+                    self.ty_to_string(r2),
+                    self.ty_to_string(r1)
+                ),
                 span,
             }),
         }
@@ -370,7 +397,7 @@ impl TypeChecker {
         let root = self.representative(ty);
         if root == var {
             return Err(DiagMsg {
-                title: "InfiniteType".into(),
+                title: format!("{:?}", TypeCheckerError::InfiniteType),
                 msg: "infinite type detected".into(),
                 span,
             });
@@ -457,22 +484,24 @@ impl TypeChecker {
         let ty = match &expr.kind {
             HirExprKind::Lit(lit) => self.infer_lit(lit)?,
             HirExprKind::Ident(name) => {
-                if let Some(scheme) = self.name_type_map.get(&name.sym_id).cloned() {
-                    return Ok(self.instantiate(&scheme));
-                }
-                let decl_id = *self.sym_to_decl.get(&name.sym_id)
-                    .ok_or_else(|| DiagMsg {
-                        title: "UndefinedVariable".into(),
-                        msg: format!("undefined variable `{}`", name.name),
-                        span: self.hir_name_span(name, span.clone()),
-                    })?;
-                let scheme = self.decl_type_map.get(&decl_id)
-                    .ok_or_else(|| DiagMsg {
-                        title: "TypeNotChecked".into(),
-                        msg: format!("type of `{}` not yet checked", name.name),
-                        span: self.hir_name_span(name, span.clone()),
-                    })?.clone();
-                self.instantiate(&scheme)
+                let ty = if let Some(scheme) = self.name_type_map.get(&name.sym_id).cloned() {
+                    self.instantiate(&scheme)
+                } else {
+                    let decl_id = *self.sym_to_decl.get(&name.sym_id)
+                        .ok_or_else(|| DiagMsg {
+                            title: format!("{:?}", TypeCheckerError::UndefinedVariable),
+                            msg: format!("undefined variable `{}`", name.name),
+                            span: self.hir_name_span(name, span.clone()),
+                        })?;
+                    let scheme = self.decl_type_map.get(&decl_id)
+                        .ok_or_else(|| DiagMsg {
+                            title: format!("{:?}", TypeCheckerError::TypeNotChecked),
+                            msg: format!("type of `{}` not yet checked", name.name),
+                            span: self.hir_name_span(name, span.clone()),
+                        })?.clone();
+                    self.instantiate(&scheme)
+                };
+                ty
             }
             HirExprKind::Binary { left, right, op } =>
                 self.infer_binary(*left, *right, *op, &span)?,
@@ -489,12 +518,24 @@ impl TypeChecker {
             HirExprKind::Tuple { elements } =>
                 self.infer_tuple(elements, expected, &span)?,
             HirExprKind::Return { expr } =>
-                self.infer_return(expr.as_ref(), &span)?,
+                self.infer_return(expr.as_ref(), expected, &span)?,
             HirExprKind::TypeCast { expr, type_ann } =>
                 self.infer_cast(*expr, type_ann, &span)?,
-            HirExprKind::Move { target } | HirExprKind::Copy { target } |
-            HirExprKind::Ref { target } | HirExprKind::MutRef { target } |
-            HirExprKind::Share { target } => self.infer_expr(*target, expected)?,
+            HirExprKind::Move { target } | HirExprKind::Copy { target } => {
+                self.infer_expr(*target, expected)?
+            }
+            HirExprKind::Ref { target } => {
+                let target_ty = self.infer_expr(*target, None)?;
+                self.new_compound(TypeNodeKind::Ref(target_ty))
+            }
+            HirExprKind::MutRef { target } => {
+                let target_ty = self.infer_expr(*target, None)?;
+                self.new_compound(TypeNodeKind::MutRef(target_ty))
+            }
+            HirExprKind::Share { target } => {
+                let target_ty = self.infer_expr(*target, None)?;
+                self.new_compound(TypeNodeKind::Share(target_ty))
+            }
 
             HirExprKind::FieldAccess { obj, field } => {
 
@@ -509,14 +550,14 @@ impl TypeChecker {
                                 let field_def = fields.iter()
                                     .find(|f| f.name.name == *field)
                                     .ok_or_else(|| DiagMsg {
-                                        title: "FieldNotFound".into(),
+                                        title: format!("{:?}", TypeCheckerError::FieldNotFound),
                                         msg: format!("struct `{}` has no field named `{}`", decl.ident, field),
                                         span: span.clone(),
                                     })?;
                                 (field_def.type_ann.clone(), subst.clone(), generic_params.clone())
                             }
                             _ => return Err(DiagMsg {
-                                title: "TypeMismatch".into(),
+                                title: format!("{:?}", TypeCheckerError::TypeMismatch),
                                 msg: "type is not a struct".into(),
                                 span: span.clone(),
                             }),
@@ -546,7 +587,7 @@ impl TypeChecker {
                 }
 
                 return Err(DiagMsg {
-                    title: "TypeMismatch".into(),
+                    title: format!("{:?}", TypeCheckerError::TypeMismatch),
                     msg: format!("cannot access field `{}` on non‑struct type", field),
                     span: span.clone(),
                 })
@@ -566,7 +607,7 @@ impl TypeChecker {
                     (*decl_id, subst.clone())
                 } else {
                     return Err(DiagMsg {
-                        title: "TypeMismatch".into(),
+                        title: format!("{:?}", TypeCheckerError::TypeMismatch),
                         msg: "expected struct type".into(),
                         span: span.clone(),
                     });
@@ -576,7 +617,7 @@ impl TypeChecker {
                 let (generic_params, struct_fields) = match &decl.kind {
                     HirDeclKind::Struct { generic_params, fields, .. } => (generic_params.clone(), fields.clone()),
                     _ => return Err(DiagMsg {
-                        title: "InternalError".into(),
+                        title: format!("{:?}", TypeCheckerError::InternalError),
                         msg: "struct decl_id points to non‑struct".into(),
                         span: span.clone(),
                     }),
@@ -597,7 +638,7 @@ impl TypeChecker {
                     let def = struct_fields.iter()
                         .find(|f| f.name.name == *field_name)
                         .ok_or_else(|| DiagMsg {
-                            title: "UnknownField".into(),
+                            title: format!("{:?}", TypeCheckerError::UnknownField),
                             msg: format!("struct `{}` has no field `{}`", decl.ident, field_name),
                             span: span.clone(),
                         })?;
@@ -611,6 +652,43 @@ impl TypeChecker {
                 }
 
                 struct_ty
+            },
+            HirExprKind::BuildVariant { variant_name, target } => {
+                let scheme = self.name_type_map.get(&variant_name.sym_id)
+                    .ok_or_else(|| DiagMsg {
+                        title: format!("{:?}", TypeCheckerError::UndefinedVariable),
+                        msg: format!("constructor `{}` not found", variant_name.name),
+                        span: self.hir_name_span(variant_name, span.clone()),
+                    })?
+                    .clone();
+                let ctor_ty = self.instantiate(&scheme);
+
+                let arg_ty = self.infer_expr(*target, None)?;
+                let root = self.representative(ctor_ty);
+
+                let (param_ty, result_ty) = match &self.type_pool[root].kind {
+                    TypeNodeKind::ADT { .. } => (self.builtin.unit, ctor_ty),
+                    TypeNodeKind::Fun { param_tys, return_ty } => {
+                        if param_tys.len() != 1 {
+                            return Err(DiagMsg {
+                                title: format!("{:?}", TypeCheckerError::ArityMismatch),
+                                msg: format!("constructor expects exactly 1 argument, got {}", param_tys.len()),
+                                span: span.clone(),
+                            });
+                        }
+                        (param_tys[0], *return_ty)
+                    }
+                    _ => {
+                        return Err(DiagMsg {
+                            title: format!("{:?}", TypeCheckerError::TypeMismatch),
+                            msg: format!("constructor `{}` has unexpected type", variant_name.name),
+                            span: span.clone(),
+                        });
+                    }
+                };
+
+                self.unify(arg_ty, param_ty, span.clone())?;
+                result_ty
             }
 
         };
@@ -688,7 +766,14 @@ impl TypeChecker {
         self.infer_expr(stmts[last_idx], expected)
     }
 
-    fn infer_let(&mut self, let_expr_id: HirExprId, name: &HirName, type_ann: Option<&HirTypeName>, init: HirExprId, span: &Span) -> Result<TyId, DiagMsg> {
+    fn infer_let(
+        &mut self,
+        let_expr_id: HirExprId,
+        name: &HirName,
+        type_ann: Option<&HirTypeName>,
+        init: HirExprId,
+        span: &Span
+    ) -> Result<TyId, DiagMsg> {
         let init_ty = self.infer_expr(init, None)?;
         let init_ty = self.representative(init_ty);
 
@@ -739,9 +824,9 @@ impl TypeChecker {
         Ok(self.new_compound(TypeNodeKind::Tuple(elem_tys)))
     }
 
-    fn infer_return(&mut self, expr: Option<&HirExprId>, _span: &Span) -> Result<TyId, DiagMsg> {
+    fn infer_return(&mut self, expr: Option<&HirExprId>, expected: Option<TyId>, _span: &Span) -> Result<TyId, DiagMsg> {
         if let Some(e) = expr {
-            self.infer_expr(*e, None)?;
+            self.infer_expr(*e, expected)?;
         }
         Ok(self.builtin.never)
     }
@@ -764,8 +849,12 @@ impl TypeChecker {
             HirDeclKind::External { params, return_type, .. } => {
                 self.check_external(decl_id, params, return_type)
             }
-            HirDeclKind::ADT { .. } => todo!("ADT not yet supported"),
-            HirDeclKind::TypeAlias { .. } => todo!("type alias not yet supported"),
+            HirDeclKind::ADT { generic_params, ctors, .. } => {
+                self.check_adt(decl_id, generic_params, ctors)
+            }
+            HirDeclKind::TypeAlias { generic_params, alias_for } => {
+                self.check_type_alias(decl_id, generic_params, alias_for)
+            }
             HirDeclKind::Abstract { .. } => todo!("abstract type not yet supported"),
             HirDeclKind::CType => Ok(()),
             HirDeclKind::TypeDecl => Ok(()),
@@ -780,14 +869,15 @@ impl TypeChecker {
 
         self.current_level += 1;
 
-        let mut gen_vars = Vec::new();
         for gp in generic_params {
             let tv = self.new_type_var();
-            gen_vars.push(tv);
             self.name_type_map.insert(gp.name.sym_id, TypeScheme { quantified: vec![], body: tv });
         }
 
         let mut param_tys = Vec::new();
+        let has_all_param_ty_ann = params.iter().all(|p|
+            p.type_ann.is_some()
+        );
         for p in params {
             let p_ty = if let Some(ann) = &p.type_ann {
                 self.resolve_type_name(ann, p.span.clone())?
@@ -798,12 +888,12 @@ impl TypeChecker {
             param_tys.push(p_ty);
         }
 
-
         let ret_ty = if let Some(rt) = return_type {
             self.resolve_type_name(rt, self.hir_crate.hir_decl_pool[decl_id].span.clone())?
         } else {
             self.new_type_var()
         };
+        let has_ret_ty_ann = return_type.is_some();
 
 
         let body_ty = if body.is_empty() {
@@ -835,6 +925,75 @@ impl TypeChecker {
         // 先清理环境再泛化
         self.current_level = saved_level;
         let scheme = self.generalize(fun_ty);
+        self.decl_type_map.insert(decl_id, scheme);
+
+
+        // pub external fun 不能省ann
+        if self.hir_crate.pub_decl_ids.contains(&decl_id)
+            && (!has_all_param_ty_ann || !has_ret_ty_ann) {
+
+            return Err(DiagMsg {
+                title: format!("{:?}", TypeCheckerError::MissingTypeAnnotation),
+                msg: "pub(external) function parameters must have type annotations".into(),
+                span: self.hir_crate.hir_decl_pool[decl_id].span.clone(),
+            });
+        }
+
+        Ok(())
+    }
+
+    fn check_adt(
+        &mut self,
+        decl_id: HirDeclId,
+        generic_params: &[HirGenericParam],
+        ctors: &[HirCtorDef],
+    ) -> Result<(), DiagMsg> {
+        let saved_level = self.current_level;
+        self.current_level += 1;
+
+        let mut gen_vars = Vec::new();
+        for gp in generic_params {
+            let tv = self.new_type_var();
+            gen_vars.push(tv);
+            self.name_type_map.insert(gp.name.sym_id, TypeScheme { quantified: vec![], body: tv });
+        }
+
+        let adt_ty = self.new_compound(TypeNodeKind::ADT {
+            decl_id,
+            subst: gen_vars.clone(),
+        });
+
+        for ctor in ctors {
+            let param_ty = if let Some(from_type) = &ctor.from_type {
+                self.resolve_type_name(from_type, ctor.span.clone())?
+            } else {
+                self.builtin.unit
+            };
+            let ctor_ty = if ctor.from_type.is_some() {
+                self.new_compound(TypeNodeKind::Fun {
+                    param_tys: vec![param_ty],
+                    return_ty: adt_ty,
+                })
+            } else {
+                adt_ty
+            };
+            let scheme = TypeScheme {
+                quantified: gen_vars.clone(),
+                body: ctor_ty,
+            };
+            self.name_type_map.insert(ctor.name.sym_id, scheme);
+        }
+
+        for gp in generic_params {
+            self.name_type_map.remove(&gp.name.sym_id);
+        }
+
+        self.current_level = saved_level;
+
+        let scheme = TypeScheme {
+            quantified: gen_vars,
+            body: adt_ty,
+        };
         self.decl_type_map.insert(decl_id, scheme);
 
         Ok(())
@@ -879,7 +1038,7 @@ impl TypeChecker {
                 self.resolve_type_name(ann, p.span.clone())?
             } else {
                 return Err(DiagMsg {
-                    title: "MissingTypeAnnotation".into(),
+                    title: format!("{:?}", TypeCheckerError::MissingTypeAnnotation),
                     msg: "external function parameters must have type annotations".into(),
                     span: p.span.clone(),
                 });
@@ -889,6 +1048,43 @@ impl TypeChecker {
         let ret_ty = self.resolve_type_name(return_type, self.hir_crate.hir_decl_pool[decl_id].span.clone())?;
         let fun_ty = self.new_compound(TypeNodeKind::Fun { param_tys, return_ty: ret_ty });
         self.decl_type_map.insert(decl_id, TypeScheme { quantified: vec![], body: fun_ty });
+        Ok(())
+    }
+
+    fn check_type_alias(
+        &mut self,
+        decl_id: HirDeclId,
+        generic_params: &[HirGenericParam],
+        alias_for: &HirTypeName,
+    ) -> Result<(), DiagMsg> {
+        let saved_level = self.current_level;
+        self.current_level += 1;
+
+        let mut gen_vars = Vec::new();
+        for gp in generic_params {
+            let tv = self.new_type_var();
+            gen_vars.push(tv);
+            self.name_type_map.insert(
+                gp.name.sym_id,
+                TypeScheme { quantified: vec![], body: tv },
+            );
+        }
+
+        let span = self.hir_crate.hir_decl_pool[decl_id].span.clone();
+        let body_ty = self.resolve_type_name(alias_for, span)?;
+
+        for gp in generic_params {
+            self.name_type_map.remove(&gp.name.sym_id);
+        }
+
+        self.current_level = saved_level;
+
+        let scheme = TypeScheme {
+            quantified: gen_vars,
+            body: body_ty,
+        };
+        self.decl_type_map.insert(decl_id, scheme);
+
         Ok(())
     }
 
@@ -903,6 +1099,59 @@ impl TypeChecker {
                 }
             }
         }
+    }
+
+    fn ty_kind_to_string(&self, kind: &TypeNodeKind) -> String {
+        match kind {
+            TypeNodeKind::Builtin(b) => format!("{:?}", b),
+            TypeNodeKind::Var => "_".to_string(),
+            TypeNodeKind::Never => "Never".to_string(),
+            TypeNodeKind::Fun { param_tys, return_ty } => {
+                let params: Vec<String> = param_tys.iter()
+                    .map(|&p| self.ty_to_string(p))
+                    .collect();
+                format!("({}) -> {}", params.join(", "), self.ty_to_string(*return_ty))
+            }
+            TypeNodeKind::Tuple(elems) => {
+                let elems: Vec<String> = elems.iter()
+                    .map(|&e| self.ty_to_string(e))
+                    .collect();
+                format!("({})", elems.join(", "))
+            }
+            TypeNodeKind::Struct { decl_id, subst } => {
+                let ident = self.hir_crate.hir_decl_pool[*decl_id].ident.clone();
+                let subst_str: Vec<String> = subst.iter().map(|&s| self.ty_to_string(s)).collect();
+                format!("{}{}", ident, if subst_str.is_empty() {
+                    String::new()
+                } else {
+                    format!("[{}]", subst_str.join(", "))
+                })
+            }
+            TypeNodeKind::Ref(inner) => format!("ref {}", self.ty_to_string(*inner)),
+            TypeNodeKind::MutRef(inner) => format!("ref mut {}", self.ty_to_string(*inner)),
+            TypeNodeKind::Share(inner) => format!("share {}", self.ty_to_string(*inner)),
+            TypeNodeKind::ADT { decl_id, subst } => {
+                let ident = self.hir_crate.hir_decl_pool[*decl_id].ident.clone();
+                let subst_str: Vec<String> = subst.iter().map(|&s| self.ty_to_string(s)).collect();
+                format!("{}{}", ident, if subst_str.is_empty() {
+                    String::new()
+                } else {
+                    format!("[{}]", subst_str.join(", "))
+                })
+            }
+        }
+    }
+
+    fn get_root(&self, mut id: TyId) -> TyId {
+        while self.type_pool[id].parent != id {
+            id = self.type_pool[id].parent;
+        }
+        id
+    }
+
+    fn ty_to_string(&self, ty: TyId) -> String {
+        let root = self.get_root(ty);
+        self.ty_kind_to_string(&self.type_pool[root].kind)
     }
 }
 

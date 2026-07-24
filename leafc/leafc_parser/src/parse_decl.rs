@@ -5,7 +5,7 @@ use leafc_coreapi::ast::{
     , IdentName, Visibility,
 };
 use leafc_coreapi::diagnostic::DiagMsg;
-use leafc_coreapi::lexer::TokenType;
+use leafc_coreapi::token::TokenType;
 use leafc_coreapi::parser::ParserError;
 use leafc_coreapi::source::Span;
 use std::sync::Arc;

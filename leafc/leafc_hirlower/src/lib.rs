@@ -112,6 +112,14 @@ impl<'a> HirLower<'a> {
                     sym = found_sym;
                     current_scope = found_scope;
                 }
+                SymbolKind::Generic => {
+                    // 泛型参数不能有后续路径段
+                    return Err(DiagMsg {
+                        title: format!("{:?}", HirLowerError::InvalidPath),
+                        msg: format!("generic parameter `{}` cannot have members", sym.name),
+                        span: seg_span.clone(),
+                    });
+                }
                 _ => {
                     return Err(DiagMsg {
                         title: format!("{:?}", HirLowerError::InvalidPath),
@@ -578,11 +586,42 @@ impl<'a> HirLower<'a> {
             }
 
             GreenExprKind::Call { callee, args } => {
+                if let GreenExprKind::StaticPath { path } = &callee.node.kind {
+                    let callee_span = child_span_of(&span, callee);
+                    let callee_name = self.resolve_static_path(&path.node, scope_id, &callee_span)?;
+                    let sym = self.name_pass_result.pool.get_symbol_by_id(callee_name.sym_id)
+                        .ok_or_else(|| DiagMsg {
+                            title: format!("{:?}", HirLowerError::SymbolNotFound),
+                            msg: format!("symbol not found for {}", callee_name.name),
+                            span: callee_span.clone(),
+                        })?;
+                    if let SymbolKind::Constructor = sym.kind {
+                        // 构造子只支持一个参数
+                        if args.len() == 1 {
+                            let arg_id = self.lower_expr(&expr_red.child_to_red(&args[0]), scope_id)?;
+                            let kind = HirExprKind::BuildVariant {
+                                variant_name: callee_name,
+                                target: arg_id,
+                            };
+                            let hir_id = self.hir.hir_expr_pool.len();
+                            self.hir.hir_expr_pool.push(HirExpr { kind, hir_id, span: span.clone() });
+                            return Ok(hir_id);
+                        } else {
+                            return Err(DiagMsg {
+                                title: format!("{:?}", HirLowerError::ArityMismatch),
+                                msg: format!("constructor `{}` expects 1 argument, got {}", callee_name.name, args.len()),
+                                span: span.clone(),
+                            });
+                        }
+                    }
+                }
+
                 let callee_id = self.lower_expr(&expr_red.child_to_red(callee), scope_id)?;
                 let arg_ids = args
                     .iter()
                     .map(|a| self.lower_expr(&expr_red.child_to_red(a), scope_id))
                     .collect::<Result<_, _>>()?;
+
                 HirExprKind::Call { callee: callee_id, args: arg_ids }
             }
 
@@ -596,6 +635,26 @@ impl<'a> HirLower<'a> {
             }
 
             GreenExprKind::StaticPath { path } => {
+                if let Ok(path_name) = self.resolve_static_path(&path.node, scope_id, &span) {
+                    if let Some(sym) = self.name_pass_result.pool.get_symbol_by_id(path_name.sym_id) {
+                        if let SymbolKind::Constructor = sym.kind {
+                            let unit_id = self.hir.hir_expr_pool.len();
+                            self.hir.hir_expr_pool.push(HirExpr {
+                                kind: HirExprKind::Tuple { elements: vec![] },
+                                hir_id: unit_id,
+                                span: span.clone(),
+                            });
+                            let kind = HirExprKind::BuildVariant {
+                                variant_name: path_name,
+                                target: unit_id,
+                            };
+                            let hir_id = self.hir.hir_expr_pool.len();
+                            self.hir.hir_expr_pool.push(HirExpr { kind, hir_id, span: span.clone() });
+                            return Ok(hir_id);
+                        }
+                    }
+                }
+
                 let segments = &path.node.segments;
                 if segments.is_empty() {
                     return Err(DiagMsg {
@@ -984,9 +1043,15 @@ impl<'a> HirLower<'a> {
             }
 
             GreenDeclKind::TypeAlias { ref_to, generic_vars, .. } => {
-                let generic_params = self.lower_generic_params(generic_vars, decl_scope, &span)?;
+                let alias_scope = self.name_pass_result.pool.decl_node_scope_map
+                    .get(&decl_red.inner)
+                    .copied()
+                    .unwrap_or(file_scope_id); // fallback
+
                 let alias_span = child_span_of(&span, ref_to);
-                let alias_for = self.lower_type_name(&ref_to.node, decl_scope, alias_span)?;
+                let alias_for = self.lower_type_name(&ref_to.node, alias_scope, alias_span)?;
+
+                let generic_params = self.lower_generic_params(generic_vars, alias_scope, &span)?;
                 HirDeclKind::TypeAlias {
                     generic_params,
                     alias_for,
@@ -1007,11 +1072,12 @@ impl<'a> HirLower<'a> {
                             .map(|name| HirTypeName::Named { path: name, generics: vec![] })
                     })
                     .collect::<Result<_, _>>()?;
-                // 构造子属于文件作用域，而非 ADT 内部作用域
+
                 let hir_ctors = ctors
                     .iter()
-                    .map(|c| self.lower_ctor_def(c, file_scope_id, &span))
+                    .map(|c| self.lower_ctor_def(c, decl_scope, &span))   // 使用 decl_scope
                     .collect::<Result<_, _>>()?;
+
                 HirDeclKind::ADT {
                     generic_params,
                     ctors: hir_ctors,

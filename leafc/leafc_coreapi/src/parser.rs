@@ -3,10 +3,7 @@ use std::path::PathBuf;
 use crate::ast::CrateAst;
 use crate::crate_meta::{OperatorDef, OperatorKind};
 use crate::diagnostic::DiagMsg;
-use crate::lexer::{Token, TokenStream};
-use crate::scope::ScopePool;
-use crate::source::{AbsPathSourceMap, Source, SourceId, SourcePool, Span};
-
+use crate::source::{AbsPathSourceMap, SourcePool};
 #[derive(Debug)]
 pub enum ParserError {
     TokenExpect,

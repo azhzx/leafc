@@ -6,10 +6,18 @@ use crate::type_system::{HirDeclTypeMap, HirExprTypeMap, LetExprIdTypeMap};
 
 #[derive(Debug)]
 pub enum TypeCheckerError {
-   DuplicateType,
-   InfiniteType,
-   TypeMismatch,
+    DuplicateType,
+    InfiniteType,
+    TypeMismatch,
     GenericArityMismatch,
+    ArityMismatch,
+    UndefinedVariable,
+    TypeNotChecked,
+    FieldNotFound,
+    InternalError,
+    UnknownField,
+    MissingTypeAnnotation,
+    UndefinedType,
 }
 
 pub struct TypeCheckerResult {

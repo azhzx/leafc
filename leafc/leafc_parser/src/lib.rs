@@ -4,10 +4,10 @@ mod parse_decl;
 
 use intervaltree::IntervalTree;
 use leafc_coreapi;
-use leafc_coreapi::ast::{CrateAst, FileRedUnit, GreenAnnotation, GreenChild, GreenDecl, GreenFileUnit, GreenGenericVar, GreenPureStaticPath, GreenTupleElement, GreenWhereClause, GreenWhereConstraint, IdentName, TypeName, Visibility};
+use leafc_coreapi::ast::{CrateAst, FileRedUnit, GreenAnnotation, GreenChild, GreenDecl, GreenFileUnit, GreenPureStaticPath, GreenTupleElement, GreenWhereClause, GreenWhereConstraint, IdentName, TypeName, Visibility};
 use leafc_coreapi::crate_meta::{BuiltinOperator, OperatorDef, OperatorKind};
 use leafc_coreapi::diagnostic::DiagMsg;
-use leafc_coreapi::lexer::{LexerApi, Token, TokenStream, TokenType};
+use leafc_coreapi::lexer::{LexerApi, TokenStream};
 use leafc_coreapi::parser::{ParserApi, ParserError};
 use leafc_coreapi::source::{AbsPathSourceMap, SourceId, SourcePool, Span};
 use leafc_coreapi::tokens_pass::TokenPassApi;
@@ -16,6 +16,7 @@ use leafc_tokenpass::Preprocessor;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use leafc_coreapi::token::{Token, TokenType};
 
 pub struct Parser<'a> {
     pub dir_abs_path: PathBuf,
@@ -72,7 +73,8 @@ impl<'a> Parser<'a> {
 
         Err(DiagMsg {
             title: format!("{:?}", ParserError::TokenExpect),
-            msg: format!("expected <token \"{:?}\"> but got <token \"{:?}\">", expected, tok.kind),
+            msg: format!("expected <{:?}> but got {:?}",
+                         expected, tok.text),
             span: tok.span.clone(),
         })
     }
@@ -551,7 +553,7 @@ impl<'a> Parser<'a> {
                 }
                 TokenType::NewLine => self.skip_token(),
                 _ => {
-                    return Err(DiagMsg{
+                    return Err(DiagMsg {
                         title: format!("{:?}", ParserError::InvalidTopDeclaration),
                         msg: "invalid top declare".to_string(),
                         span: self.current_token().span.clone(),
@@ -707,7 +709,7 @@ impl<'a> Parser<'a> {
                 }
                 TokenType::NewLine => self.skip_token(),
                 _ => {
-                    return Err(DiagMsg{
+                    return Err(DiagMsg {
                         title: format!("{:?}", ParserError::InvalidTopDeclaration),
                         msg: "invalid top declare".to_string(),
                         span: self.current_token().span.clone(),

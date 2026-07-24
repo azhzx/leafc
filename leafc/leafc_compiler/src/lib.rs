@@ -80,7 +80,7 @@ impl NativeCompiler {
         Ok(())
     }
 
-    // 辅助函数：根据文件单元构建声明区间树
+    /// 根据文件单元构建声明区间树
     fn build_decl_tree(file_unit: &leafc_coreapi::ast::FileRedUnit) -> IntervalTree<usize, Arc<GreenDecl>> {
         let elements: Vec<Element<usize, Arc<GreenDecl>>> = file_unit.green.top_decls
             .iter()

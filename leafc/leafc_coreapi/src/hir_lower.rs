@@ -19,6 +19,8 @@ pub enum HirLowerError {
     CtorNotFound,
     NameNotFound,
     LetNameNotFound,
+    ArityMismatch,
+    SymbolNotFound,
 }
 
 

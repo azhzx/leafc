@@ -2,7 +2,7 @@ use crate::Parser;
 use leafc_coreapi::ast::{AtomExprNode, ExprRedNode, GreenCatchClause, GreenChild, GreenElseIf, GreenExpr, GreenExprKind, GreenMatchArm, GreenPattern, GreenPureStaticPath, GreenStructFieldInit, HasTextLen, IdentName, TypeName};
 use leafc_coreapi::crate_meta::OperatorKind;
 use leafc_coreapi::diagnostic::DiagMsg;
-use leafc_coreapi::lexer::TokenType;
+use leafc_coreapi::token::TokenType;
 use leafc_coreapi::operators::{token_type_to_operator, Operator};
 use leafc_coreapi::parser::ParserError;
 use leafc_coreapi::source::Span;

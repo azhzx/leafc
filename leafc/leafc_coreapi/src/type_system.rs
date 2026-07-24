@@ -33,8 +33,11 @@ pub enum TypeNodeKind {
         subst: Vec<TyId>,
     },
     Tuple(Vec<TyId>),
+    ADT {
+        decl_id: HirDeclId,
+        subst: Vec<TyId>,
+    },
     Never,
-    Unit,
 }
 
 #[derive(Debug, Clone)]

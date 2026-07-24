@@ -1,11 +1,10 @@
 use std::collections::{HashMap, HashSet};
-use std::fmt::format;
 use leafc_coreapi::diagnostic::DiagMsg;
-use leafc_coreapi::lexer::{Token, TokenStream, TokenType};
-use leafc_coreapi::lexer::TokenType::{Comma, Eof, Ident, KwAbst, Lparen, Rparen, NewLine};
-use leafc_coreapi::parser::ParserError;
+use leafc_coreapi::lexer::TokenStream;
+use leafc_coreapi::token::TokenType::{Comma, Ident, Lparen, Rparen};
 use leafc_coreapi::source::{SourceId, Span};
 use leafc_coreapi::tokens_pass::{TokenPassApi, TokenPassError};
+use leafc_coreapi::token::{Token, TokenType};
 
 const KEYWORD_PREPROCESS: &str = "__define";
 
@@ -39,7 +38,7 @@ const PP_FUNCTION_ARGS_OPTION: &str = "__only_has_rest_args";
 
 const REST_ARGS_MARKER: &str = "__rest_args";
 
-const PRE_DEFINES: [(&str, isize); 2] = [
+const PRE_DEFINES: [(&str, isize); 3] = [
     if cfg!(target_os = "windows") {
         ("__windows", 1)
     } else if cfg!(target_os = "macos") {
@@ -49,15 +48,13 @@ const PRE_DEFINES: [(&str, isize); 2] = [
     } else {
         ("__unknown", 1)
     },
+    if cfg!(target_pointer_width = "64") {
+        ("__target_pointer_width", 64)
+    } else {
+        ("__target_pointer_width", 32)
+    },
     ("version", 1),
 ];
-
-#[derive(PartialEq)]
-enum IfKeyword {
-    Elif,
-    Else,
-    Endif,
-}
 
 #[derive(Debug, Clone)]
 struct PPDef {
@@ -77,143 +74,161 @@ pub struct Preprocessor<'a> {
 }
 
 impl<'a> Preprocessor<'a> {
-    pub fn eval(&self, tokens: Vec<Token>) -> isize {
+    fn token_at<'b>(&self, tokens: &'b [Token], index: usize) -> Result<&'b Token, DiagMsg> {
+        tokens.get(index).ok_or_else(|| DiagMsg {
+            title: "PreprocessorInternalError".to_string(),
+            msg: "invalid syntax".to_string(),
+            span: Span {
+                source_id: self.source,
+                start_off: 0,
+                end_off: 0,
+            },
+        })
+    }
+
+    pub fn eval(&self, tokens: Vec<Token>) -> Result<isize, DiagMsg> {
         let mut index = 0;
         self.eval_logic(&tokens, &mut index)
     }
 
-    fn eval_logic(&self, tokens: &[Token], index: &mut usize) -> isize {
-        let left = self.eval_not(tokens, index);
+    fn eval_logic(&self, tokens: &[Token], index: &mut usize) -> Result<isize, DiagMsg> {
+        let left = self.eval_not(tokens, index)?;
         while *index < tokens.len() {
-            match tokens[*index].kind {
+            match self.token_at(tokens, *index)?.kind {
                 TokenType::KwAnd => {
                     *index += 1;
-                    let right = self.eval_not(tokens, index);
-                    return (left != 0 && right != 0) as isize;
+                    let right = self.eval_not(tokens, index)?;
+                    return Ok((left != 0 && right != 0) as isize);
                 }
                 TokenType::KwOr => {
                     *index += 1;
-                    let right = self.eval_not(tokens, index);
-                    return (left != 0 || right != 0) as isize;
+                    let right = self.eval_not(tokens, index)?;
+                    return Ok((left != 0 || right != 0) as isize);
                 }
                 _ => break,
             }
         }
-        left
+        Ok(left)
     }
 
-    fn eval_not(&self, tokens: &[Token], index: & mut usize) -> isize {
-        match tokens[*index].kind {
+    fn eval_not(&self, tokens: &[Token], index: & mut usize) -> Result<isize, DiagMsg> {
+        match self.token_at(tokens, *index)?.kind {
             TokenType::KwNot => {
                 *index += 1;
-                let val = self.eval_comparison(tokens, index);
-                ! val
+                let val = self.eval_comparison(tokens, index)?;
+                Ok(! val)
             }
             _ => self.eval_comparison(tokens, index),
         }
     }
 
-    fn eval_comparison(&self, tokens: &[Token], index: &mut usize) -> isize {
-        let left = self.eval_add_sub(tokens, index);
+    fn eval_comparison(&self, tokens: &[Token], index: &mut usize) -> Result<isize, DiagMsg> {
+        let left = self.eval_add_sub(tokens, index)?;
         while *index < tokens.len() {
-            match tokens[*index].kind {
+            match self.token_at(tokens, *index)?.kind {
                 TokenType::EqEq => {
                     *index += 1;
-                    let right = self.eval_add_sub(tokens, index);
-                    return (left == right) as isize;
+                    let right = self.eval_add_sub(tokens, index)?;
+                    return Ok((left == right) as isize);
                 }
                 TokenType::Ne => {
                     *index += 1;
-                    let right = self.eval_add_sub(tokens, index);
-                    return (left != right) as isize;
+                    let right = self.eval_add_sub(tokens, index)?;
+                    return Ok((left != right) as isize);
                 }
                 TokenType::Gt => {
                     *index += 1;
-                    let right = self.eval_add_sub(tokens, index);
-                    return (left > right) as isize;
+                    let right = self.eval_add_sub(tokens, index)?;
+                    return Ok((left > right) as isize);
                 }
                 TokenType::Lt => {
                     *index += 1;
-                    let right = self.eval_add_sub(tokens, index);
-                    return (left < right) as isize;
+                    let right = self.eval_add_sub(tokens, index)?;
+                    return Ok((left < right) as isize);
                 }
                 TokenType::Ge => {
                     *index += 1;
-                    let right = self.eval_add_sub(tokens, index);
-                    return (left >= right) as isize;
+                    let right = self.eval_add_sub(tokens, index)?;
+                    return Ok((left >= right) as isize);
                 }
                 TokenType::Le => {
                     *index += 1;
-                    let right = self.eval_add_sub(tokens, index);
-                    return (left <= right) as isize;
+                    let right = self.eval_add_sub(tokens, index)?;
+                    return Ok((left <= right) as isize);
                 }
                 _ => break,
             }
         }
-        left
+        Ok(left)
     }
 
-    fn eval_add_sub(&self, tokens: &[Token], index: &mut usize) -> isize {
-        let mut left = self.eval_mul_div(tokens, index);
+    fn eval_add_sub(&self, tokens: &[Token], index: &mut usize) -> Result<isize, DiagMsg> {
+        let mut left = self.eval_mul_div(tokens, index)?;
         while *index < tokens.len() {
-            match tokens[*index].kind {
+            match self.token_at(tokens, *index)?.kind {
                 TokenType::Plus => {
                     *index += 1;
-                    let right = self.eval_mul_div(tokens, index);
+                    let right = self.eval_mul_div(tokens, index)?;
                     left += right;
                 }
                 TokenType::Minus => {
                     *index += 1;
-                    let right = self.eval_mul_div(tokens, index);
+                    let right = self.eval_mul_div(tokens, index)?;
                     left -= right;
                 }
                 _ => break,
             }
         }
-        left
+        Ok(left)
     }
 
-    fn eval_mul_div(&self, tokens: &[Token], index: &mut usize) -> isize {
-        let mut left = self.eval_unary(tokens, index);
+    fn eval_mul_div(&self, tokens: &[Token], index: &mut usize) -> Result<isize, DiagMsg> {
+        let mut left = self.eval_unary(tokens, index)?;
         while *index < tokens.len() {
-            match tokens[*index].kind {
+            match self.token_at(tokens, *index)?.kind {
                 TokenType::Star => {
                     *index += 1;
-                    let right = self.eval_unary(tokens, index);
+                    let right = self.eval_unary(tokens, index)?;
                     left *= right;
                 }
                 TokenType::Slash => {
                     *index += 1;
-                    let right = self.eval_unary(tokens, index);
+                    let right = self.eval_unary(tokens, index)?;
                     left /= right;
                 }
                 _ => break,
             }
         }
-        left
+        Ok(left)
     }
 
-    fn eval_unary(&self, tokens: &[Token], index: &mut usize) -> isize {
-        match tokens[*index].kind {
+    fn eval_unary(&self, tokens: &[Token], index: &mut usize) -> Result<isize, DiagMsg> {
+        match self.token_at(tokens, *index)?.kind {
             TokenType::Minus => {
                 *index += 1;
-                let val = self.eval_unary(tokens, index);
-                0 - val
+                let val = self.eval_unary(tokens, index)?;
+                Ok(0 - val)
             }
             _ => self.eval_primary(tokens, index),
         }
     }
 
-    fn eval_primary(&self, tokens: &[Token], index: &mut usize) -> isize {
-        let token = &tokens[*index];
+    fn eval_primary(&self, tokens: &[Token], index: &mut usize) -> Result<isize, DiagMsg> {
+        let token = self.token_at(tokens, *index)?;
         match token.kind {
             TokenType::Int => {
                 *index += 1;
-                token.text.parse::<isize>().unwrap()
+                token.text.parse::<isize>().map_err(|_| DiagMsg {
+                    title: "preprocessor eval error".to_string(),
+                    msg: format!("cannot parse integer: {}", token.text),
+                    span: token.span.clone(),
+                })
             }
-            _ => {
-                panic!("cannot eval expression");
-            }
+            _ => Err(DiagMsg {
+                title: "preprocessor eval error".to_string(),
+                msg: "cannot eval expression".to_string(),
+                span: token.span.clone(),
+            }),
         }
     }
 
@@ -226,22 +241,22 @@ impl<'a> Preprocessor<'a> {
         let mut cond_tokens = Vec::new();
 
         while *index < current_tokens.len()
-            && current_tokens[*index].kind != TokenType::NewLine
+            && self.token_at(current_tokens, *index)?.kind != TokenType::NewLine
         {
-            cond_tokens.push(current_tokens[*index].clone());
+            cond_tokens.push(self.token_at(current_tokens, *index)?.clone());
             *index += 1;
         }
 
         *index += 1; // newline
 
         cond_tokens = self.expand_all(cond_tokens)?;
-        let mut cond_true = self.eval(cond_tokens) > 0;
+        let cond_true = self.eval(cond_tokens)? > 0;
 
         if cond_true {
 
             let mut depth = 0;
             while *index < current_tokens.len() {
-                let token = &current_tokens[*index];
+                let token = self.token_at(current_tokens, *index)?;
                 match token.text.as_str() {
                     KEYWORD_IF => depth += 1,
                     KEYWORD_ENDIF => {
@@ -264,7 +279,7 @@ impl<'a> Preprocessor<'a> {
             let mut depth = 0;
             loop {
                 if *index >= current_tokens.len() { break; }
-                match current_tokens[*index].text.as_str() {
+                match self.token_at(current_tokens, *index)?.text.as_str() {
                     KEYWORD_IF => depth += 1,
                     KEYWORD_ENDIF => {
                         if depth == 0 {
@@ -281,10 +296,18 @@ impl<'a> Preprocessor<'a> {
             let mut depth = 0;
             loop {
                 if *index >= current_tokens.len() {
-                    panic!()
+                    return Err(DiagMsg {
+                        title: "preprocessor error".to_string(),
+                        msg: "unexpected end of tokens in conditional".to_string(),
+                        span: Span {
+                            source_id: self.source,
+                            start_off: 0,
+                            end_off: 0,
+                        },
+                    });
                 }
 
-                match current_tokens[*index].text.as_str() {
+                match self.token_at(current_tokens, *index)?.text.as_str() {
                     KEYWORD_IF => depth += 1,
 
                     KEYWORD_ENDIF => {
@@ -310,7 +333,7 @@ impl<'a> Preprocessor<'a> {
                             *index += 1;  // 跳过 else 关键字
                             let mut depth2 = 0;
                             while *index < current_tokens.len() {
-                                let t = &current_tokens[*index];
+                                let t = self.token_at(current_tokens, *index)?;
                                 match t.text.as_str() {
                                     KEYWORD_IF => depth2 += 1,
                                     KEYWORD_ENDIF => {
@@ -346,12 +369,12 @@ impl<'a> Preprocessor<'a> {
             let mut changed = false;
 
             while index < current_tokens.len() {
-                let current_token = &current_tokens[index];
+                let current_token = self.token_at(&current_tokens, index)?.clone();
 
                 if current_token.kind == Ident
                     && self.preprocessors.contains_key(&current_token.text)
                     && index + 1 < current_tokens.len()
-                    && current_tokens[index + 1].kind == Lparen
+                    && self.token_at(&current_tokens, index + 1)?.kind == Lparen
                 {
                     let macro_name = current_token.clone();
                     let def = self.preprocessors[&macro_name.text].clone();
@@ -369,14 +392,19 @@ impl<'a> Preprocessor<'a> {
                     let mut depth = 1; // 最外层'('是'1'
 
                     if index >= current_tokens.len() {
-                        unreachable!()
+                        return Err(DiagMsg {
+                            title: "macro expansion error".to_string(),
+                            msg: "unexpected end of tokens after macro name".to_string(),
+                            span: macro_name.span.clone(),
+                        });
                     }
 
                     while depth > 0 && index < current_tokens.len() {
-                        match current_tokens[index].kind {
+                        let token = self.token_at(&current_tokens, index)?;
+                        match token.kind {
                             Lparen => {
                                 depth += 1;
-                                current_arg.push(current_tokens[index].clone());
+                                current_arg.push(token.clone());
                             }
                             TokenType::Rparen => {
                                 depth -= 1;
@@ -385,7 +413,7 @@ impl<'a> Preprocessor<'a> {
                                     index += 1;
                                     break;
                                 } else {
-                                    current_arg.push(current_tokens[index].clone());
+                                    current_arg.push(token.clone());
                                 }
                             }
                             TokenType::Comma => {
@@ -393,11 +421,11 @@ impl<'a> Preprocessor<'a> {
                                     args.push(current_arg.clone());
                                     current_arg.clear();
                                 } else {
-                                    current_arg.push(current_tokens[index].clone());
+                                    current_arg.push(token.clone());
                                 }
                             }
                             _ => {
-                                current_arg.push(current_tokens[index].clone());
+                                current_arg.push(token.clone());
                             }
                         }
                         index += 1;
@@ -407,10 +435,16 @@ impl<'a> Preprocessor<'a> {
                         args.push(current_arg);
                     }
 
-                    if depth != 0 { unreachable!() }
+                    if depth != 0 {
+                        return Err(DiagMsg {
+                            title: "macro expansion error".to_string(),
+                            msg: "unmatched parentheses in macro arguments".to_string(),
+                            span: macro_name.span.clone(),
+                        });
+                    }
 
                     let rest_tokens = if def.has_rest_args {
-                        let current_token_span = current_tokens[index].span.clone();
+                        let current_token_span = self.token_at(&current_tokens, index)?.span.clone();
 
                         if args.len() < def.params.len() {
                             return Err(DiagMsg {
@@ -421,7 +455,7 @@ impl<'a> Preprocessor<'a> {
                                     def.params.len(),
                                     args.len()
                                 ),
-                                span: current_token.span.clone(),
+                                span: macro_name.span.clone(),
                             });
                         }
 
@@ -449,7 +483,7 @@ impl<'a> Preprocessor<'a> {
                                     def.params.len(),
                                     args.len()
                                 ),
-                                span: current_token.span.clone(),
+                                span: macro_name.span.clone(),
                             });
                         }
                         Vec::new()
@@ -477,7 +511,7 @@ impl<'a> Preprocessor<'a> {
                         // 展开 body
                         let mut body_idx = 0;
                         while body_idx < def.body.len() {
-                            let body_token = &def.body[body_idx];
+                            let body_token = self.token_at(&def.body, body_idx)?.clone();
 
                             if body_token.kind == Ident
                                 && body_token.text == REST_ARGS_MARKER
@@ -499,7 +533,7 @@ impl<'a> Preprocessor<'a> {
                                 // 就地处理 __only_has_rest_args(...)
                                 body_idx += 1;
 
-                                if body_idx >= def.body.len() || def.body[body_idx].kind != Lparen {
+                                if body_idx >= def.body.len() || self.token_at(&def.body, body_idx)?.kind != Lparen {
                                     continue;
                                 }
                                 body_idx += 1; // '('
@@ -507,10 +541,11 @@ impl<'a> Preprocessor<'a> {
                                 let mut va_content = Vec::new();
                                 let mut depth = 1;
                                 while body_idx < def.body.len() && depth > 0 {
-                                    match def.body[body_idx].kind {
+                                    let t = self.token_at(&def.body, body_idx)?;
+                                    match t.kind {
                                         Lparen => {
                                             depth += 1;
-                                            va_content.push(def.body[body_idx].clone());
+                                            va_content.push(t.clone());
                                         }
                                         Rparen => {
                                             depth -= 1;
@@ -518,11 +553,11 @@ impl<'a> Preprocessor<'a> {
                                                 body_idx += 1; // 跳过 ')' 本身
                                                 break;
                                             } else {
-                                                va_content.push(def.body[body_idx].clone());
+                                                va_content.push(t.clone());
                                             }
                                         }
                                         _ => {
-                                            va_content.push(def.body[body_idx].clone());
+                                            va_content.push(t.clone());
                                         }
                                     }
                                     body_idx += 1;
@@ -546,7 +581,7 @@ impl<'a> Preprocessor<'a> {
                     && current_token.text == KEYWORD_PREPROCESS
                 {
                     index += 1;
-                    let name_token = current_tokens[index].clone();
+                    let name_token = self.token_at(&current_tokens, index)?.clone();
                     index += 1;
 
 
@@ -554,25 +589,25 @@ impl<'a> Preprocessor<'a> {
                     let mut params = Vec::new();
                     let mut has_rest_args = false;
 
-                    if current_tokens[index].kind == Lparen {
+                    if self.token_at(&current_tokens, index)?.kind == Lparen {
                         index += 1;
 
                         let span = name_token.span.clone();
 
-                        while current_tokens[index].kind != TokenType::Rparen {
-                            if current_tokens[index].kind == TokenType::DotDotDot {
+                        while self.token_at(&current_tokens, index)?.kind != TokenType::Rparen {
+                            if self.token_at(&current_tokens, index)?.kind == TokenType::DotDotDot {
                                 index += 1;
                                 has_rest_args = true;
                                 break
                             } else {
-                                params.push(current_tokens[index].text.clone());
+                                params.push(self.token_at(&current_tokens, index)?.text.clone());
                                 index += 1;
                             }
 
 
-                            if current_tokens[index].kind == TokenType::Comma {
+                            if self.token_at(&current_tokens, index)?.kind == TokenType::Comma {
                                 index += 1;
-                            } else if current_tokens[index].kind == TokenType::Rparen {
+                            } else if self.token_at(&current_tokens, index)?.kind == TokenType::Rparen {
                                 break;
                             } else {
                                 return Err(DiagMsg {
@@ -586,8 +621,8 @@ impl<'a> Preprocessor<'a> {
                     }
                     let mut body = Vec::new();
 
-                    while current_tokens[index].kind != TokenType::NewLine {
-                        body.push(current_tokens[index].clone());
+                    while self.token_at(&current_tokens, index)?.kind != TokenType::NewLine {
+                        body.push(self.token_at(&current_tokens, index)?.clone());
                         index += 1;
                     }
 
@@ -611,24 +646,26 @@ impl<'a> Preprocessor<'a> {
                 else if current_token.kind == TokenType::Ident
                     && current_token.text == KEYWORD_PANIC {
                     index += 1;
+                    let panic_token = self.token_at(&current_tokens, index)?.clone();
                     return Err(DiagMsg {
                         title: format!("{:?}", TokenPassError::UserPreprocessorPanic),
-                        msg: current_tokens[index].text.clone(),
-                        span: current_tokens[index].span.clone(),
+                        msg: panic_token.text.clone(),
+                        span: panic_token.span.clone(),
                     });
                 }
 
                 else if current_token.kind == TokenType::Ident
                     && current_token.text == KEYWORD_WARNING {
                     index += 1;
-                    println!("[warning] {}", &current_tokens[index].text);
+                    let warn_token = self.token_at(&current_tokens, index)?.clone();
+                    println!("[warning] {}", &warn_token.text);
                     index += 1;
                 }
 
                 else if current_token.kind == TokenType::Ident
                     && current_token.text == KEYWORD_COUNTER {
 
-                    let current_span = current_tokens[index].span.clone();
+                    let current_span = self.token_at(&current_tokens, index)?.span.clone();
                     index += 1;
                     result.push(Token {
                         kind: TokenType::Int,
@@ -646,10 +683,11 @@ impl<'a> Preprocessor<'a> {
                     index += 1;                     // '('
 
                     let mut expr = Vec::new();
-                    let current_span = current_tokens[index].span.clone();
+                    let current_span = self.token_at(&current_tokens, index)?.span.clone();
                     let mut depth = 1;              // 已进入最外层 '('
                     while index < current_tokens.len() && depth > 0 {
-                        match current_tokens[index].kind {
+                        let t = self.token_at(&current_tokens, index)?;
+                        match t.kind {
                             Lparen => depth += 1,
                             TokenType::Rparen => {
                                 depth -= 1;
@@ -660,11 +698,11 @@ impl<'a> Preprocessor<'a> {
                             }
                             _ => {}
                         }
-                        expr.push(current_tokens[index].clone());
+                        expr.push(t.clone());
                         index += 1;
                     }
 
-                    let eval = self.eval(expr);
+                    let eval = self.eval(expr)?;
                     result.push(Token {
                         kind: TokenType::Int,
                         span: current_span,
@@ -681,10 +719,11 @@ impl<'a> Preprocessor<'a> {
                     let mut arg_tokens = Vec::new();
                     let mut depth = 1;
                     while index < current_tokens.len() && depth > 0 {
-                        match current_tokens[index].kind {
+                        let t = self.token_at(&current_tokens, index)?;
+                        match t.kind {
                             Lparen => {
                                 depth += 1;
-                                arg_tokens.push(current_tokens[index].clone());
+                                arg_tokens.push(t.clone());
                             }
                             Rparen => {
                                 depth -= 1;
@@ -692,10 +731,10 @@ impl<'a> Preprocessor<'a> {
                                     index += 1; // ')'
                                     break;
                                 }
-                                arg_tokens.push(current_tokens[index].clone());
+                                arg_tokens.push(t.clone());
                             }
                             _ => {
-                                arg_tokens.push(current_tokens[index].clone());
+                                arg_tokens.push(t.clone());
                             }
                         }
                         index += 1;
@@ -729,10 +768,11 @@ impl<'a> Preprocessor<'a> {
                     let mut depth = 1;
 
                     while index < current_tokens.len() && depth > 0 {
-                        match current_tokens[index].kind {
+                        let t = self.token_at(&current_tokens, index)?;
+                        match t.kind {
                             Lparen => {
                                 depth += 1;
-                                current_arg.push(current_tokens[index].clone());
+                                current_arg.push(t.clone());
                             }
                             Rparen => {
                                 depth -= 1;
@@ -743,18 +783,18 @@ impl<'a> Preprocessor<'a> {
                                     index += 1; // ')'
                                     break;
                                 }
-                                current_arg.push(current_tokens[index].clone());
+                                current_arg.push(t.clone());
                             }
                             TokenType::Comma => {
                                 if depth == 1 {
                                     concat_parts.push(current_arg.clone());
                                     current_arg.clear();
                                 } else {
-                                    current_arg.push(current_tokens[index].clone());
+                                    current_arg.push(t.clone());
                                 }
                             }
                             _ => {
-                                current_arg.push(current_tokens[index].clone());
+                                current_arg.push(t.clone());
                             }
                         }
                         index += 1;
@@ -798,28 +838,29 @@ impl<'a> Preprocessor<'a> {
                     let mut times_tokens = Vec::new();
                     let mut depth = 1;
                     while index < current_tokens.len() && depth > 0 {
-                        match current_tokens[index].kind {
+                        let t = self.token_at(&current_tokens, index)?;
+                        match t.kind {
                             Lparen => {
                                 depth += 1;
-                                times_tokens.push(current_tokens[index].clone());
+                                times_tokens.push(t.clone());
                             }
                             Rparen => {
                                 depth -= 1;
                                 if depth == 0 {
                                     break;
                                 }
-                                times_tokens.push(current_tokens[index].clone());
+                                times_tokens.push(t.clone());
                             }
                             Comma => {
                                 if depth == 1 {
                                     index += 1; // ','
                                     break;
                                 } else {
-                                    times_tokens.push(current_tokens[index].clone());
+                                    times_tokens.push(t.clone());
                                 }
                             }
                             _ => {
-                                times_tokens.push(current_tokens[index].clone());
+                                times_tokens.push(t.clone());
                             }
                         }
                         index += 1;
@@ -827,7 +868,7 @@ impl<'a> Preprocessor<'a> {
 
                     // 展开并求值times
                     let expanded_times = self.expand_all(times_tokens)?;
-                    let times_val = self.eval(expanded_times);
+                    let times_val = self.eval(expanded_times)?;
                     if times_val < 0 {
                         return Err(DiagMsg {
                             title: "repeat count error".to_string(),
@@ -840,7 +881,8 @@ impl<'a> Preprocessor<'a> {
                     let mut body_tokens = Vec::new();
                     let mut depth = 0;
                     while index < current_tokens.len() {
-                        match current_tokens[index].kind {
+                        let t = self.token_at(&current_tokens, index)?;
+                        match t.kind {
                             Lparen => depth += 1,
                             Rparen => {
                                 if depth == 0 {
@@ -851,7 +893,7 @@ impl<'a> Preprocessor<'a> {
                             }
                             _ => {}
                         }
-                        body_tokens.push(current_tokens[index].clone());
+                        body_tokens.push(t.clone());
                         index += 1;
                     }
 
@@ -868,24 +910,24 @@ impl<'a> Preprocessor<'a> {
 
                     index += 1;
 
-                    let is_pp = self.preprocessors.contains_key(&current_tokens[index].text.clone());
+                    let is_pp = self.preprocessors.contains_key(&self.token_at(&current_tokens, index)?.text.clone());
 
                     result.push(Token {
                         kind: TokenType::Int,
-                        span: current_tokens[index].span.clone(),
+                        span: self.token_at(&current_tokens, index)?.span.clone(),
                         text: (if is_pp { 1 } else { 0 }).to_string(),
                     });
 
                 }
 
                 else {
-                    let expanded = self.expand_one(current_token)?;
-                        if expanded.len() != 1 || expanded[0] != *current_token {
-                            changed = true;
-                        }
-                        result.extend(expanded);
-                        index += 1;
+                    let expanded = self.expand_one(&current_token)?;
+                    if expanded.len() != 1 || expanded[0] != current_token {
+                        changed = true;
                     }
+                    result.extend(expanded);
+                    index += 1;
+                }
             }
 
             if !changed || result == current_tokens {

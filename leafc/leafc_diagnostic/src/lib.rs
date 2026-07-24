@@ -102,10 +102,26 @@ impl<'a> DiagnosticianApi<'a> for Diagnostician<'a> {
         // 最大行号的位数，用于动态对齐
         let lineno_width = last.to_string().len();
 
-        // 指示器前缀：固定的箭头行，不随行号宽度变化（保持原风格）
+        let lineno_width = last.to_string().len();
+
+        let target_col = 5 + lineno_width;
+
+        const ARROW_STR: &str = "  ╭─➜";
+        let arrow_visible_len = Self::visible_len(ARROW_STR);
+
+        // 需要添加的空格数
+        let spaces_needed = target_col.saturating_sub(arrow_visible_len);
+        let mut prefix_no_color = String::from(ARROW_STR);
+        for _ in 0..spaces_needed {
+            prefix_no_color.push(' ');
+        }
+        prefix_no_color.push('|');
+
+        // 加上颜色代码
         let indicator_prefix = format!(
-            "{}  ╭─➜ |{}",
+            "{}{}{}",
             self.colors.diag_bar,
+            prefix_no_color,
             self.colors.diag_reset
         );
         let indicator_visible_len = Self::visible_len(&indicator_prefix);
@@ -146,7 +162,47 @@ impl<'a> DiagnosticianApi<'a> for Diagnostician<'a> {
                 (p, vlen)
             };
 
-            writeln!(&mut out, "{}{}", prefix, line).unwrap();
+            let displayed_line = if lineno == start_line {
+                let chars: Vec<char> = line.chars().collect();
+                let mut byte_idx = 0;
+                let mut col = 0;
+                let mut start_byte = None;
+                let mut end_byte = None;
+                let real_end_col = end_col.min(chars.len());
+                for ch in &chars {
+                    if col == start_col {
+                        start_byte = Some(byte_idx);
+                    }
+                    if col == real_end_col {
+                        end_byte = Some(byte_idx);
+                        break;
+                    }
+                    byte_idx += ch.len_utf8();
+                    col += 1;
+                }
+                if end_byte.is_none() {
+                    end_byte = Some(line.len());
+                }
+                if let (Some(start), Some(end)) = (start_byte, end_byte) {
+                    let before = &line[..start];
+                    let highlighted = &line[start..end];
+                    let after = &line[end..];
+                    format!(
+                        "{}{}{}{}{}",
+                        before,
+                        self.colors.diag_title,
+                        highlighted,
+                        self.colors.diag_reset,
+                        after
+                    )
+                } else {
+                    line.to_string()
+                }
+            } else {
+                line.to_string()
+            };
+
+            writeln!(&mut out, "{}{}", prefix, displayed_line).unwrap();
 
             // 仅错误起始行后打印指示符
             if lineno == start_line {

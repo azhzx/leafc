@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use crate::crate_meta::OperatorDef;
-use crate::lexer::TokenType;
+use crate::token::TokenType;
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum Operator {
