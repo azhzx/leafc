@@ -60,7 +60,9 @@ pub enum SymbolKind {
 
     Control,
 
-    Effect,
+    Effect {
+        scope_id: ScopeId,
+    },
     
     Const,
     

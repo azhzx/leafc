@@ -73,8 +73,8 @@ impl<'a> Parser<'a> {
 
         Err(DiagMsg {
             title: format!("{:?}", ParserError::TokenExpect),
-            msg: format!("expected <{:?}> but got {:?}",
-                         expected, tok.text),
+            msg: format!("expected <{:?}> but got <{:?}> {:?}",
+                         expected, tok.kind, tok.text),
             span: tok.span.clone(),
         })
     }

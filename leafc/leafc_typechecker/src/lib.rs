@@ -593,13 +593,6 @@ impl TypeChecker {
                 })
             }
 
-            HirExprKind::Ellipsis => todo!(),
-            HirExprKind::Resume { expr } => todo!(),
-            HirExprKind::With { .. } => todo!(),
-            HirExprKind::UnsafeExternalCall { .. } => todo!(),
-            HirExprKind::Raise { .. } => todo!(),
-            HirExprKind::Match { .. } => todo!(),
-            HirExprKind::Is { .. } => todo!(),
             HirExprKind::MakeStruct { path, fields } => {
                 let struct_ty = self.infer_expr(*path, None)?;
                 let struct_root = self.representative(struct_ty);
@@ -690,6 +683,55 @@ impl TypeChecker {
                 self.unify(arg_ty, param_ty, span.clone())?;
                 result_ty
             }
+            HirExprKind::Raise { control_name, args } => {
+                let scheme = self.name_type_map.get(&control_name.sym_id)
+                    .ok_or_else(|| DiagMsg {
+                        title: format!("{:?}", TypeCheckerError::UndefinedVariable),
+                        msg: format!("effect control `{}` not found", control_name.name),
+                        span: self.hir_name_span(control_name, span.clone()),
+                    })?
+                    .clone();
+
+                let ctrl_ty = self.instantiate(&scheme);
+
+                let arg_tys: Vec<TyId> = args.iter()
+                    .map(|&a| self.infer_expr(a, None))
+                    .collect::<Result<_, _>>()?;
+
+                let root = self.representative(ctrl_ty);
+                let (param_tys, ret_ty) = if let TypeNodeKind::Fun { param_tys, return_ty } = &self.type_pool[root].kind {
+                    if param_tys.len() != arg_tys.len() {
+                        return Err(DiagMsg {
+                            title: format!("{:?}", TypeCheckerError::ArityMismatch),
+                            msg: format!("control expects {} arguments, got {}", param_tys.len(), arg_tys.len()),
+                            span: span.clone(),
+                        });
+                    }
+                    (param_tys.clone(), *return_ty)
+                } else {
+                    return Err(DiagMsg {
+                        title: format!("{:?}", TypeCheckerError::TypeMismatch),
+                        msg: format!("control `{}` is not a function type", control_name.name),
+                        span: span.clone(),
+                    });
+                };
+
+                for (arg_ty, &param_ty) in arg_tys.iter().zip(param_tys.iter()) {
+                    self.unify(*arg_ty, param_ty, span.clone())?;
+                }
+
+                ret_ty
+            }
+
+            HirExprKind::UnsafeExternalCall { callee, args } =>
+                self.infer_call(*callee, args, expected, &span)?,
+
+            HirExprKind::Resume { expr } => todo!(),
+            HirExprKind::With { .. } => todo!(),
+            HirExprKind::Match { .. } => todo!(),
+            HirExprKind::Is { .. } => todo!(),
+
+            HirExprKind::Ellipsis => todo!("maybe deprecated?"),
 
         };
 
@@ -787,7 +829,15 @@ impl TypeChecker {
         Ok(self.builtin.unit)
     }
 
-    fn infer_if(&mut self, cond: HirExprId, then: HirExprId, elifs: &[(HirExprId, HirExprId)], else_opt: Option<HirExprId>, expected: Option<TyId>, span: &Span) -> Result<TyId, DiagMsg> {
+    fn infer_if(
+        &mut self,
+        cond: HirExprId,
+        then: HirExprId,
+        elifs: &[(HirExprId, HirExprId)],
+        else_opt: Option<HirExprId>,
+        expected: Option<TyId>,
+        span: &Span
+    ) -> Result<TyId, DiagMsg> {
         self.infer_expr(cond, Some(self.builtin.bool_ty))?;
         let then_ty = self.infer_expr(then, expected)?;
         for &(elif_cond, elif_body) in elifs {
@@ -828,7 +878,7 @@ impl TypeChecker {
         if let Some(e) = expr {
             self.infer_expr(*e, expected)?;
         }
-        Ok(self.builtin.never)
+        Ok(self.builtin.unit)
     }
 
     fn infer_cast(&mut self, expr: HirExprId, type_ann: &HirTypeName, span: &Span) -> Result<TyId, DiagMsg> {
@@ -856,11 +906,21 @@ impl TypeChecker {
                 self.check_type_alias(decl_id, generic_params, alias_for)
             }
             HirDeclKind::Abstract { .. } => todo!("abstract type not yet supported"),
+
             HirDeclKind::CType => Ok(()),
+
             HirDeclKind::TypeDecl => Ok(()),
-            HirDeclKind::Effect { .. } => todo!(),
-            HirDeclKind::Const { .. } => todo!(),
-            HirDeclKind::Global { .. } => todo!(),
+
+            HirDeclKind::Effect { controls } => {
+                self.check_effect(decl_id, controls)
+            }
+
+            HirDeclKind::Const { expr, type_ann } => {
+                self.check_global_value_decl(decl_id, *expr, type_ann.as_ref())
+            }
+            HirDeclKind::Global { expr, type_ann } => {
+                self.check_global_value_decl(decl_id, *expr, type_ann.as_ref())
+            }
         }
     }
 
@@ -999,7 +1059,12 @@ impl TypeChecker {
         Ok(())
     }
 
-    fn check_struct(&mut self, decl_id: HirDeclId, generic_params: &[HirGenericParam], fields: &[HirFieldDef]) -> Result<(), DiagMsg> {
+    fn check_struct(
+        &mut self,
+        decl_id: HirDeclId,
+        generic_params: &[HirGenericParam],
+        fields: &[HirFieldDef]
+    ) -> Result<(), DiagMsg> {
         let saved_level = self.current_level;
         self.current_level += 1;
         let mut gen_vars = Vec::new();
@@ -1031,7 +1096,12 @@ impl TypeChecker {
         Ok(())
     }
 
-    fn check_external(&mut self, decl_id: HirDeclId, params: &[HirParam], return_type: &HirTypeName) -> Result<(), DiagMsg> {
+    fn check_external(
+        &mut self,
+        decl_id: HirDeclId,
+        params: &[HirParam],
+        return_type: &HirTypeName
+    ) -> Result<(), DiagMsg> {
         let mut param_tys = Vec::new();
         for p in params {
             let p_ty = if let Some(ann) = &p.type_ann {
@@ -1060,6 +1130,24 @@ impl TypeChecker {
         let saved_level = self.current_level;
         self.current_level += 1;
 
+        let decl = &self.hir_crate.hir_decl_pool[decl_id];
+        let self_sym_id = self.sym_to_decl.iter()
+            .find_map(|(&sym, &id)| if id == decl_id { Some(sym) } else { None })
+            .ok_or_else(|| DiagMsg {
+                title: format!("{:?}", TypeCheckerError::InternalError),
+                msg: "self symbol not found".to_string(),
+                span: decl.span.clone(),
+            })?;
+
+        // 递归检测 alias_for 中是否包含自身引用
+        if Self::contains_self_ref(alias_for, self_sym_id) {
+            return Err(DiagMsg {
+                title: format!("{:?}", TypeCheckerError::RecursiveTypeAlias),
+                msg: format!("type alias `{}` recursively references itself", decl.ident),
+                span: decl.span.clone(),
+            });
+        }
+
         let mut gen_vars = Vec::new();
         for gp in generic_params {
             let tv = self.new_type_var();
@@ -1086,6 +1174,95 @@ impl TypeChecker {
         self.decl_type_map.insert(decl_id, scheme);
 
         Ok(())
+    }
+
+    fn check_global_value_decl(
+        &mut self,
+        decl_id: HirDeclId,
+        expr: HirExprId,
+        type_ann: Option<&HirTypeName>
+    ) -> Result<(), DiagMsg> {
+        let saved_level = self.current_level;
+        self.current_level += 1;
+
+        let init_ty = self.infer_expr(expr, None)?;
+        let init_ty = self.representative(init_ty);
+
+        if let Some(ann) = type_ann {
+            let span = self.hir_crate.hir_decl_pool[decl_id].span.clone();
+            let ann_ty = self.resolve_type_name(ann, span.clone())?;
+            self.unify(init_ty, ann_ty, span)?;
+        }
+
+        self.current_level = saved_level;
+        let scheme = self.generalize(init_ty);
+        self.decl_type_map.insert(decl_id, scheme.clone());
+
+        let decl = &self.hir_crate.hir_decl_pool[decl_id];
+        if let Some(&scope_id) = self.name_pass_result.source_id_to_scope.get(&decl.span.source_id) {
+            if let Some((sym, _)) = self.name_pass_result.pool.lookup(scope_id, &decl.ident) {
+                self.name_type_map.insert(sym.sym_id, scheme);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn check_effect(
+        &mut self,
+        decl_id: HirDeclId,
+        controls: &[(HirName, Vec<HirParam>, Option<HirTypeName>)]
+    ) -> Result<(), DiagMsg> {
+        let saved_level = self.current_level;
+        self.current_level += 1;
+
+        for (ctrl_name, params, ret_opt) in controls {
+            let mut param_tys = Vec::new();
+            for p in params {
+                if let Some(ann) = &p.type_ann {
+                    let ty = self.resolve_type_name(ann, p.span.clone())?;
+                    param_tys.push(ty);
+                } else {
+                    param_tys.push(self.new_type_var());
+                }
+            }
+
+            let ret_ty = if let Some(rt) = ret_opt {
+                self.resolve_type_name(rt, self.hir_crate.hir_decl_pool[decl_id].span.clone())?
+            } else {
+                self.builtin.unit
+            };
+
+            let fun_ty = self.new_compound(TypeNodeKind::Fun {
+                param_tys,
+                return_ty: ret_ty,
+            });
+
+            let scheme = self.generalize(fun_ty);
+
+            self.name_type_map.insert(ctrl_name.sym_id, scheme);
+        }
+
+        self.current_level = saved_level;
+        Ok(())
+    }
+
+    fn contains_self_ref(ty: &HirTypeName, target_sym: SymId) -> bool {
+        match ty {
+            HirTypeName::Named { path, generics } => {
+                if path.sym_id == target_sym { return true; }
+                generics.iter().any(|g| Self::contains_self_ref(g, target_sym))
+            }
+            HirTypeName::Ref(inner) => Self::contains_self_ref(inner, target_sym),
+            HirTypeName::MutRef(inner) => Self::contains_self_ref(inner, target_sym),
+            HirTypeName::Share(inner) => Self::contains_self_ref(inner, target_sym),
+            HirTypeName::Tuple(elems) => elems.iter().any(|e| Self::contains_self_ref(e, target_sym)),
+            HirTypeName::Fun { params, return_type } => {
+                params.iter().any(|p| Self::contains_self_ref(p, target_sym)) ||
+                    Self::contains_self_ref(return_type, target_sym)
+            }
+            HirTypeName::Impl(inner) => Self::contains_self_ref(inner, target_sym),
+        }
     }
 
     fn build_sym_to_decl(&mut self) {

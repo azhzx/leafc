@@ -18,6 +18,7 @@ pub enum TypeCheckerError {
     UnknownField,
     MissingTypeAnnotation,
     UndefinedType,
+    RecursiveTypeAlias,
 }
 
 pub struct TypeCheckerResult {

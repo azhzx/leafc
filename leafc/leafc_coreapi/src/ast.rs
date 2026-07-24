@@ -551,9 +551,11 @@ pub enum GreenDeclKind {
     },
     Const {
         expr: GreenChild<GreenExpr>,
+        type_str: Option<GreenChild<TypeName>>,
     },
     Global {
         expr: GreenChild<GreenExpr>,
+        type_str: Option<GreenChild<TypeName>>,
     },
     Effect {
         controls: Vec<GreenChild<GreenEffectControl>>,

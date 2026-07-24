@@ -747,17 +747,18 @@ impl<'a> NamePassApi<'a> for NamePass<'a> {
                     }
 
                     GreenDeclKind::Effect { controls } => {
-                        self.scope_pool.add_symbol(
-                            file_scope_id,
-                            decl_name.name.clone(),
-                            decl_span.clone(),
-                            SymbolKind::Effect,
-                        );
                         let effect_scope_id = self.scope_pool.push_scope(
                             Some(file_scope_id),
                             ScopeKind::Effect,
                             Some(Arc::clone(&decl_red.inner)),
                             Some(decl_span.clone()),
+                        );
+
+                        self.scope_pool.add_symbol(
+                            file_scope_id,
+                            decl_name.name.clone(),
+                            decl_span.clone(),
+                            SymbolKind::Effect { scope_id: effect_scope_id },
                         );
                         for ctrl_child in controls {
                             let ctrl_span = child_span(&decl_span, ctrl_child.relative_start, ctrl_child.node.text_len);
@@ -768,10 +769,20 @@ impl<'a> NamePassApi<'a> for NamePass<'a> {
                                 ctrl_span,
                                 SymbolKind::Control,
                             );
+                            for param_child in &ctrl_child.node.params {
+                                let param_span = child_span(&decl_span, param_child.relative_start, param_child.node.text_len());
+                                let param_name = param_child.node.name.node.as_ref().clone();
+                                self.scope_pool.add_symbol(
+                                    effect_scope_id,
+                                    param_name.name,
+                                    param_span,
+                                    SymbolKind::Local,
+                                );
+                            }
                         }
                     }
 
-                    GreenDeclKind::Const { expr: e } => {
+                    GreenDeclKind::Const { expr: e, .. } => {
                         self.scope_pool.add_symbol(
                             file_scope_id,
                             decl_name.name.clone(),
@@ -782,7 +793,7 @@ impl<'a> NamePassApi<'a> for NamePass<'a> {
                         self.build_expr_scope(&expr_red, file_scope_id)?;
                     }
 
-                    GreenDeclKind::Global { expr: e } => {
+                    GreenDeclKind::Global { expr: e, .. } => {
                         self.scope_pool.add_symbol(
                             file_scope_id,
                             decl_name.name.clone(),
@@ -884,13 +895,12 @@ impl<'a> NamePassApi<'a> for NamePass<'a> {
                             }
                         }
                     }
-                    GreenDeclKind::Const { expr: e } => {
+                    GreenDeclKind::Const { expr: e, .. } => {
                         let expr_red = child_expr_red(&decl_red.span, e);
-                        // Resolve in file scope (constant initializer can't refer to local variables)
                         let file_scope = self.source_id_to_scope[&decl_red.span.source_id];
                         self.resolve_expr(&expr_red, file_scope)?;
                     }
-                    GreenDeclKind::Global { expr: e } => {
+                    GreenDeclKind::Global { expr: e, .. } => {
                         let expr_red = child_expr_red(&decl_red.span, e);
                         let file_scope = self.source_id_to_scope[&decl_red.span.source_id];
                         self.resolve_expr(&expr_red, file_scope)?;

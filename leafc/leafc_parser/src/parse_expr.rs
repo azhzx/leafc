@@ -567,7 +567,7 @@ impl<'a> Parser<'a> {
         let else_red = if self.current_token().kind == TokenType::KwElse {
             self.skip_token();
             if self.current_token().kind == TokenType::NewLine {
-                self.skip_token_only(TokenType::NewLine)?;
+                self.skip_token();
                 Some(self.parse_block_expr()?)
             } else {
                 Some(self.parse_expr()?)
@@ -637,7 +637,7 @@ impl<'a> Parser<'a> {
         } else {
             let expr_red = self.parse_expr()?;
             let expr_start = expr_red.span.start_off;
-            self.skip_token_only(TokenType::NewLine)?;
+            self.skip_token_if_newlines()?;
             let end_off = self.tokens.data[self.index - 1].span.end_off;
 
             let green = GreenExpr {

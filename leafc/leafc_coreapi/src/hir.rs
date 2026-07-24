@@ -99,12 +99,14 @@ pub enum HirDeclKind {
         return_type: HirTypeName,
     },
     Effect {
-        controls: Vec<(String, Vec<HirParam>, Option<HirTypeName>)>,
+        controls: Vec<(HirName, Vec<HirParam>, Option<HirTypeName>)>,
     },
     Const {
+        type_ann: Option<HirTypeName>,
         expr: HirExprId,
     },
     Global {
+        type_ann: Option<HirTypeName>,
         expr: HirExprId,
     },
 }

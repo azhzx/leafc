@@ -100,8 +100,8 @@ impl<'a> HirLower<'a> {
                         })?;
                     sym = ctor_sym;
                 }
-                SymbolKind::Effect => {
-                    let effect_scope = current_scope;
+                SymbolKind::Effect { scope_id } => {
+                    let effect_scope = *scope_id;
                     let (found_sym, found_scope) = self.name_pass_result.pool
                         .lookup(effect_scope, seg_name)
                         .ok_or_else(|| DiagMsg {
@@ -676,7 +676,7 @@ impl<'a> HirLower<'a> {
                                 SymbolKind::File { .. }
                                 | SymbolKind::Struct { .. }
                                 | SymbolKind::ADT { .. }
-                                | SymbolKind::Effect => {
+                                | SymbolKind::Effect { .. } => {
                                     current_scope = found_scope;
                                     ns_end = i + 1;
                                 }
@@ -1115,31 +1115,53 @@ impl<'a> HirLower<'a> {
                     .iter()
                     .map(|ctrl| {
                         let ctrl_span = child_span_of(&span, ctrl);
-                        let name = ctrl.node.name.node.name.clone();
+                        let ctrl_name_str = ctrl.node.name.node.name.clone();
+                        let sym = self.lookup_symbol(decl_scope, &ctrl_name_str)
+                            .ok_or_else(|| DiagMsg {
+                                title: format!("{:?}", HirLowerError::ControlNotFound),
+                                msg: format!("control `{}` not found", ctrl_name_str),
+                                span: ctrl_span.clone(),
+                            })?;
+                        let ctrl_name = HirName {
+                            name: sym.name.clone(),
+                            sym_id: sym.sym_id,
+                        };
                         let params = ctrl.node.params
                             .iter()
                             .map(|p| self.lower_param(p, decl_scope, &ctrl_span))
-                            .collect::<Result<_, _>>()?;
+                            .collect::<Result<_, DiagMsg>>()?;
                         let return_type = if Self::is_type_empty(&ctrl.node.return_type.node) {
                             None
                         } else {
                             let ret_span = child_span_of(&ctrl_span, &ctrl.node.return_type);
                             Some(self.lower_type_name(&ctrl.node.return_type.node, decl_scope, ret_span)?)
                         };
-                        Ok((name, params, return_type))
+                        Ok((ctrl_name, params, return_type))
                     })
                     .collect::<Result<_, DiagMsg>>()?;
                 HirDeclKind::Effect { controls: controls_hir }
             }
 
-            GreenDeclKind::Const { expr: e } => {
-                let expr_id = self.lower_expr(&child_expr_red(&span, e), decl_scope)?;
-                HirDeclKind::Const { expr: expr_id }
+            GreenDeclKind::Const { expr, type_str } => {
+                let expr_id = self.lower_expr(&child_expr_red(&span, expr), decl_scope)?;
+                let type_ann = if let Some(ts) = type_str {
+                    let ts_span = child_span_of(&span, ts);
+                    Some(self.lower_type_name(&ts.node, decl_scope, ts_span)?)
+                } else {
+                    None
+                };
+                HirDeclKind::Const { expr: expr_id, type_ann }
             }
 
-            GreenDeclKind::Global { expr: e } => {
-                let expr_id = self.lower_expr(&child_expr_red(&span, e), decl_scope)?;
-                HirDeclKind::Global { expr: expr_id }
+            GreenDeclKind::Global { expr, type_str } => {
+                let expr_id = self.lower_expr(&child_expr_red(&span, expr), decl_scope)?;
+                let type_ann = if let Some(ts) = type_str {
+                    let ts_span = child_span_of(&span, ts);
+                    Some(self.lower_type_name(&ts.node, decl_scope, ts_span)?)
+                } else {
+                    None
+                };
+                HirDeclKind::Global { expr: expr_id, type_ann }
             }
 
             GreenDeclKind::TypeDecl => HirDeclKind::TypeDecl,

@@ -7,11 +7,10 @@ type Int64;
 #lang("builtin_never_type")
 type Never;
 
-type Maybe [T]
-    | Just of T
-    | Nothing
+effect Console
+    | readline(a: Int32) -> Int32
+    | writeln(a: Int32)
 
 fun main()
-    let none = Maybe.Nothing
-    let some_int32 = Maybe.Just(100 as Int32)
-    let some_int64 = Maybe.Just(100 as Int64)
+    let loc = raise Console.readline(100)
+    let b = raise Console.writeln(100)

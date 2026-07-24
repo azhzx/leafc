@@ -77,6 +77,18 @@ impl<'a> Parser<'a> {
         let name_start_off = name_token.span.start_off;
         self.skip_token_only(TokenType::Ident)?;
 
+        let type_str = if self.current_token().kind == TokenType::Colon {
+            self.skip_token(); // ':'
+            let type_start = self.current_token().span.start_off;
+            let type_name = self.parse_type_name()?;
+            Some(GreenChild {
+                relative_start: (type_start - decl_start_off) as usize,
+                node: Arc::new(type_name),
+            })
+        } else {
+            None
+        };
+
         self.skip_token_only(TokenType::Eq)?;
         let expr_red = self.parse_expr()?;
         let expr_start = expr_red.span.start_off;
@@ -102,7 +114,7 @@ impl<'a> Parser<'a> {
         let green_decl = GreenDecl {
             name: name_child,
             visibility,
-            kind: GreenDeclKind::Const { expr: expr_child },
+            kind: GreenDeclKind::Const { expr: expr_child, type_str },
             annotations: ann_children,
             text_len,
         };
@@ -131,6 +143,18 @@ impl<'a> Parser<'a> {
         let name_start_off = name_token.span.start_off;
         self.skip_token_only(TokenType::Ident)?;
 
+        let type_str = if self.current_token().kind == TokenType::Colon {
+            self.skip_token(); // ':'
+            let type_start = self.current_token().span.start_off;
+            let type_name = self.parse_type_name()?;
+            Some(GreenChild {
+                relative_start: (type_start - decl_start_off) as usize,
+                node: Arc::new(type_name),
+            })
+        } else {
+            None
+        };
+
         self.skip_token_only(TokenType::Eq)?;
         let expr_red = self.parse_expr()?;
         let expr_start = expr_red.span.start_off;
@@ -156,7 +180,7 @@ impl<'a> Parser<'a> {
         let green_decl = GreenDecl {
             name: name_child,
             visibility,
-            kind: GreenDeclKind::Global { expr: expr_child },
+            kind: GreenDeclKind::Global { expr: expr_child, type_str },
             annotations: ann_children,
             text_len,
         };
