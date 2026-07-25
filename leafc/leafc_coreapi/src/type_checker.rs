@@ -19,6 +19,8 @@ pub enum TypeCheckerError {
     RecursiveTypeAlias,
     MissingResume,
     InvalidControlType,
+    UnreachablePattern,
+    NonExhaustiveMatch,
 }
 
 pub struct TypeCheckerResult {

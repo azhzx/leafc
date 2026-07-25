@@ -35,47 +35,84 @@ pub struct NamePass<'a> {
 
 impl<'a> NamePass<'a> {
 
-    fn collect_pattern_bindings(pattern: &GreenPattern, bindings: &mut Vec<(String, Span)>) {
-        match pattern {
+    fn collect_pattern_bindings(
+        pattern_child: &GreenChild<GreenPattern>,
+        parent_span: &Span,
+        bindings: &mut Vec<(String, Span)>,
+    ) {
+        let pattern = &pattern_child.node;
+        let pat_span = child_span(parent_span, pattern_child.relative_start, pattern.text_len());
+
+        match &**pattern {
             GreenPattern::Binding(ident) => {
-                bindings.push((ident.name.clone(), Span {
-                    source_id: 0,
-                    start_off: 0,
-                    end_off: 0,
-                }));
+                bindings.push((ident.name.clone(), pat_span));
             }
             GreenPattern::Constructor { args, .. } => {
                 for arg in args {
-                    Self::collect_pattern_bindings(&arg.node, bindings);
+                    Self::collect_pattern_bindings(arg, parent_span, bindings);
                 }
             }
-            _ => {}
+            GreenPattern::Tuple { elements, .. } => {
+                for elem in elements {
+                    Self::collect_pattern_bindings(elem, parent_span, bindings);
+                }
+            }
+            GreenPattern::Struct { fields, .. } => {
+                for field in fields {
+                    Self::collect_pattern_bindings(&field.pattern, parent_span, bindings);
+                }
+            }
+            GreenPattern::Alias { pattern, .. } => {
+                Self::collect_pattern_bindings(pattern, parent_span, bindings);
+            }
+            GreenPattern::Or { left, right, .. } => {
+                Self::collect_pattern_bindings(left, parent_span, bindings);
+                Self::collect_pattern_bindings(right, parent_span, bindings);
+            }
+            GreenPattern::Rest | GreenPattern::Wildcard | GreenPattern::Literal(_) => {}
         }
     }
 
-     fn resolve_pattern(
+
+    fn resolve_pattern(
         &self,
         pattern_child: &GreenChild<GreenPattern>,
         parent_span: &Span,
         current_scope: ScopeId,
     ) -> Result<(), DiagMsg> {
-
         let pattern = &pattern_child.node;
 
         match &**pattern {
+            GreenPattern::Wildcard | GreenPattern::Literal(_) | GreenPattern::Rest => {}
+            GreenPattern::Binding(_) => {}
             GreenPattern::Constructor { type_name, args, .. } => {
                 if let TypeName::Named { path, .. } = type_name.node.as_ref() {
-
-                    let path_child_span = child_span(parent_span, type_name.relative_start, type_name.node.text_len());
-                    self.resolve_static_path_with_span(&path.node, &path_child_span, current_scope)?;
-
+                    let path_span = child_span(parent_span, type_name.relative_start, type_name.node.text_len());
+                    self.resolve_static_path_with_span(&path.node, &path_span, current_scope)?;
                 }
                 for arg in args {
-                    let arg_child_span = child_span(parent_span, arg.relative_start, arg.node.text_len());
-                    self.resolve_pattern(arg, &arg_child_span, current_scope)?;
+                    self.resolve_pattern(arg, parent_span, current_scope)?;
                 }
             }
-            _ => {}
+            GreenPattern::Tuple { elements, .. } => {
+                for elem in elements {
+                    self.resolve_pattern(elem, parent_span, current_scope)?;
+                }
+            }
+            GreenPattern::Struct { path, fields, .. } => {
+                let path_span = child_span(parent_span, path.relative_start, path.node.text_len);
+                self.resolve_static_path_with_span(&path.node, &path_span, current_scope)?;
+                for field in fields {
+                    self.resolve_pattern(&field.pattern, parent_span, current_scope)?;
+                }
+            }
+            GreenPattern::Alias { pattern, .. } => {
+                self.resolve_pattern(pattern, parent_span, current_scope)?;
+            }
+            GreenPattern::Or { left, right, .. } => {
+                self.resolve_pattern(left, parent_span, current_scope)?;
+                self.resolve_pattern(right, parent_span, current_scope)?;
+            }
         }
         Ok(())
     }
@@ -245,7 +282,6 @@ impl<'a> NamePass<'a> {
                 self.build_expr_scope(&child_expr_red(&expr_red.span, for_match), current_scope)?;
 
                 for arm_child in arms {
-
                     let arm = &arm_child.node;
                     let arm_span = child_span(&expr_red.span, arm_child.relative_start, arm.text_len);
                     let arm_scope = self.scope_pool.push_scope(
@@ -257,13 +293,12 @@ impl<'a> NamePass<'a> {
                     self.arm_scope_map.insert(arm.clone(), arm_scope);
 
                     let mut bindings = Vec::new();
-
-                    Self::collect_pattern_bindings(&arm.pattern.node, &mut bindings);
+                    Self::collect_pattern_bindings(&arm.pattern, &arm_span, &mut bindings);
 
                     let pattern_child = &arm.pattern;
                     let pattern_abs_span = child_span(&arm_span, pattern_child.relative_start, pattern_child.node.text_len());
-                    for (name, _) in bindings {
-                        self.scope_pool.add_symbol(arm_scope, name, pattern_abs_span.clone(), SymbolKind::Local);
+                    for (name, span) in bindings {
+                        self.scope_pool.add_symbol(arm_scope, name, span, SymbolKind::Local);
                     }
 
                     if let Some(guard) = &arm.guard {
@@ -273,14 +308,13 @@ impl<'a> NamePass<'a> {
                 }
             }
             GreenExprKind::Is { expr: e, pattern } => {
-
                 self.build_expr_scope(&child_expr_red(&expr_red.span, e), current_scope)?;
 
-                let pattern_abs_span = child_span(&expr_red.span, pattern.relative_start, pattern.node.text_len());
                 let mut bindings = Vec::new();
-                Self::collect_pattern_bindings(&pattern.node, &mut bindings);
-                for (name, _) in bindings {
-                    self.scope_pool.add_symbol(current_scope, name, pattern_abs_span.clone(), SymbolKind::Local);
+                Self::collect_pattern_bindings(pattern, &expr_red.span, &mut bindings);
+                let pattern_abs_span = child_span(&expr_red.span, pattern.relative_start, pattern.node.text_len());
+                for (name, span) in bindings {
+                    self.scope_pool.add_symbol(current_scope, name, span, SymbolKind::Local);
                 }
             }
             GreenExprKind::Raise { effect_path, control_name, args } => {
@@ -303,11 +337,11 @@ impl<'a> NamePass<'a> {
                     self.catch_scope_map.insert(clause.clone(), catch_scope);
 
                     for param_child in &clause.params {
-                        let param_abs_span = child_span(&clause_span, param_child.relative_start, param_child.node.text_len());
                         let mut bindings = Vec::new();
-                        Self::collect_pattern_bindings(&param_child.node, &mut bindings);
-                        for (name, _) in bindings {
-                            self.scope_pool.add_symbol(catch_scope, name, param_abs_span.clone(), SymbolKind::Local);
+                        Self::collect_pattern_bindings(param_child, &clause_span, &mut bindings);
+                        let param_abs_span = child_span(&clause_span, param_child.relative_start, param_child.node.text_len());
+                        for (name, span) in bindings {
+                            self.scope_pool.add_symbol(catch_scope, name, span, SymbolKind::Local);
                         }
                     }
 

@@ -17,9 +17,10 @@ pub struct MirCrate {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MirFun {
     pub name: String,
+    pub generic_params: Vec<TyId>,
     pub signature: FnSig,
     pub local_decls: Vec<LocalDecl>,
-    pub blocks: Vec<BasicBlockId>, // MirCrate.blocks的下标
+    pub blocks: Vec<BasicBlockId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -37,6 +38,7 @@ pub struct FnSig {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BasicBlock {
+    pub block_params: Vec<LocalId>,
     pub statements: Vec<MirStmt>,
     pub terminator: TerminatorKind,
 }
@@ -48,7 +50,11 @@ pub struct MirStmt {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MirStmtKind {
-    Assign {
+    Let {
+        local: LocalId,
+        rvalue: Rvalue,
+    },
+    Store {
         place: Place,
         rvalue: Rvalue,
     },
@@ -64,6 +70,10 @@ pub enum Place {
         place: Box<Place>,
         item_index: usize
     },
+    Field {
+        base: Box<Place>,
+        field: usize,
+    },
     EnumItem {
         place: Box<Place>,
         variant: TagId
@@ -73,8 +83,6 @@ pub enum Place {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Rvalue {
-    TempRef(Place),
-    TempRefMut(Place),
     BinaryOp  {
         op: BinOp,
         left: Box<Rvalue>,
@@ -88,7 +96,14 @@ pub enum Rvalue {
         place: Box<Place>,
         item_index: usize
     },
+    Field {
+        place: Box<Place>,
+        item_index: usize
+    },
+    TempRef(Place),
+    TempRefMut(Place),
     GetFunPtr(FunId),
+    BuildStruct(Vec<Rvalue>),
     Tuple(Vec<Rvalue>),
     Variant(TagId, Box<Rvalue>),
     Len(Place),
@@ -96,19 +111,23 @@ pub enum Rvalue {
     Copy(Place),
     Move(Place),
     Constant(Const),
+    Cast(Place, TyId),
 
-    GcNew(Box<Rvalue>),
+    // share
+    GcNewObject(Box<Rvalue>),
+    GcObjectRef(Box<Rvalue>),
 }
 
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TerminatorKind {
     Goto {
-        target: BasicBlockId
+        target: BasicBlockId,
+        block_args: Vec<Rvalue>,
     },
     SwitchInt {
-        for_switch: Rvalue,
-        targets: Vec<(Rvalue, BasicBlockId)>,
+        discriminant: Rvalue,
+        targets: Vec<(Const, BasicBlockId)>,
         default: BasicBlockId,
     },
     Call {

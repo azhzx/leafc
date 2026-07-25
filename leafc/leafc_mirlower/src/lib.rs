@@ -1,5 +1,5 @@
 use leafc_coreapi::diagnostic::DiagMsg;
-use leafc_coreapi::hir::{HirBinOp, HirDeclKind, HirExpr, HirExprId, HirExprKind, HirLit, HirUnaryOp};
+use leafc_coreapi::hir::{HirBinOp, HirExpr, HirExprId, HirExprKind, HirLit, HirUnaryOp};
 use leafc_coreapi::mir::{
     BasicBlock, BasicBlockId, BinOp, Const, FnSig, LocalDecl, LocalId,
     MirCrate, MirFun, MirStmt, MirStmtKind, Place, Rvalue,
@@ -52,6 +52,7 @@ impl FnBuilder {
     fn new_block(&mut self) -> BasicBlockId {
         let id = self.basic_blocks.len();
         self.basic_blocks.push(BasicBlock {
+            block_params: vec![],
             statements: vec![],
             terminator: TerminatorKind::Unreachable,
         });
@@ -101,7 +102,7 @@ impl FnBuilder {
                 let ty = self.ty_of_expr(expr_id);
                 let tmp = self.alloc_local(ty, false, None);
                 self.push_stmt(MirStmt {
-                    kind: MirStmtKind::Assign {
+                    kind: MirStmtKind::Store {
                         place: self.place_for_local(tmp),
                         rvalue: Rvalue::Constant(con),
                     },
@@ -132,7 +133,7 @@ impl FnBuilder {
                     HirBinOp::Ge  => BinOp::Ge,
                 };
                 self.push_stmt(MirStmt {
-                    kind: MirStmtKind::Assign {
+                    kind: MirStmtKind::Store {
                         place: self.place_for_local(tmp),
                         rvalue: Rvalue::BinaryOp {
                             op: binop,
@@ -153,7 +154,7 @@ impl FnBuilder {
                     HirUnaryOp::Not => UnOp::Not,
                 };
                 self.push_stmt(MirStmt {
-                    kind: MirStmtKind::Assign {
+                    kind: MirStmtKind::Store {
                         place: self.place_for_local(tmp),
                         rvalue: Rvalue::UnaryOp {
                             op: unop,

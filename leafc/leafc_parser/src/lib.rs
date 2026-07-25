@@ -115,9 +115,9 @@ impl<'a> Parser<'a> {
                 let inner_start = self.current_token().span.start_off;
                 let inner = self.parse_type_name()?;
                 let end_off = self.tokens.data[self.index - 1].span.end_off;
-                let text_len = (end_off - start_off) as usize;
+                let text_len = (end_off - start_off) ;
                 let inner_child = GreenChild {
-                    relative_start: (inner_start - start_off) as usize,
+                    relative_start: (inner_start - start_off) ,
                     node: Arc::new(inner),
                 };
                 if is_mut {
@@ -132,9 +132,9 @@ impl<'a> Parser<'a> {
                 let inner_start = self.current_token().span.start_off;
                 let inner = self.parse_type_name()?;
                 let end_off = self.tokens.data[self.index - 1].span.end_off;
-                let text_len = (end_off - start_off) as usize;
+                let text_len = (end_off - start_off) ;
                 let inner_child = GreenChild {
-                    relative_start: (inner_start - start_off) as usize,
+                    relative_start: (inner_start - start_off) ,
                     node: Arc::new(inner),
                 };
                 Ok(TypeName::Share { inner: inner_child, text_len })
@@ -155,9 +155,9 @@ impl<'a> Parser<'a> {
                 let trait_start = self.current_token().span.start_off;
                 let trait_type = self.parse_type_name()?;
                 let end_off = self.tokens.data[self.index - 1].span.end_off;
-                let text_len = (end_off - start_off) as usize;
+                let text_len = (end_off - start_off) ;
                 let trait_child = GreenChild {
-                    relative_start: (trait_start - start_off) as usize,
+                    relative_start: (trait_start - start_off) ,
                     node: Arc::new(trait_type),
                 };
                 Ok(TypeName::Impl { trait_type: trait_child, text_len })
@@ -194,10 +194,10 @@ impl<'a> Parser<'a> {
                 }
 
                 let end_off = self.tokens.data[self.index - 1].span.end_off;
-                let text_len = (end_off - start_off) as usize;
+                let text_len = (end_off - start_off) ;
 
                 let path_child = GreenChild {
-                    relative_start: (path_start - start_off) as usize,
+                    relative_start: (path_start - start_off) ,
                     node: Arc::new(path_node),
                 };
 
@@ -264,7 +264,7 @@ impl<'a> Parser<'a> {
 
         self.skip_token_only(TokenType::Rparen)?;
         let end_off = self.tokens.data[self.index - 1].span.end_off;
-        let text_len = (end_off - start_off) as usize;
+        let text_len = (end_off - start_off) ;
 
         Ok(TypeName::Tuple { elements, text_len })
     }
@@ -350,7 +350,7 @@ impl<'a> Parser<'a> {
                 let bound_start_off = self.current_token().span.start_off;
                 let bound_type = self.parse_type_name()?;
                 bounds.push(GreenChild {
-                    relative_start: (bound_start_off - constraint_start_off) as usize,
+                    relative_start: (bound_start_off - constraint_start_off) ,
                     node: Arc::new(bound_type),
                 });
 
@@ -362,7 +362,7 @@ impl<'a> Parser<'a> {
             }
 
             let constraint_end_off = self.tokens.data[self.index - 1].span.end_off;
-            let constraint_text_len = (constraint_end_off - constraint_start_off) as usize;
+            let constraint_text_len = (constraint_end_off - constraint_start_off) ;
 
             let constraint = GreenWhereConstraint {
                 name: name_child,
@@ -371,7 +371,7 @@ impl<'a> Parser<'a> {
             };
 
             constraints.push(GreenChild {
-                relative_start: (constraint_start_off - base_offset) as usize,
+                relative_start: (constraint_start_off - base_offset) ,
                 node: Arc::new(constraint),
             });
 
@@ -387,11 +387,11 @@ impl<'a> Parser<'a> {
         let where_end_off = self.tokens.data[self.index - 1].span.end_off;
         let where_clause = GreenWhereClause {
             constraints,
-            text_len: (where_end_off - where_start_off) as usize,
+            text_len: (where_end_off - where_start_off) ,
         };
 
         Ok(Some(GreenChild {
-            relative_start: (where_start_off - base_offset) as usize,
+            relative_start: (where_start_off - base_offset) ,
             node: Arc::new(where_clause),
         }))
     }
@@ -477,8 +477,8 @@ impl<'a> Parser<'a> {
             match self.current_token().kind {
                 TokenType::KwUse => {
                     if let Some(req_red) = self.parse_use_decl()? {
-                        let relative_start = (req_red.span.start_off - file_start_off) as usize;
-                        let text_len = req_red.span.len() as usize;
+                        let relative_start = (req_red.span.start_off - file_start_off) ;
+                        let text_len = req_red.span.len() ;
                         file_unit_requires_green_children.push(GreenChild {
                             relative_start,
                             node: Arc::clone(&req_red.green),
@@ -487,8 +487,8 @@ impl<'a> Parser<'a> {
                 },
                 TokenType::KwFun => {
                     let decl_red = self.parse_fun_decl(visibility, anns)?;
-                    let relative_start = (decl_red.span.start_off - file_start_off) as usize;
-                    let text_len = decl_red.span.len() as usize;
+                    let relative_start = (decl_red.span.start_off - file_start_off) ;
+                    let text_len = decl_red.span.len() ;
                     top_decl_green_children.push(GreenChild {
                         relative_start,
                         node: Arc::clone(&decl_red.inner),
@@ -498,8 +498,8 @@ impl<'a> Parser<'a> {
                     let decl_red = self.parse_external_decl(
                         visibility, anns, decl_start_off)?;
 
-                    let relative_start = (decl_red.span.start_off - file_start_off) as usize;
-                    let text_len = decl_red.span.len() as usize;
+                    let relative_start = (decl_red.span.start_off - file_start_off) ;
+                    let text_len = decl_red.span.len() ;
                     top_decl_green_children.push(GreenChild {
                         relative_start,
                         node: Arc::clone(&decl_red.inner),
@@ -509,8 +509,8 @@ impl<'a> Parser<'a> {
                     let decl_red = self.parse_type_decl(
                         visibility, anns, decl_start_off)?;
 
-                    let relative_start = (decl_red.span.start_off - file_start_off) as usize;
-                    let text_len = decl_red.span.len() as usize;
+                    let relative_start = (decl_red.span.start_off - file_start_off) ;
+                    let text_len = decl_red.span.len() ;
                     top_decl_green_children.push(GreenChild {
                         relative_start,
                         node: Arc::clone(&decl_red.inner),
@@ -529,7 +529,7 @@ impl<'a> Parser<'a> {
                 },
                 TokenType::KwEffect => {
                     let decl_red = self.parse_effect_decl(visibility, anns, decl_start_off)?;
-                    let relative_start = (decl_red.span.start_off - file_start_off) as usize;
+                    let relative_start = (decl_red.span.start_off - file_start_off) ;
                     top_decl_green_children.push(GreenChild {
                         relative_start,
                         node: Arc::clone(&decl_red.inner),
@@ -537,7 +537,7 @@ impl<'a> Parser<'a> {
                 }
                 TokenType::KwConst => {
                     let decl_red = self.parse_const_decl(visibility, anns, decl_start_off)?;
-                    let relative_start = (decl_red.span.start_off - file_start_off) as usize;
+                    let relative_start = (decl_red.span.start_off - file_start_off) ;
                     top_decl_green_children.push(GreenChild {
                         relative_start,
                         node: Arc::clone(&decl_red.inner),
@@ -545,7 +545,7 @@ impl<'a> Parser<'a> {
                 }
                 TokenType::KwGlobal => {
                     let decl_red = self.parse_global_decl(visibility, anns, decl_start_off)?;
-                    let relative_start = (decl_red.span.start_off - file_start_off) as usize;
+                    let relative_start = (decl_red.span.start_off - file_start_off) ;
                     top_decl_green_children.push(GreenChild {
                         relative_start,
                         node: Arc::clone(&decl_red.inner),
@@ -563,7 +563,7 @@ impl<'a> Parser<'a> {
         }
 
         let file_end_off = self.current_token().span.end_off;
-        let file_text_len = (file_end_off - file_start_off) as usize;
+        let file_text_len = (file_end_off - file_start_off) ;
         let name_text_len = module_name.len();
         let green_file_unit = GreenFileUnit {
             name: GreenChild {
@@ -624,7 +624,7 @@ impl<'a> Parser<'a> {
 
             if let Some(range) = unaffected_ranges.iter().find(|r| r.contains(&current_off)) {
                 let decl = old_decl_map.get(range).expect("decl must exist");
-                let relative_start = (range.start - file_start_off) as usize;
+                let relative_start = (range.start - file_start_off) ;
                 top_decl_green_children.push(GreenChild {
                     relative_start,
                     node: Arc::clone(decl),
@@ -644,7 +644,7 @@ impl<'a> Parser<'a> {
             match self.current_token().kind {
                 TokenType::KwUse => {
                     if let Some(req_red) = self.parse_use_decl()? {
-                        let relative_start = (req_red.span.start_off - file_start_off) as usize;
+                        let relative_start = (req_red.span.start_off - file_start_off) ;
                         file_unit_requires_green_children.push(GreenChild {
                             relative_start,
                             node: Arc::clone(&req_red.green),
@@ -653,7 +653,7 @@ impl<'a> Parser<'a> {
                 }
                 TokenType::KwFun => {
                     let decl_red = self.parse_fun_decl(visibility, anns)?;
-                    let relative_start = (decl_red.span.start_off - file_start_off) as usize;
+                    let relative_start = (decl_red.span.start_off - file_start_off) ;
                     top_decl_green_children.push(GreenChild {
                         relative_start,
                         node: Arc::clone(&decl_red.inner),
@@ -661,7 +661,7 @@ impl<'a> Parser<'a> {
                 }
                 TokenType::KwExternal => {
                     let decl_red = self.parse_external_decl(visibility, anns, decl_start_off)?;
-                    let relative_start = (decl_red.span.start_off - file_start_off) as usize;
+                    let relative_start = (decl_red.span.start_off - file_start_off) ;
                     top_decl_green_children.push(GreenChild {
                         relative_start,
                         node: Arc::clone(&decl_red.inner),
@@ -669,7 +669,7 @@ impl<'a> Parser<'a> {
                 }
                 TokenType::KwType => {
                     let decl_red = self.parse_type_decl(visibility, anns, decl_start_off)?;
-                    let relative_start = (decl_red.span.start_off - file_start_off) as usize;
+                    let relative_start = (decl_red.span.start_off - file_start_off) ;
                     top_decl_green_children.push(GreenChild {
                         relative_start,
                         node: Arc::clone(&decl_red.inner),
@@ -677,7 +677,7 @@ impl<'a> Parser<'a> {
                 }
                 TokenType::KwAbst => {
                     let decl_red = self.parse_abstract_decl(visibility, anns, decl_start_off)?;
-                    let relative_start = (decl_red.span.start_off - file_start_off) as usize;
+                    let relative_start = (decl_red.span.start_off - file_start_off) ;
                     top_decl_green_children.push(GreenChild {
                         relative_start,
                         node: Arc::clone(&decl_red.inner),
@@ -685,7 +685,7 @@ impl<'a> Parser<'a> {
                 }
                 TokenType::KwEffect => {
                     let decl_red = self.parse_effect_decl(visibility, anns, decl_start_off)?;
-                    let relative_start = (decl_red.span.start_off - file_start_off) as usize;
+                    let relative_start = (decl_red.span.start_off - file_start_off) ;
                     top_decl_green_children.push(GreenChild {
                         relative_start,
                         node: Arc::clone(&decl_red.inner),
@@ -693,7 +693,7 @@ impl<'a> Parser<'a> {
                 }
                 TokenType::KwConst => {
                     let decl_red = self.parse_const_decl(visibility, anns, decl_start_off)?;
-                    let relative_start = (decl_red.span.start_off - file_start_off) as usize;
+                    let relative_start = (decl_red.span.start_off - file_start_off) ;
                     top_decl_green_children.push(GreenChild {
                         relative_start,
                         node: Arc::clone(&decl_red.inner),
@@ -701,7 +701,7 @@ impl<'a> Parser<'a> {
                 }
                 TokenType::KwGlobal => {
                     let decl_red = self.parse_global_decl(visibility, anns, decl_start_off)?;
-                    let relative_start = (decl_red.span.start_off - file_start_off) as usize;
+                    let relative_start = (decl_red.span.start_off - file_start_off) ;
                     top_decl_green_children.push(GreenChild {
                         relative_start,
                         node: Arc::clone(&decl_red.inner),
@@ -719,7 +719,7 @@ impl<'a> Parser<'a> {
         }
 
         let file_end_off = self.current_token().span.end_off;
-        let file_text_len = (file_end_off - file_start_off) as usize;
+        let file_text_len = (file_end_off - file_start_off) ;
         let green_file_unit = GreenFileUnit {
             name: GreenChild {
                 relative_start: 0,
@@ -772,7 +772,7 @@ impl<'a> Parser<'a> {
             }
             self.skip_token_only(TokenType::NewLine)?;
             let nl_span = self.tokens.data[self.index - 1].span.clone();
-            let text_len = (nl_span.end_off - hash_span.start_off) as usize;
+            let text_len = (nl_span.end_off - hash_span.start_off) ;
             let ann_span = Span {
                 source_id: hash_span.source_id,
                 start_off: hash_span.start_off,

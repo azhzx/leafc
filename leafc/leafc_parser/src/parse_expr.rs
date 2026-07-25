@@ -1,5 +1,5 @@
 use crate::Parser;
-use leafc_coreapi::ast::{AtomExprNode, ExprRedNode, GreenCatchClause, GreenChild, GreenElseIf, GreenExpr, GreenExprKind, GreenMatchArm, GreenPattern, GreenPureStaticPath, GreenStructFieldInit, HasTextLen, IdentName, TypeName};
+use leafc_coreapi::ast::{AtomExprNode, ExprRedNode, GreenCatchClause, GreenChild, GreenElseIf, GreenExpr, GreenExprKind, GreenMatchArm, GreenPattern, GreenPureStaticPath, GreenStructFieldInit, GreenStructPatternField, HasTextLen, IdentName, TypeName};
 use leafc_coreapi::crate_meta::OperatorKind;
 use leafc_coreapi::diagnostic::DiagMsg;
 use leafc_coreapi::token::TokenType;
@@ -10,95 +10,322 @@ use std::sync::Arc;
 
 impl<'a> Parser<'a> {
 
-    /// pattern
+    /// pattern (with or)
     fn parse_pattern(&mut self) -> Result<GreenPattern, DiagMsg> {
-        let start_off = self.current_token().span.start_off;
+        let start_off = self.current_token().span.start_off ;
+        let left_start = start_off;
+        let mut left = self.parse_atomic_pattern()?;
+        while self.current_token().kind == TokenType::Pipe {
+            self.skip_token(); // '|'
+            let right_start = self.current_token().span.start_off ;
+            let right = self.parse_atomic_pattern()?;
+            let end_off = self.tokens.data[self.index - 1].span.end_off ;
+            let text_len = end_off - start_off;
+            left = GreenPattern::Or {
+                left: GreenChild {
+                    relative_start: (left_start - start_off),
+                    node: Arc::new(left),
+                },
+                right: GreenChild {
+                    relative_start: (right_start - start_off),
+                    node: Arc::new(right),
+                },
+                text_len,
+            };
+        }
+        Ok(left)
+    }
+
+    /// pattern unit
+    fn parse_atomic_pattern(&mut self) -> Result<GreenPattern, DiagMsg> {
+        let start_off = self.current_token().span.start_off ;
         let current = self.current_token().clone();
 
-        // 通配符
-        if current.kind == TokenType::Underline {
+        // wildcard
+        if current.kind == TokenType::Ident && current.text == "_" {
             self.skip_token();
             return Ok(GreenPattern::Wildcard);
         }
 
+        // binding x
         if current.kind == TokenType::KwBinding {
             self.skip_token(); // 'binding'
             let name_token = self.current_token().clone();
             self.skip_token_only(TokenType::Ident)?;
             let ident = IdentName { name: name_token.text.clone() };
-            return Ok(GreenPattern::Binding(ident));
+            return self.wrap_alias(GreenPattern::Binding(ident), start_off, name_token.span.start_off);
         }
 
-        // 字面量
+        // ..
+        if current.kind == TokenType::DotDot {
+            self.skip_token();
+            return Ok(GreenPattern::Rest);
+        }
+
+        // Literal
         if matches!(current.kind, TokenType::Int | TokenType::Float | TokenType::String) {
+            let lit_start = current.span.start_off; // 字面量的起始
             let atom = self.parse_atom_expr()?;
-            return Ok(GreenPattern::Literal(atom));
+            return self.wrap_alias(GreenPattern::Literal(atom), start_off, lit_start);
         }
 
+        // Tuple
+        if current.kind == TokenType::Lparen {
+            return self.parse_tuple_pattern(start_off);
+        }
+
+        // Path
         if current.kind == TokenType::Ident {
-            let type_start = self.current_token().span.start_off;
+            let type_start = self.current_token().span.start_off ;
             let path = self.parse_pure_static_path()?;
-            // 构造 type_name
-            let type_name = TypeName::Named {
-                path: GreenChild {
-                    relative_start: 0,
-                    node: Arc::new(path.clone()),
-                },
-                generics: vec![],
-                text_len: path.text_len,
-            };
-            // 期望 '('
-            if self.current_token().kind != TokenType::Lparen {
-                // 如果没有 '('，则不是构造器，返回错误，或回退（这里要求一定是构造器）
-                return Err(DiagMsg {
-                    title: format!("{:?}", ParserError::InvalidPattern),
-                    msg: "expected '(' after constructor name".to_string(),
-                    span: self.current_token().span.clone(),
-                });
-            }
-            self.skip_token(); // '('
-            let mut args = vec![];
-            while self.current_token().kind != TokenType::Rparen {
-                let pat = self.parse_pattern()?;
-                args.push(GreenChild {
-                    relative_start: 0, // 相对偏移在外层调整
-                    node: Arc::new(pat),
-                });
-                if self.current_token().kind == TokenType::Comma {
-                    self.skip_token();
-                } else if self.current_token().kind == TokenType::Rparen {
-                    break;
-                } else {
-                    return Err(DiagMsg {
-                        title: format!("{:?}", ParserError::InvalidPattern),
-                        msg: "invalid pattern argument list".to_string(),
-                        span: self.current_token().span.clone(),
-                    });
+
+            return match self.current_token().kind {
+                TokenType::Lparen => {
+                    self.parse_constructor_pattern(start_off, type_start, path)
+                        .and_then(|pat| self.wrap_alias(pat, start_off, type_start))
                 }
-            }
-            let rparen_off = self.current_token().span.start_off;
-            self.skip_token_only(TokenType::Rparen)?;
-            let end_off = self.tokens.data[self.index - 1].span.end_off;
-            let text_len = (end_off - start_off) as usize;
-
-            let args: Vec<_> = args.into_iter().map(|mut child| {
-                child
-            }).collect();
-
-            return Ok(GreenPattern::Constructor {
-                type_name: GreenChild {
-                    relative_start: (type_start - start_off) as usize,
-                    node: Arc::new(type_name),
-                },
-                args,
-                text_len,
-            });
+                TokenType::Lbrace => {
+                    self.parse_struct_pattern(start_off, path)
+                        .and_then(|pat| self.wrap_alias(pat, start_off, type_start))
+                }
+                _ => Err(DiagMsg {
+                    title: format!("{:?}", ParserError::InvalidPattern),
+                    msg: "expected '(' for constructor or '{{' for struct pattern".to_string(),
+                    span: self.current_token().span.clone(),
+                }),
+            };
         }
 
         Err(DiagMsg {
             title: format!("{:?}", ParserError::InvalidPattern),
             msg: "unexpected token in pattern".to_string(),
             span: current.span.clone(),
+        })
+    }
+
+    /// pattern binding x
+    fn wrap_alias(&mut self, inner: GreenPattern, alias_start_off: usize, pattern_start_off: usize) -> Result<GreenPattern, DiagMsg> {
+        if self.current_token().kind == TokenType::KwBinding {
+            self.skip_token(); // 'binding'
+            let name_token = self.current_token().clone();
+            self.skip_token_only(TokenType::Ident)?;
+            let name = IdentName { name: name_token.text.clone() };
+            let end_off = name_token.span.end_off ;
+            let text_len = end_off - alias_start_off;
+            let pattern_rel_start = pattern_start_off - alias_start_off;
+            Ok(GreenPattern::Alias {
+                pattern: GreenChild {
+                    relative_start: pattern_rel_start,
+                    node: Arc::new(inner),
+                },
+                name,
+                text_len,
+            })
+        } else {
+            Ok(inner)
+        }
+    }
+
+    /// Tuple
+    fn parse_tuple_pattern(&mut self, start_off: usize) -> Result<GreenPattern, DiagMsg> {
+        self.skip_token(); // '('
+        let mut elements = Vec::new();
+        let mut has_rest = false;
+
+        while self.current_token().kind != TokenType::Rparen {
+            if self.current_token().kind == TokenType::DotDot {
+                if has_rest {
+                    return Err(DiagMsg {
+                        title: format!("{:?}", ParserError::InvalidPattern),
+                        msg: "multiple '..' in tuple pattern".to_string(),
+                        span: self.current_token().span.clone(),
+                    });
+                }
+                elements.push(GreenChild {
+                    relative_start: (self.current_token().span.start_off ) - start_off,
+                    node: Arc::new(GreenPattern::Rest),
+                });
+                self.skip_token(); // '..'
+                has_rest = true;
+                if self.current_token().kind == TokenType::Comma {
+                    self.skip_token();
+                }
+                break;
+            }
+
+            let pat_start = self.current_token().span.start_off ;
+            let pat = self.parse_pattern()?;
+            elements.push(GreenChild {
+                relative_start: pat_start - start_off,
+                node: Arc::new(pat),
+            });
+
+            if self.current_token().kind == TokenType::Comma {
+                self.skip_token();
+            } else if self.current_token().kind == TokenType::Rparen {
+                break;
+            } else {
+                return Err(DiagMsg {
+                    title: format!("{:?}", ParserError::InvalidPattern),
+                    msg: "expected ',' or ')' in tuple pattern".to_string(),
+                    span: self.current_token().span.clone(),
+                });
+            }
+        }
+
+        self.skip_token_only(TokenType::Rparen)?;
+        let end_off = self.tokens.data[self.index - 1].span.end_off ;
+        let text_len = end_off - start_off;
+        Ok(GreenPattern::Tuple { elements, text_len })
+    }
+
+    /// Path ( pattern, .. )
+    fn parse_constructor_pattern(
+        &mut self,
+        start_off: usize,
+        type_start: usize,
+        path: GreenPureStaticPath,
+    ) -> Result<GreenPattern, DiagMsg> {
+        let type_name = TypeName::Named {
+            path: GreenChild {
+                relative_start: 0,
+                node: Arc::new(path.clone()),
+            },
+            generics: vec![],
+            text_len: path.text_len,
+        };
+        self.skip_token(); // '('
+        let mut args = Vec::new();
+        let mut has_rest = false;
+
+        while self.current_token().kind != TokenType::Rparen {
+            if self.current_token().kind == TokenType::DotDot {
+                if has_rest {
+                    return Err(DiagMsg {
+                        title: format!("{:?}", ParserError::InvalidPattern),
+                        msg: "multiple '..' in constructor pattern".to_string(),
+                        span: self.current_token().span.clone(),
+                    });
+                }
+                let rest_start = self.current_token().span.start_off ;
+                args.push(GreenChild {
+                    relative_start: rest_start - start_off,
+                    node: Arc::new(GreenPattern::Rest),
+                });
+                self.skip_token(); // '..'
+                has_rest = true;
+                if self.current_token().kind == TokenType::Comma {
+                    self.skip_token();
+                }
+                break;
+            }
+
+            let pat_start = self.current_token().span.start_off ;
+            let pat = self.parse_atomic_pattern()?;
+            args.push(GreenChild {
+                relative_start: pat_start - start_off,
+                node: Arc::new(pat),
+            });
+
+            if self.current_token().kind == TokenType::Comma {
+                self.skip_token();
+            } else if self.current_token().kind == TokenType::Rparen {
+                break;
+            } else {
+                return Err(DiagMsg {
+                    title: format!("{:?}", ParserError::InvalidPattern),
+                    msg: "expected ',' or ')' in constructor pattern".to_string(),
+                    span: self.current_token().span.clone(),
+                });
+            }
+        }
+
+        self.skip_token_only(TokenType::Rparen)?;
+        let end_off = self.tokens.data[self.index - 1].span.end_off ;
+        let text_len = end_off - start_off;
+
+        Ok(GreenPattern::Constructor {
+            type_name: GreenChild {
+                relative_start: type_start - start_off,
+                node: Arc::new(type_name),
+            },
+            args,
+            text_len,
+        })
+    }
+
+    /// Path { field_name, field_name2, .. }
+    fn parse_struct_pattern(
+        &mut self,
+        start_off: usize,
+        path: GreenPureStaticPath,
+    ) -> Result<GreenPattern, DiagMsg> {
+        self.skip_token(); // '{'
+        let mut fields = Vec::new();
+        let mut rest = false;
+
+        while self.current_token().kind != TokenType::Rbrace {
+            if self.current_token().kind == TokenType::DotDot {
+                if rest {
+                    return Err(DiagMsg {
+                        title: format!("{:?}", ParserError::InvalidPattern),
+                        msg: "multiple '..' in struct pattern".to_string(),
+                        span: self.current_token().span.clone(),
+                    });
+                }
+                self.skip_token(); // '..'
+                rest = true;
+                if self.current_token().kind == TokenType::Comma {
+                    self.skip_token();
+                }
+                break;
+            }
+
+            let field_name_token = self.current_token().clone();
+            self.skip_token_only(TokenType::Ident)?;
+            let field_name = IdentName { name: field_name_token.text.clone() };
+
+            let pattern = GreenPattern::Binding(field_name.clone());
+
+            let field_end = field_name_token.span.end_off;
+            let field_text_len = field_end - field_name_token.span.start_off;
+
+            let pattern_rel_start = (field_name_token.span.start_off) - start_off;
+
+            fields.push(GreenStructPatternField {
+                field_name,
+                pattern: GreenChild {
+                    relative_start: pattern_rel_start,
+                    node: Arc::new(pattern),
+                },
+                text_len: field_text_len,
+            });
+
+            if self.current_token().kind == TokenType::Comma {
+                self.skip_token();
+            } else if self.current_token().kind == TokenType::Rbrace {
+                break;
+            } else {
+                return Err(DiagMsg {
+                    title: format!("{:?}", ParserError::InvalidPattern),
+                    msg: "expected ',' or '}' in struct pattern".to_string(),
+                    span: self.current_token().span.clone(),
+                });
+            }
+        }
+
+        self.skip_token_only(TokenType::Rbrace)?;
+        let end_off = self.tokens.data[self.index - 1].span.end_off;
+        let text_len = end_off - start_off;
+
+        Ok(GreenPattern::Struct {
+            path: GreenChild {
+                relative_start: 0,
+                node: Arc::new(path),
+            },
+            fields,
+            rest,
+            text_len,
         })
     }
 
@@ -124,7 +351,7 @@ impl<'a> Parser<'a> {
             None
         };
 
-        // 期望 `=>`
+        // =>
         self.skip_token_only(TokenType::FatArrow)?;
 
         let body_start = self.current_token().span.start_off;
@@ -166,7 +393,6 @@ impl<'a> Parser<'a> {
             let arm = self.parse_match_arm(match_start)?;
             arms.push(GreenChild {
                 relative_start: arm.pattern.relative_start,
-                // 后面修正
                 node: Arc::new(arm),
             });
             if self.current_token().kind == TokenType::NewLine {
@@ -195,12 +421,11 @@ impl<'a> Parser<'a> {
             span: Span {
                 source_id: match_token.span.source_id,
                 start_off: match_start,
-                end_off: end_off,
+                end_off,
             },
             inner: Arc::new(green),
         })
     }
-
     /// raise expr
     pub fn parse_raise_expr(&mut self) -> Result<ExprRedNode, DiagMsg> {
         let raise_token = self.current_token().clone();
@@ -225,7 +450,7 @@ impl<'a> Parser<'a> {
 
         let control_name_seg = segments.last().unwrap();
         let control_name_child = GreenChild {
-            relative_start: (path_start + control_name_seg.relative_start - raise_start) as usize,
+            relative_start: (path_start + control_name_seg.relative_start - raise_start) ,
             node: control_name_seg.node.clone(),
         };
 
@@ -545,11 +770,11 @@ impl<'a> Parser<'a> {
             let elif_end = self.tokens.data[self.index - 1].span.end_off;
 
             let elif_cond_child = GreenChild {
-                relative_start: (elif_cond_red.span.start_off - elif_start) as usize,
+                relative_start: (elif_cond_red.span.start_off - elif_start) ,
                 node: elif_cond_red.inner.clone(),
             };
             let elif_body_child = GreenChild {
-                relative_start: (elif_body_red.span.start_off - elif_start) as usize,
+                relative_start: (elif_body_red.span.start_off - elif_start) ,
                 node: elif_body_red.inner.clone(),
             };
 
@@ -696,7 +921,7 @@ impl<'a> Parser<'a> {
                 while self.current_token().kind != TokenType::Rbracket {
                     let expr_red = self.parse_expr()?;
                     exprs.push(GreenChild {
-                        relative_start: (expr_red.span.start_off - hash_start) as usize,
+                        relative_start: (expr_red.span.start_off - hash_start) ,
                         node: expr_red.inner.clone(),
                     });
                     if self.current_token().kind == TokenType::Comma {
@@ -716,7 +941,7 @@ impl<'a> Parser<'a> {
                 let end = rbracket_token.span.end_off;
                 Ok(AtomExprNode::Tuple {
                     exprs,
-                    text_len: (end - hash_start) as usize,
+                    text_len: (end - hash_start) ,
                 })
             }
             _ => Err(DiagMsg {

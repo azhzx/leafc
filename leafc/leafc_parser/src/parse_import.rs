@@ -31,7 +31,7 @@ impl<'a> Parser<'a> {
             let name = self.current_token().text.clone();
             self.skip_token_only(TokenType::Ident)?;
             require_paths.push(GreenChild {
-                relative_start: (ident_start_off - require_start_off) as usize,
+                relative_start: (ident_start_off - require_start_off) ,
                 node: Arc::new(IdentName { name : name }),
             });
 
@@ -49,7 +49,7 @@ impl<'a> Parser<'a> {
                 let name = self.current_token().text.clone();
                 self.skip_token_only(TokenType::Ident)?;
                 only.push(GreenChild {
-                    relative_start: (ident_start_off - require_start_off) as usize,
+                    relative_start: (ident_start_off - require_start_off) ,
                     node: Arc::new(IdentName { name : name }),
                 });
 

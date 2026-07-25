@@ -1,3 +1,6 @@
+#lang("builtin_i8_type")
+type Int8;
+
 #lang("builtin_i32_type")
 type Int32;
 
@@ -7,12 +10,28 @@ type Int64;
 #lang("builtin_never_type")
 type Never;
 
-type Maybe
-    | Just of Int32
+type Maybe [T]
+where T: Int8
+    | Just of T
     | Nothing
 
+type Point[T]
+where T: Int8
+    a: T
+
+fun pass()
+    return
+
+fun foo[T](a: T) -> T
+where T: Int8
+    return a
 
 fun main()
-    let a = Maybe.Just(100)
-    if a is Maybe.Just(binding _a)
-        let n = _a
+    let c = foo(100)
+    let b = Point { a=100 }
+    let a = Maybe.Just( 100 )
+    when a
+        Maybe.Just(binding a) => do
+            pass()
+        Maybe.Nothing() => do
+            pass()

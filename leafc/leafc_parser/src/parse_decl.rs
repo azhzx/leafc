@@ -49,7 +49,7 @@ impl<'a> Parser<'a> {
             };
 
             children.push(GreenChild {
-                relative_start: (param_start_off - list_start_off) as usize,
+                relative_start: (param_start_off - list_start_off) ,
                 node: Arc::new(green_var),
             });
 
@@ -82,7 +82,7 @@ impl<'a> Parser<'a> {
             let type_start = self.current_token().span.start_off;
             let type_name = self.parse_type_name()?;
             Some(GreenChild {
-                relative_start: (type_start - decl_start_off) as usize,
+                relative_start: (type_start - decl_start_off) ,
                 node: Arc::new(type_name),
             })
         } else {
@@ -95,19 +95,19 @@ impl<'a> Parser<'a> {
         self.skip_token_only(TokenType::NewLine)?;
 
         let decl_end_off = self.tokens.data[self.index - 1].span.end_off;
-        let text_len = (decl_end_off - decl_start_off) as usize;
+        let text_len = (decl_end_off - decl_start_off) ;
 
         let name_child = GreenChild {
-            relative_start: (name_start_off - decl_start_off) as usize,
+            relative_start: (name_start_off - decl_start_off) ,
             node: Arc::new(IdentName { name: name_token.text.clone() }),
         };
         let expr_child = GreenChild {
-            relative_start: (expr_start - decl_start_off) as usize,
+            relative_start: (expr_start - decl_start_off) ,
             node: expr_red.inner.clone(),
         };
 
         let ann_children = annotations.into_iter().map(|(ga, span)| GreenChild {
-            relative_start: (span.start_off - decl_start_off) as usize,
+            relative_start: (span.start_off - decl_start_off) ,
             node: Arc::new(ga),
         }).collect();
 
@@ -148,7 +148,7 @@ impl<'a> Parser<'a> {
             let type_start = self.current_token().span.start_off;
             let type_name = self.parse_type_name()?;
             Some(GreenChild {
-                relative_start: (type_start - decl_start_off) as usize,
+                relative_start: (type_start - decl_start_off) ,
                 node: Arc::new(type_name),
             })
         } else {
@@ -173,7 +173,7 @@ impl<'a> Parser<'a> {
         };
 
         let ann_children = annotations.into_iter().map(|(ga, span)| GreenChild {
-            relative_start: (span.start_off - decl_start_off) as usize,
+            relative_start: (span.start_off - decl_start_off) ,
             node: Arc::new(ga),
         }).collect();
 
@@ -245,14 +245,14 @@ impl<'a> Parser<'a> {
                     };
 
                     let prev_token_end = self.tokens.data[self.index - 1].span.end_off;
-                    let param_text_len = (prev_token_end - param_start_off) as usize;
+                    let param_text_len = (prev_token_end - param_start_off) ;
 
                     let name_child = GreenChild {
                         relative_start: 0,
                         node: Arc::new(IdentName { name: param_name_token.text.clone() }),
                     };
                     let type_child = GreenChild {
-                        relative_start: (type_start_off - param_start_off) as usize,
+                        relative_start: (type_start_off - param_start_off) ,
                         node: Arc::new(type_str),
                     };
                     let green_param = GreenParam {
@@ -261,7 +261,7 @@ impl<'a> Parser<'a> {
                         text_len: param_text_len,
                     };
                     params.push(GreenChild {
-                        relative_start: (param_start_off - control_start) as usize,
+                        relative_start: (param_start_off - control_start) ,
                         node: Arc::new(green_param),
                     });
 
@@ -290,14 +290,14 @@ impl<'a> Parser<'a> {
             };
 
             let control_end_off = self.tokens.data[self.index - 1].span.end_off;
-            let control_text_len = (control_end_off - control_start) as usize;
+            let control_text_len = (control_end_off - control_start) ;
 
             let name_child = GreenChild {
                 relative_start: 0,
                 node: Arc::new(IdentName { name: control_name_token.text.clone() }),
             };
             let return_child = GreenChild {
-                relative_start: (return_type_start_off - control_start) as usize,
+                relative_start: (return_type_start_off - control_start) ,
                 node: Arc::new(return_type),
             };
 
@@ -308,7 +308,7 @@ impl<'a> Parser<'a> {
                 text_len: control_text_len,
             };
             controls.push(GreenChild {
-                relative_start: (control_start - decl_start_off) as usize,
+                relative_start: (control_start - decl_start_off) ,
                 node: Arc::new(control),
             });
 
@@ -318,14 +318,14 @@ impl<'a> Parser<'a> {
 
         self.skip_token_only(TokenType::Dedent)?;
         let decl_end_off = self.tokens.data[self.index - 1].span.end_off;
-        let text_len = (decl_end_off - decl_start_off) as usize;
+        let text_len = (decl_end_off - decl_start_off) ;
 
         let name_child = GreenChild {
-            relative_start: (name_start_off - decl_start_off) as usize,
+            relative_start: (name_start_off - decl_start_off) ,
             node: Arc::new(IdentName { name: name_token.text.clone() }),
         };
         let ann_children = annotations.into_iter().map(|(ga, span)| GreenChild {
-            relative_start: (span.start_off - decl_start_off) as usize,
+            relative_start: (span.start_off - decl_start_off) ,
             node: Arc::new(ga),
         }).collect();
 
@@ -364,7 +364,7 @@ impl<'a> Parser<'a> {
         let (mut generic_var_children, _) = if self.current_token().kind == TokenType::Lbracket {
             let (children, start) = self.parse_generic_params()?;
             let adjusted: Vec<_> = children.into_iter().map(|mut child| {
-                child.relative_start += (start - decl_start_off) as usize;
+                child.relative_start += (start - decl_start_off) ;
                 child
             }).collect();
             (adjusted, start)
@@ -381,7 +381,7 @@ impl<'a> Parser<'a> {
                 let impl_name = self.current_token().text.clone();
                 self.skip_token();
                 impls.push(GreenChild {
-                    relative_start: (impl_name_start - decl_start_off) as usize,
+                    relative_start: (impl_name_start - decl_start_off) ,
                     node: Arc::new(IdentName { name: impl_name }),
                 });
                 if self.current_token().kind == TokenType::Plus {
@@ -432,13 +432,13 @@ impl<'a> Parser<'a> {
                 };
 
                 let prev_token_end = self.tokens.data[self.index - 1].span.end_off;
-                let param_text_len = (prev_token_end - param_start_off) as usize;
+                let param_text_len = (prev_token_end - param_start_off) ;
                 let name_child = GreenChild {
                     relative_start: 0,
                     node: Arc::new(IdentName { name: param_name_token.text.clone() }),
                 };
                 let type_child = GreenChild {
-                    relative_start: (type_start_off - param_start_off) as usize,
+                    relative_start: (type_start_off - param_start_off) ,
                     node: Arc::new(type_str),
                 };
                 let green_param = GreenParam {
@@ -447,7 +447,7 @@ impl<'a> Parser<'a> {
                     text_len: param_text_len,
                 };
                 params.push(GreenChild {
-                    relative_start: (param_start_off - method_start_off) as usize,
+                    relative_start: (param_start_off - method_start_off) ,
                     node: Arc::new(green_param),
                 });
 
@@ -473,7 +473,7 @@ impl<'a> Parser<'a> {
                 self.get_unknown_type_name()
             };
             let return_type_child = GreenChild {
-                relative_start: (return_type_start_off - method_start_off) as usize,
+                relative_start: (return_type_start_off - method_start_off) ,
                 node: Arc::new(return_type_str),
             };
 
@@ -484,10 +484,10 @@ impl<'a> Parser<'a> {
             self.skip_token_if_newlines()?;
 
             let method_end_off = self.tokens.data[self.index - 1].span.end_off;
-            let method_text_len = (method_end_off - method_start_off) as usize;
+            let method_text_len = (method_end_off - method_start_off) ;
 
             let name_child = GreenChild {
-                relative_start: (method_name_token.span.start_off - method_start_off) as usize,
+                relative_start: (method_name_token.span.start_off - method_start_off) ,
                 node: Arc::new(IdentName { name: method_name_token.text.clone() }),
             };
             let green_method = GreenMethodDecl {
@@ -498,7 +498,7 @@ impl<'a> Parser<'a> {
                 text_len: method_text_len,
             };
             methods.push(GreenChild {
-                relative_start: (method_start_off - decl_start_off) as usize,
+                relative_start: (method_start_off - decl_start_off) ,
                 node: Arc::new(green_method),
             });
         }
@@ -506,14 +506,14 @@ impl<'a> Parser<'a> {
         self.skip_token_if_newlines()?;
         self.skip_token_only(TokenType::Dedent)?;
         let decl_end_off = self.tokens.data[self.index - 1].span.end_off;
-        let text_len = (decl_end_off - decl_start_off) as usize;
+        let text_len = (decl_end_off - decl_start_off) ;
 
         let name_child = GreenChild {
-            relative_start: (name_start_off - decl_start_off) as usize,
+            relative_start: (name_start_off - decl_start_off) ,
             node: Arc::new(IdentName { name: name_token.text.clone() }),
         };
         let ann_children = annotations.into_iter().map(|(ga, span)| GreenChild {
-            relative_start: (span.start_off - decl_start_off) as usize,
+            relative_start: (span.start_off - decl_start_off) ,
             node: Arc::new(ga),
         }).collect();
 
@@ -557,13 +557,13 @@ impl<'a> Parser<'a> {
         if self.current_token().kind == TokenType::Semicolon {
             self.skip_token();
             let decl_end_off = self.tokens.data[self.index - 1].span.end_off;
-            let text_len = (decl_end_off - decl_start_off) as usize;
+            let text_len = (decl_end_off - decl_start_off) ;
             let ann_children = annotations.into_iter().map(|(ga, span)| GreenChild {
-                relative_start: (span.start_off - decl_start_off) as usize,
+                relative_start: (span.start_off - decl_start_off) ,
                 node: Arc::new(ga),
             }).collect();
             let name_child = GreenChild {
-                relative_start: (name_start_off - decl_start_off) as usize,
+                relative_start: (name_start_off - decl_start_off) ,
                 node: Arc::new(IdentName { name: name_token.text.clone() }),
             };
             let green_decl = GreenDecl {
@@ -587,7 +587,7 @@ impl<'a> Parser<'a> {
         let generic_var_children = if self.current_token().kind == TokenType::Lbracket {
             let (children, start) = self.parse_generic_params()?;
             let adjusted: Vec<_> = children.into_iter().map(|mut child| {
-                child.relative_start += (start - decl_start_off) as usize;
+                child.relative_start += (start - decl_start_off) ;
                 child
             }).collect();
             adjusted
@@ -604,7 +604,7 @@ impl<'a> Parser<'a> {
                 let impl_name = self.current_token().text.clone();
                 self.skip_token();
                 impls.push(GreenChild {
-                    relative_start: (impl_name_start - decl_start_off) as usize,
+                    relative_start: (impl_name_start - decl_start_off) ,
                     node: Arc::new(IdentName { name: impl_name }),
                 });
                 if self.current_token().kind == TokenType::Plus {
@@ -630,18 +630,18 @@ impl<'a> Parser<'a> {
                 };
 
                 let decl_end_off = self.tokens.data[self.index - 1].span.end_off;
-                let text_len = (decl_end_off - decl_start_off) as usize;
+                let text_len = (decl_end_off - decl_start_off) ;
 
                 let name_child = GreenChild {
-                    relative_start: (name_start_off - decl_start_off) as usize,
+                    relative_start: (name_start_off - decl_start_off) ,
                     node: Arc::new(IdentName { name: name_token.text.clone() }),
                 };
                 let ref_to_child = GreenChild {
-                    relative_start: (ref_to_start - decl_start_off) as usize,
+                    relative_start: (ref_to_start - decl_start_off) ,
                     node: Arc::new(ref_to),
                 };
                 let ann_children = annotations.into_iter().map(|(ga, span)| GreenChild {
-                    relative_start: (span.start_off - decl_start_off) as usize,
+                    relative_start: (span.start_off - decl_start_off) ,
                     node: Arc::new(ga),
                 }).collect();
 
@@ -692,13 +692,13 @@ impl<'a> Parser<'a> {
                         self.skip_token_if_newlines()?;
 
                         let field_end = self.tokens.data[self.index - 1].span.end_off;
-                        let field_text_len = (field_end - field_start) as usize;
+                        let field_text_len = (field_end - field_start) ;
                         let name_child = GreenChild {
                             relative_start: 0,
                             node: Arc::new(IdentName { name: field_name_token.text.clone() }),
                         };
                         let type_child = GreenChild {
-                            relative_start: (type_start - field_start) as usize,
+                            relative_start: (type_start - field_start) ,
                             node: Arc::new(type_str),
                         };
                         let green_field = GreenField {
@@ -707,7 +707,7 @@ impl<'a> Parser<'a> {
                             text_len: field_text_len,
                         };
                         fields.push(GreenChild {
-                            relative_start: (field_start - decl_start_off) as usize,
+                            relative_start: (field_start - decl_start_off) ,
                             node: Arc::new(green_field),
                         });
                     }
@@ -715,14 +715,14 @@ impl<'a> Parser<'a> {
                     self.skip_token_if_newlines()?;
                     self.skip_token_only(TokenType::Dedent)?;
                     let decl_end_off = self.tokens.data[self.index - 1].span.end_off;
-                    let text_len = (decl_end_off - decl_start_off) as usize;
+                    let text_len = (decl_end_off - decl_start_off) ;
 
                     let name_child = GreenChild {
-                        relative_start: (name_start_off - decl_start_off) as usize,
+                        relative_start: (name_start_off - decl_start_off) ,
                         node: Arc::new(IdentName { name: name_token.text.clone() }),
                     };
                     let ann_children = annotations.into_iter().map(|(ga, span)| GreenChild {
-                        relative_start: (span.start_off - decl_start_off) as usize,
+                        relative_start: (span.start_off - decl_start_off) ,
                         node: Arc::new(ga),
                     }).collect();
 
@@ -758,7 +758,7 @@ impl<'a> Parser<'a> {
                         let ctor_generic_children = if self.current_token().kind == TokenType::Lbracket {
                             let (children, gen_start) = self.parse_generic_params()?;
                             children.into_iter().map(|mut child| {
-                                child.relative_start = (gen_start + child.relative_start - ctor_start) as usize;
+                                child.relative_start = (gen_start + child.relative_start - ctor_start) ;
                                 child
                             }).collect::<Vec<_>>()
                         } else {
@@ -785,18 +785,18 @@ impl<'a> Parser<'a> {
                         self.skip_token_if_newlines()?;
 
                         let ctor_end = self.tokens.data[self.index - 1].span.end_off;
-                        let ctor_text_len = (ctor_end - ctor_start) as usize;
+                        let ctor_text_len = (ctor_end - ctor_start) ;
 
                         let name_child = GreenChild {
                             relative_start: 0,
                             node: Arc::new(IdentName { name: ctor_name_token.text.clone() }),
                         };
                         let from_child = GreenChild {
-                            relative_start: (ctor_from_start - ctor_start) as usize,
+                            relative_start: (ctor_from_start - ctor_start) ,
                             node: Arc::new(ctor_from_type),
                         };
                         let return_child = GreenChild {
-                            relative_start: (ctor_return_start - ctor_start) as usize,
+                            relative_start: (ctor_return_start - ctor_start) ,
                             node: Arc::new(ctor_return_type),
                         };
 
@@ -809,7 +809,7 @@ impl<'a> Parser<'a> {
                             text_len: ctor_text_len,
                         };
                         ctors.push(GreenChild {
-                            relative_start: (ctor_start - decl_start_off) as usize,
+                            relative_start: (ctor_start - decl_start_off) ,
                             node: Arc::new(green_ctor),
                         });
                     }
@@ -817,14 +817,14 @@ impl<'a> Parser<'a> {
                     self.skip_token_if_newlines()?;
                     self.skip_token_only(TokenType::Dedent)?;
                     let decl_end_off = self.tokens.data[self.index - 1].span.end_off;
-                    let text_len = (decl_end_off - decl_start_off) as usize;
+                    let text_len = (decl_end_off - decl_start_off) ;
 
                     let name_child = GreenChild {
-                        relative_start: (name_start_off - decl_start_off) as usize,
+                        relative_start: (name_start_off - decl_start_off) ,
                         node: Arc::new(IdentName { name: name_token.text.clone() }),
                     };
                     let ann_children = annotations.into_iter().map(|(ga, span)| GreenChild {
-                        relative_start: (span.start_off - decl_start_off) as usize,
+                        relative_start: (span.start_off - decl_start_off) ,
                         node: Arc::new(ga),
                     }).collect();
 
@@ -883,7 +883,7 @@ impl<'a> Parser<'a> {
         let generic_var_children = if self.current_token().kind == TokenType::Lbracket {
             let (children, start) = self.parse_generic_params()?;
             let adjusted: Vec<_> = children.into_iter().map(|mut child| {
-                child.relative_start += (start - decl_start_off) as usize;
+                child.relative_start += (start - decl_start_off) ;
                 child
             }).collect();
             adjusted
@@ -911,13 +911,13 @@ impl<'a> Parser<'a> {
             };
 
             let prev_token_end = self.tokens.data[self.index - 1].span.end_off;
-            let param_text_len = (prev_token_end - param_start_off) as usize;
+            let param_text_len = (prev_token_end - param_start_off) ;
             let name_child = GreenChild {
                 relative_start: 0,
                 node: Arc::new(IdentName { name: param_name_token.text.clone() }),
             };
             let type_child = GreenChild {
-                relative_start: (type_start_off - param_start_off) as usize,
+                relative_start: (type_start_off - param_start_off) ,
                 node: Arc::new(type_str),
             };
             let green_param = GreenParam {
@@ -926,7 +926,7 @@ impl<'a> Parser<'a> {
                 text_len: param_text_len,
             };
             params.push(GreenChild {
-                relative_start: (param_start_off - decl_start_off) as usize,
+                relative_start: (param_start_off - decl_start_off) ,
                 node: Arc::new(green_param),
             });
 
@@ -974,7 +974,7 @@ impl<'a> Parser<'a> {
                 let expr_red = self.parse_expr()?;
                 let expr_span = expr_red.span;
                 block_children.push(GreenChild {
-                    relative_start: (expr_span.start_off - decl_start_off) as usize,
+                    relative_start: (expr_span.start_off - decl_start_off) ,
                     node: expr_red.inner.clone(),
                 });
                 if self.current_token().kind == TokenType::NewLine {
@@ -986,18 +986,18 @@ impl<'a> Parser<'a> {
             decl_end_off = self.tokens.data[self.index - 1].span.end_off;
         }
 
-        let text_len = (decl_end_off - decl_start_off) as usize;
+        let text_len = (decl_end_off - decl_start_off) ;
 
         let name_child = GreenChild {
-            relative_start: (name_start_off - decl_start_off) as usize,
+            relative_start: (name_start_off - decl_start_off) ,
             node: Arc::new(IdentName { name: name_token.text.clone() }),
         };
         let return_type_child = GreenChild {
-            relative_start: (return_type_start_off - decl_start_off) as usize,
+            relative_start: (return_type_start_off - decl_start_off) ,
             node: Arc::new(return_type_str),
         };
         let ann_children = annotations.into_iter().map(|(ga, span)| GreenChild {
-            relative_start: (span.start_off - decl_start_off) as usize,
+            relative_start: (span.start_off - decl_start_off) ,
             node: Arc::new(ga),
         }).collect();
 
@@ -1054,14 +1054,14 @@ impl<'a> Parser<'a> {
             self.skip_token_only(TokenType::Semicolon)?;
 
             let decl_end_off = self.tokens.data[self.index - 1].span.end_off;
-            let text_len = (decl_end_off - decl_start_off) as usize;
+            let text_len = (decl_end_off - decl_start_off) ;
 
             let name_child = GreenChild {
-                relative_start: (name_start_off - decl_start_off) as usize,
+                relative_start: (name_start_off - decl_start_off) ,
                 node: Arc::new(IdentName { name: name_token.text.clone() }),
             };
             let ann_children = annotations.into_iter().map(|(ga, span)| GreenChild {
-                relative_start: (span.start_off - decl_start_off) as usize,
+                relative_start: (span.start_off - decl_start_off) ,
                 node: Arc::new(ga),
             }).collect();
 
@@ -1106,13 +1106,13 @@ impl<'a> Parser<'a> {
             };
 
             let prev_token_end = self.tokens.data[self.index - 1].span.end_off;
-            let param_text_len = (prev_token_end - param_start_off) as usize;
+            let param_text_len = (prev_token_end - param_start_off) ;
             let name_child = GreenChild {
                 relative_start: 0,
                 node: Arc::new(IdentName { name: param_name_token.text.clone() }),
             };
             let type_child = GreenChild {
-                relative_start: (type_start_off - param_start_off) as usize,
+                relative_start: (type_start_off - param_start_off) ,
                 node: Arc::new(type_str),
             };
             let green_param = GreenParam {
@@ -1121,7 +1121,7 @@ impl<'a> Parser<'a> {
                 text_len: param_text_len,
             };
             params.push(GreenChild {
-                relative_start: (param_start_off - decl_start_off) as usize,
+                relative_start: (param_start_off - decl_start_off) ,
                 node: Arc::new(green_param),
             });
 
@@ -1160,22 +1160,22 @@ impl<'a> Parser<'a> {
         self.skip_token_only(TokenType::NewLine)?;
 
         let decl_end_off = self.tokens.data[self.index - 1].span.end_off;
-        let text_len = (decl_end_off - decl_start_off) as usize;
+        let text_len = (decl_end_off - decl_start_off) ;
 
         let name_child = GreenChild {
-            relative_start: (name_start_off - decl_start_off) as usize,
+            relative_start: (name_start_off - decl_start_off) ,
             node: Arc::new(IdentName { name: name_token.text.clone() }),
         };
         let return_type_child = GreenChild {
-            relative_start: (return_type_start_off - decl_start_off) as usize,
+            relative_start: (return_type_start_off - decl_start_off) ,
             node: Arc::new(return_type_str),
         };
         let sym_name_child = GreenChild {
-            relative_start: (sym_name_token.span.start_off - decl_start_off) as usize,
+            relative_start: (sym_name_token.span.start_off - decl_start_off) ,
             node: Arc::new(IdentName { name: sym_name_token.text.clone() }),
         };
         let ann_children = annotations.into_iter().map(|(ga, span)| GreenChild {
-            relative_start: (span.start_off - decl_start_off) as usize,
+            relative_start: (span.start_off - decl_start_off) ,
             node: Arc::new(ga),
         }).collect();
 

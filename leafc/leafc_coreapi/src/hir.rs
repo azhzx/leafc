@@ -147,6 +147,13 @@ pub struct HirCtorDef {
 }
 
 #[derive(Debug, Clone)]
+pub struct HirStructPatternField {
+    pub field_name: HirName,
+    pub pattern: HirPattern,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
 pub enum HirPattern {
     Wildcard,
     Literal(HirLit),
@@ -154,6 +161,27 @@ pub enum HirPattern {
     Constructor {
         type_name: HirTypeName,
         args: Vec<HirPattern>,
+        span: Span,
+    },
+    Or {
+        left: Box<HirPattern>,
+        right: Box<HirPattern>,
+        span: Span,
+    },
+    Rest,
+    Tuple {
+        elements: Vec<HirPattern>,
+        span: Span,
+    },
+    Struct {
+        path: HirName,
+        fields: Vec<HirStructPatternField>,
+        rest: bool,
+        span: Span,
+    },
+    Alias {
+        pattern: Box<HirPattern>,
+        name: HirName,
         span: Span,
     },
 }

@@ -187,6 +187,13 @@ pub struct GreenStructFieldInit {
 // Pattern
 // ===----------------------------
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct GreenStructPatternField {
+    pub field_name: IdentName,
+    pub pattern: GreenChild<GreenPattern>,
+    pub text_len: TextLen,
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum GreenPattern {
     Wildcard,
     Literal(AtomExprNode),
@@ -194,6 +201,27 @@ pub enum GreenPattern {
     Constructor {
         type_name: GreenChild<TypeName>,
         args: Vec<GreenChild<GreenPattern>>,
+        text_len: TextLen,
+    },
+    Or {
+        left: GreenChild<GreenPattern>,
+        right: GreenChild<GreenPattern>,
+        text_len: TextLen,
+    },
+    Rest,
+    Tuple {
+        elements: Vec<GreenChild<GreenPattern>>,
+        text_len: TextLen,
+    },
+    Struct {
+        path: GreenChild<GreenPureStaticPath>,
+        fields: Vec<GreenStructPatternField>,
+        rest: bool,
+        text_len: TextLen,
+    },
+    Alias {
+        pattern: GreenChild<GreenPattern>,
+        name: IdentName,
         text_len: TextLen,
     },
 }
@@ -606,9 +634,18 @@ impl HasTextLen for GreenPattern {
             GreenPattern::Wildcard => 1,
             GreenPattern::Literal(lit) => lit.text_len(),
             GreenPattern::Binding(id) => id.text_len(),
-            GreenPattern::Constructor { text_len, .. } => *text_len,
+            GreenPattern::Constructor { text_len, .. }
+            | GreenPattern::Or { text_len, .. }
+            | GreenPattern::Tuple { text_len, .. }
+            | GreenPattern::Struct { text_len, .. }
+            | GreenPattern::Alias { text_len, .. } => *text_len,
+            GreenPattern::Rest => 2,        // ..
         }
     }
+}
+
+impl HasTextLen for GreenStructPatternField {
+    fn text_len(&self) -> TextLen { self.text_len }
 }
 
 impl HasTextLen for AtomExprNode {

@@ -192,7 +192,11 @@ impl TypeChecker {
                     subst_map.insert(qv, arg_id);
                 }
 
-                self.copy_type_with_subst(scheme.body, &subst_map)
+                let result_ty = self.copy_type_with_subst(scheme.body, &subst_map)?;
+
+                self.check_generic_constraints(decl_id, &scheme.quantified, &subst_map, &span)?;
+
+                Ok(result_ty)
             }
 
             HirTypeName::Ref(inner) => {
@@ -457,6 +461,84 @@ impl TypeChecker {
             .expect("instantiation should not fail")
     }
 
+    fn instantiate_with_map(&mut self, scheme: &TypeScheme) -> (TyId, HashMap<TyId, TyId>) {
+        if scheme.quantified.is_empty() {
+            return (scheme.body, HashMap::new());
+        }
+        let mut subst = HashMap::new();
+        for &qv in &scheme.quantified {
+            let new_var = self.new_type_var();
+            subst.insert(qv, new_var);
+        }
+        let ty = self.copy_type_with_subst(scheme.body, &subst)
+            .expect("instantiation should not fail");
+        (ty, subst)
+    }
+
+    fn get_adt_decl_id_for_constructor(&self, ctor_sym_id: SymId) -> Option<HirDeclId> {
+        for (decl_id, decl) in self.hir_crate.hir_decl_pool.iter().enumerate() {
+            if let HirDeclKind::ADT { ctors, .. } = &decl.kind {
+                if ctors.iter().any(|c| c.name.sym_id == ctor_sym_id) {
+                    return Some(decl_id);
+                }
+            }
+        }
+        None
+    }
+
+    /// 检查泛型约束
+    fn check_generic_constraints(
+        &mut self,
+        decl_id: HirDeclId,
+        quantified: &[TyId],
+        subst: &HashMap<TyId, TyId>,
+        span: &Span,
+    ) -> Result<(), DiagMsg> {
+        let generic_params = match &self.hir_crate.hir_decl_pool[decl_id].kind {
+            HirDeclKind::Fun { generic_params, .. }
+            | HirDeclKind::Struct { generic_params, .. }
+            | HirDeclKind::ADT { generic_params, .. }
+            | HirDeclKind::TypeAlias { generic_params, .. }
+            | HirDeclKind::Abstract { generic_params, .. } => generic_params.clone(),
+            _ => return Ok(()),
+        };
+
+        if generic_params.is_empty() {
+            return Ok(());
+        }
+
+        if quantified.len() != generic_params.len() {
+            return Err(DiagMsg {
+                title: format!("{:?}", TypeCheckerError::InternalError),
+                msg: "mismatched quantified vars and generic params".into(),
+                span: span.clone(),
+            });
+        }
+
+        for (i, gp) in generic_params.iter().enumerate() {
+            let qv = quantified[i];
+            let actual_ty = subst.get(&qv).copied().unwrap_or(qv);
+
+            let old = self.name_type_map.insert(
+                gp.name.sym_id,
+                TypeScheme { quantified: vec![], body: actual_ty },
+            );
+
+            for constraint in &gp.constraints {
+                let c_ty = self.resolve_type_name(constraint, span.clone())?;
+                self.unify(actual_ty, c_ty, span.clone())?;
+            }
+
+            if let Some(old_scheme) = old {
+                self.name_type_map.insert(gp.name.sym_id, old_scheme);
+            } else {
+                self.name_type_map.remove(&gp.name.sym_id);
+            }
+        }
+
+        Ok(())
+    }
+
     fn collect_free_vars(&mut self, ty: TyId, out: &mut Vec<TyId>) {
         let root = self.representative(ty);
         match self.type_pool[root].kind.clone() {
@@ -500,6 +582,500 @@ impl TypeChecker {
         }
     }
 
+    fn check_match_exhaustiveness(
+        &mut self,
+        scrutinee_ty: TyId,
+        patterns: &[HirPattern],
+        span: &Span,
+    ) -> Result<(), DiagMsg> {
+        let mut matrix: Vec<Vec<&HirPattern>> = Vec::new();
+
+        for (idx, pat) in patterns.iter().enumerate() {
+            let q = vec![pat];
+
+            // unreachable
+            if !self.is_useful(&matrix, &q) {
+                return Err(DiagMsg {
+                    title: format!("{:?}", TypeCheckerError::UnreachablePattern),
+                    msg: format!("pattern at arm {} is unreachable", idx + 1),
+                    span: span.clone(),
+                });
+            }
+
+            matrix.push(q);
+        }
+
+        // exhaustiveness)
+        let wildcard = HirPattern::Wildcard;
+        let q_wildcard = vec![&wildcard];
+
+        if self.is_useful(&matrix, &q_wildcard) {
+            return Err(DiagMsg {
+                title: format!("{:?}", TypeCheckerError::NonExhaustiveMatch),
+                msg: "match expression is non-exhaustive, add `_ => ...` to cover all cases".into(),
+                span: span.clone(),
+            });
+        }
+
+        Ok(())
+    }
+
+    fn literals_equal(a: &HirLit, b: &HirLit) -> bool {
+        match (a, b) {
+            (HirLit::Decimal(s1), HirLit::Decimal(s2)) => s1 == s2,
+            (HirLit::Int(s1), HirLit::Int(s2)) => s1 == s2,
+            (HirLit::Str(s1), HirLit::Str(s2)) => s1 == s2,
+            (HirLit::Bool(b1), HirLit::Bool(b2)) => b1 == b2,
+            _ => false,
+        }
+    }
+
+    fn check_pattern(
+        &mut self,
+        ty: TyId,
+        pattern: &HirPattern,
+        span: &Span,
+    ) -> Result<Vec<(SymId, TyId)>, DiagMsg> {
+        match pattern {
+            HirPattern::Wildcard | HirPattern::Rest => Ok(vec![]),
+
+            HirPattern::Binding(name) => Ok(vec![(name.sym_id, ty)]),
+
+            HirPattern::Literal(lit) => {
+                let lit_ty = self.infer_lit(lit)?;
+                self.unify(ty, lit_ty, span.clone())?;
+                Ok(vec![])
+            }
+
+            HirPattern::Tuple { elements, span: pat_span } => {
+                let root = self.representative(ty);
+                let elem_tys = match &self.type_pool[root].kind.clone() {
+                    TypeNodeKind::Tuple(tys) => tys.clone(),
+                    _ => {
+                        let tys: Vec<TyId> = (0..elements.len()).map(|_| self.new_type_var()).collect();
+                        let tuple_ty = self.new_compound(TypeNodeKind::Tuple(tys.clone()));
+                        self.unify(ty, tuple_ty, pat_span.clone())?;
+                        tys
+                    }
+                };
+
+                if elements.len() != elem_tys.len() {
+                    return Err(DiagMsg {
+                        title: format!("{:?}", TypeCheckerError::ArityMismatch),
+                        msg: format!("expected {} elements in tuple pattern, got {}", elem_tys.len(), elements.len()),
+                        span: pat_span.clone(),
+                    });
+                }
+
+                let mut bindings = Vec::new();
+                for (elem_pat, elem_ty) in elements.iter().zip(elem_tys) {
+                    let mut b = self.check_pattern(elem_ty, elem_pat, pat_span)?;
+                    bindings.append(&mut b);
+                }
+                Ok(bindings)
+            }
+
+            HirPattern::Constructor { type_name, args, span: pat_span } => {
+                let ctor_name = match type_name {
+                    HirTypeName::Named { path, .. } => path,
+                    _ => {
+                        return Err(DiagMsg {
+                            title: format!("{:?}", TypeCheckerError::TypeMismatch),
+                            msg: "constructor pattern requires a named type".into(),
+                            span: pat_span.clone(),
+                        });
+                    }
+                };
+
+                let scheme = self
+                    .name_type_map
+                    .get(&ctor_name.sym_id)
+                    .cloned()
+                    .ok_or_else(|| DiagMsg {
+                        title: format!("{:?}", TypeCheckerError::UndefinedVariable),
+                        msg: format!("constructor `{}` not found", ctor_name.name),
+                        span: self.hir_name_span(ctor_name, pat_span.clone()),
+                    })?;
+
+                let ctor_ty = self.instantiate(&scheme);
+                let root = self.representative(ctor_ty);
+
+                let (param_tys, adt_ty) = match &self.type_pool[root].kind {
+                    TypeNodeKind::Fun { param_tys, return_ty } => (param_tys.clone(), *return_ty),
+                    TypeNodeKind::ADT { .. } => (vec![], ctor_ty),
+                    _ => {
+                        return Err(DiagMsg {
+                            title: format!("{:?}", TypeCheckerError::TypeMismatch),
+                            msg: format!("`{}` is not a constructor", ctor_name.name),
+                            span: pat_span.clone(),
+                        });
+                    }
+                };
+
+                self.unify(ty, adt_ty, pat_span.clone())?;
+
+                let adt_root = self.representative(adt_ty);
+                if let TypeNodeKind::ADT { decl_id, subst } = &self.type_pool[adt_root].kind.clone() {
+                    let adt_scheme = self.decl_type_map.get(decl_id)
+                        .ok_or_else(|| DiagMsg {
+                            title: format!("{:?}", TypeCheckerError::InternalError),
+                            msg: "ADT type scheme not found".into(),
+                            span: pat_span.clone(),
+                        })?
+                        .clone();
+                    let mut subst_map = HashMap::new();
+                    for (i, &qv) in adt_scheme.quantified.iter().enumerate() {
+                        if i < subst.len() {
+                            subst_map.insert(qv, subst[i]);
+                        }
+                    }
+                    self.check_generic_constraints(*decl_id, &adt_scheme.quantified, &subst_map, pat_span)?;
+                }
+
+                if args.len() != param_tys.len() {
+                    return Err(DiagMsg {
+                        title: format!("{:?}", TypeCheckerError::ArityMismatch),
+                        msg: format!(
+                            "constructor `{}` expects {} arguments, got {}",
+                            ctor_name.name,
+                            param_tys.len(),
+                            args.len()
+                        ),
+                        span: pat_span.clone(),
+                    });
+                }
+
+                let mut bindings = Vec::new();
+                for (arg_pat, &param_ty) in args.iter().zip(param_tys.iter()) {
+                    let mut inner = self.check_pattern(param_ty, arg_pat, pat_span)?;
+                    bindings.append(&mut inner);
+                }
+
+                Ok(bindings)
+            }
+
+            HirPattern::Or { left, right, span: pat_span } => {
+                let left_bindings = self.check_pattern(ty, left, pat_span)?;
+                let _right_bindings = self.check_pattern(ty, right, pat_span)?;
+                Ok(left_bindings)
+            }
+
+            HirPattern::Alias { pattern, name, span: pat_span } => {
+                let mut bindings = self.check_pattern(ty, pattern, pat_span)?;
+                bindings.push((name.sym_id, ty));
+                Ok(bindings)
+            }
+
+            HirPattern::Struct { path, fields, rest: _, span: pat_span } => {
+                let decl_id = *self.sym_to_decl.get(&path.sym_id).ok_or_else(|| DiagMsg {
+                    title: format!("{:?}", TypeCheckerError::UndefinedType),
+                    msg: format!("struct `{}` not found", path.name),
+                    span: pat_span.clone(),
+                })?;
+
+                let scheme = self.decl_type_map.get(&decl_id).ok_or_else(|| DiagMsg {
+                    title: format!("{:?}", TypeCheckerError::TypeNotChecked),
+                    msg: format!("type `{}` not checked yet", path.name),
+                    span: pat_span.clone(),
+                })?.clone();
+
+                let struct_ty = self.instantiate(&scheme);
+                self.unify(ty, struct_ty, pat_span.clone())?;
+
+                let decl = self.hir_crate.hir_decl_pool[decl_id].clone();
+                let field_defs = match &decl.kind {
+                    HirDeclKind::Struct { fields, .. } => fields.clone(),
+                    _ => return Err(DiagMsg {
+                        title: format!("{:?}", TypeCheckerError::TypeMismatch),
+                        msg: format!("`{}` is not a struct", path.name),
+                        span: pat_span.clone(),
+                    }),
+                };
+
+                let mut bindings = Vec::new();
+                for field_pat in fields {
+                    let def = field_defs.iter().find(|f| f.name.name == field_pat.field_name.name)
+                        .ok_or_else(|| DiagMsg {
+                            title: format!("{:?}", TypeCheckerError::FieldNotFound),
+                            msg: format!("struct `{}` has no field `{}`", path.name, field_pat.field_name.name),
+                            span: field_pat.span.clone(),
+                        })?;
+                    let field_ty = self.resolve_type_name(&def.type_ann, field_pat.span.clone())?;
+                    let mut b = self.check_pattern(field_ty, &field_pat.pattern, &field_pat.span)?;
+                    bindings.append(&mut b);
+                }
+                Ok(bindings)
+            }
+        }
+    }
+
+    fn is_same_type_name(a: &HirTypeName, b: &HirTypeName) -> bool {
+        match (a, b) {
+            (HirTypeName::Named { path: p1, .. }, HirTypeName::Named { path: p2, .. }) => {
+                p1.sym_id == p2.sym_id
+            }
+            _ => false,
+        }
+    }
+
+    /// U(P, q): check q is useful for P ?
+    fn is_useful(&self, p: &[Vec<&HirPattern>], q: &[&HirPattern]) -> bool {
+        if p.is_empty() {
+            return true;
+        }
+
+        if q.is_empty() {
+            return false;
+        }
+
+        let q1 = q[0];
+        let q_rest = &q[1..];
+
+        match q1 {
+            HirPattern::Constructor { args, .. } => {
+                let s_p = self.specialize(p, q1);
+                let mut s_q: Vec<&HirPattern> = args.iter().collect();
+                s_q.extend_from_slice(q_rest);
+
+                self.is_useful(&s_p, &s_q)
+            }
+            HirPattern::Tuple { elements, .. } => {
+                let s_p = self.specialize(p, q1);
+                let mut s_q: Vec<&HirPattern> = elements.iter().collect();
+                s_q.extend_from_slice(q_rest);
+
+                self.is_useful(&s_p, &s_q)
+            }
+            HirPattern::Literal(_) => {
+                let s_p = self.specialize(p, q1);
+                self.is_useful(&s_p, q_rest)
+            }
+            HirPattern::Wildcard | HirPattern::Binding(_) | HirPattern::Rest => {
+                let constructors_in_p = self.get_constructors(p);
+                let is_exhaustive_constructors = self.is_all_constructors_covered(&constructors_in_p);
+
+                if is_exhaustive_constructors {
+                    for ctor in constructors_in_p {
+                        let s_p = self.specialize(p, ctor);
+                        let arity = self.get_ctor_arity(ctor);
+
+                        let mut s_q = vec![&HirPattern::Wildcard; arity];
+                        s_q.extend_from_slice(q_rest);
+
+                        if self.is_useful(&s_p, &s_q) {
+                            return true;
+                        }
+                    }
+                    false
+                } else {
+                    let d_p = self.default_matrix(p);
+                    self.is_useful(&d_p, q_rest)
+                }
+            }
+            HirPattern::Or { left, right, .. } => {
+                [left.as_ref(), right.as_ref()].iter().any(|pat| {
+                    let mut expanded_q = vec![*pat];
+                    expanded_q.extend_from_slice(q_rest);
+                    self.is_useful(p, &expanded_q)
+                })
+            }
+            HirPattern::Alias { pattern, .. } => {
+                let mut expanded_q = vec![pattern.as_ref()];
+                expanded_q.extend_from_slice(q_rest);
+                self.is_useful(p, &expanded_q)
+            }
+            HirPattern::Struct { .. } => {
+                let s_p = self.specialize(p, q1);
+                self.is_useful(&s_p, q_rest)
+            }
+        }
+    }
+
+    /// 特化矩阵
+    fn specialize<'a>(&self, p: &[Vec<&'a HirPattern>], ctor: &HirPattern) -> Vec<Vec<&'a HirPattern>> {
+        let mut s_p = Vec::new();
+        for row in p {
+            if row.is_empty() { continue; }
+
+            match (row[0], ctor) {
+                (
+                    HirPattern::Constructor { type_name: r_name, args: r_args, .. },
+                    HirPattern::Constructor { type_name: c_name, .. },
+                ) => {
+                    if Self::is_same_type_name(r_name, c_name) {
+                        let mut new_row = r_args.iter().collect::<Vec<_>>();
+                        new_row.extend_from_slice(&row[1..]);
+                        s_p.push(new_row);
+                    }
+                }
+                // Tuple
+                (
+                    HirPattern::Tuple { elements: r_elems, .. },
+                    HirPattern::Tuple { .. },
+                ) => {
+                    let mut new_row = r_elems.iter().collect::<Vec<_>>();
+                    new_row.extend_from_slice(&row[1..]);
+                    s_p.push(new_row);
+                }
+                // Literal
+                (HirPattern::Literal(r_lit), HirPattern::Literal(c_lit)) => {
+                    if Self::literals_equal(r_lit, c_lit) {
+                        s_p.push(row[1..].to_vec());
+                    }
+                }
+                (HirPattern::Struct { path: r_path, fields: r_fields, .. },
+                    HirPattern::Struct { path: c_path, .. }) =>
+                    {
+                        if r_path.sym_id == c_path.sym_id {
+                            let mut new_row: Vec<&HirPattern> = r_fields.iter()
+                                .map(|f| &f.pattern)
+                                .collect();
+                            new_row.extend_from_slice(&row[1..]);
+                            s_p.push(new_row);
+                        }
+                    }
+                // Wildcards / Bindings / Rest
+                (HirPattern::Wildcard | HirPattern::Binding(_) | HirPattern::Rest, _) => {
+                    let arity = self.get_ctor_arity(ctor);
+                    let mut new_row = vec![&HirPattern::Wildcard; arity];
+                    new_row.extend_from_slice(&row[1..]);
+                    s_p.push(new_row);
+                }
+                // Or pattern
+                (HirPattern::Or { left, right, .. }, _) => {
+                    for pat in [left.as_ref(), right.as_ref()] {
+                        let mut expanded_row = vec![pat];
+                        expanded_row.extend_from_slice(&row[1..]);
+                        s_p.extend(self.specialize(&[expanded_row], ctor));
+                    }
+                }
+                // Alias
+                (HirPattern::Alias { pattern, .. }, _) => {
+                    let mut expanded_row = vec![pattern.as_ref()];
+                    expanded_row.extend_from_slice(&row[1..]);
+                    s_p.extend(self.specialize(&[expanded_row], ctor));
+                }
+                _ => {}
+            }
+        }
+        s_p
+    }
+
+    fn default_matrix<'a>(&self, p: &[Vec<&'a HirPattern>]) -> Vec<Vec<&'a HirPattern>> {
+        let mut d_p = Vec::new();
+        for row in p {
+            if row.is_empty() { continue; }
+            match row[0] {
+                HirPattern::Wildcard | HirPattern::Binding(_) | HirPattern::Rest => {
+                    d_p.push(row[1..].to_vec());
+                }
+                HirPattern::Or { left, right, .. } => {
+                    for pat in [left.as_ref(), right.as_ref()] {
+                        let mut expanded_row = vec![pat];
+                        expanded_row.extend_from_slice(&row[1..]);
+                        d_p.extend(self.default_matrix(&[expanded_row]));
+                    }
+                }
+                HirPattern::Alias { pattern, .. } => {
+                    let mut expanded_row = vec![pattern.as_ref()];
+                    expanded_row.extend_from_slice(&row[1..]);
+                    d_p.extend(self.default_matrix(&[expanded_row]));
+                }
+                _ => {}
+            }
+        }
+        d_p
+    }
+
+    fn get_ctor_arity(&self, ctor: &HirPattern) -> usize {
+        match ctor {
+            HirPattern::Constructor { args, .. } => args.len(),
+            HirPattern::Tuple { elements, .. } => elements.len(),
+            HirPattern::Struct { fields, .. } => fields.len(),
+            HirPattern::Literal(_) => 0,
+            _ => 0,
+        }
+    }
+
+    fn is_same_ctor(&self, a: &HirPattern, b: &HirPattern) -> bool {
+        match (a, b) {
+            (
+                HirPattern::Constructor { type_name: t1, .. },
+                HirPattern::Constructor { type_name: t2, .. },
+            ) => Self::is_same_type_name(t1, t2),
+            (HirPattern::Literal(l1), HirPattern::Literal(l2)) => Self::literals_equal(l1, l2),
+            (
+                HirPattern::Tuple { elements: e1, .. },
+                HirPattern::Tuple { elements: e2, .. },
+            ) => e1.len() == e2.len(),
+            (
+                HirPattern::Struct { path: p1, .. },
+                HirPattern::Struct { path: p2, .. },
+            ) => p1.sym_id == p2.sym_id,
+            _ => false,
+        }
+    }
+
+    fn get_constructors<'a>(&self, p: &[Vec<&'a HirPattern>]) -> Vec<&'a HirPattern> {
+        let mut ctors: Vec<&'a HirPattern> = Vec::new();
+
+        for row in p {
+            if row.is_empty() { continue; }
+            match row[0] {
+                pat @ (
+                HirPattern::Constructor { .. }
+                | HirPattern::Literal(_)
+                | HirPattern::Tuple { .. }
+                | HirPattern::Struct { .. }
+                ) => {
+                    if !ctors.iter().any(|c| self.is_same_ctor(c, pat)) {
+                        ctors.push(pat);
+                    }
+                }
+                HirPattern::Or { left, right, .. } => {
+                    let left_row = vec![left.as_ref()];
+                    let right_row = vec![right.as_ref()];
+                    ctors.extend(self.get_constructors(&[left_row]));
+                    ctors.extend(self.get_constructors(&[right_row]));
+                }
+                HirPattern::Alias { pattern, .. } => {
+                    ctors.extend(self.get_constructors(&[vec![pattern.as_ref()]]));
+                }
+                _ => {}
+            }
+        }
+        ctors
+    }
+
+    fn is_all_constructors_covered(&self, ctors: &[&HirPattern]) -> bool {
+        if ctors.is_empty() {
+            return false;
+        }
+
+        match ctors[0] {
+            HirPattern::Constructor { type_name, .. } => {
+                if let HirTypeName::Named { path, .. } = type_name {
+                    if let Some(decl_id) = self.get_adt_decl_id_for_constructor(path.sym_id) {
+                        let decl = &self.hir_crate.hir_decl_pool[decl_id];
+                        if let HirDeclKind::ADT { ctors: def_ctors, .. } = &decl.kind {
+                            return ctors.len() >= def_ctors.len();
+                        }
+                    }
+                }
+                false
+            }
+            HirPattern::Tuple { .. } => true,
+            HirPattern::Struct { .. } => true,
+            HirPattern::Literal(HirLit::Bool(_)) => {
+                let has_true = ctors.iter().any(|c| matches!(c, HirPattern::Literal(HirLit::Bool(true))));
+                let has_false = ctors.iter().any(|c| matches!(c, HirPattern::Literal(HirLit::Bool(false))));
+                has_true && has_false
+            }
+            HirPattern::Literal(_) => false,
+            _ => false,
+        }
+    }
+
     fn infer_expr(&mut self, expr_id: HirExprId, expected: Option<TyId>) -> Result<TyId, DiagMsg> {
         let expr = self.hir_crate.hir_expr_pool[expr_id].clone();
         let span = expr.span.clone();
@@ -534,7 +1110,8 @@ impl TypeChecker {
                 self.infer_call(*callee, args, expected, &span)?,
             HirExprKind::Block { stmts } =>
                 self.infer_block(stmts, expected, &span)?,
-            HirExprKind::Let { name, type_ann, init, .. } =>
+            HirExprKind::Let {
+                name, type_ann, init, .. } =>
                 self.infer_let(expr_id, name, type_ann.as_ref(), *init, &span)?,
             HirExprKind::If { cond, then, elifs, else_opt } =>
                 self.infer_if(*cond, *then, elifs, *else_opt, expected, &span)?,
@@ -639,6 +1216,34 @@ impl TypeChecker {
                     }),
                 };
 
+                if fields.len() != struct_fields.len() {
+                    return Err(DiagMsg {
+                        title: format!("{:?}", TypeCheckerError::ArityMismatch),
+                        msg: format!(
+                            "struct `{}` has {} fields, but {} were provided",
+                            decl.ident,
+                            struct_fields.len(),
+                            fields.len()
+                        ),
+                        span: span.clone(),
+                    });
+                }
+
+                let struct_scheme = self.decl_type_map.get(&decl_id)
+                    .ok_or_else(|| DiagMsg {
+                        title: format!("{:?}", TypeCheckerError::InternalError),
+                        msg: "struct type scheme not found".into(),
+                        span: span.clone(),
+                    })?
+                    .clone();
+                let mut subst_map = HashMap::new();
+                for (i, &qv) in struct_scheme.quantified.iter().enumerate() {
+                    if i < subst.len() {
+                        subst_map.insert(qv, subst[i]);
+                    }
+                }
+                self.check_generic_constraints(decl_id, &struct_scheme.quantified, &subst_map, &span)?;
+
                 let mut var_map: HashMap<SymId, TyId> = HashMap::new();
                 for (gp, &actual_ty) in generic_params.iter().zip(subst.iter()) {
                     var_map.insert(gp.name.sym_id, actual_ty);
@@ -662,7 +1267,7 @@ impl TypeChecker {
                     self.infer_expr(*field_expr, Some(field_ty))?;
                 }
 
-                // 清理
+                // 清理临时泛型绑定
                 for sym_id in inserted_symbols {
                     self.name_type_map.remove(&sym_id);
                 }
@@ -704,6 +1309,25 @@ impl TypeChecker {
                 };
 
                 self.unify(arg_ty, param_ty, span.clone())?;
+
+                let result_root = self.representative(result_ty);
+                if let TypeNodeKind::ADT { decl_id, subst } = &self.type_pool[result_root].kind.clone() {
+                    let adt_scheme = self.decl_type_map.get(decl_id)
+                        .ok_or_else(|| DiagMsg {
+                            title: format!("{:?}", TypeCheckerError::InternalError),
+                            msg: "ADT type scheme not found".into(),
+                            span: span.clone(),
+                        })?
+                        .clone();
+                    let mut subst_map = HashMap::new();
+                    for (i, &qv) in adt_scheme.quantified.iter().enumerate() {
+                        if i < subst.len() {
+                            subst_map.insert(qv, subst[i]);
+                        }
+                    }
+                    self.check_generic_constraints(*decl_id, &adt_scheme.quantified, &subst_map, &span)?;
+                }
+
                 result_ty
             }
             HirExprKind::Raise { control_name, args } => {
@@ -869,7 +1493,49 @@ impl TypeChecker {
                 body_ty
             }
 
-            HirExprKind::Match { .. } => todo!(),
+            HirExprKind::Match { scrutinee, arms } => {
+                let scrutinee_ty = self.infer_expr(*scrutinee, None)?;
+
+                let mut match_res_ty = expected;
+                let mut patterns_for_check = Vec::new();
+
+                for arm in arms {
+                    patterns_for_check.push(arm.pattern.clone());
+
+                    // new scope
+                    let saved_level = self.current_level;
+                    self.current_level += 1;
+
+                    let bindings = self.check_pattern(scrutinee_ty, &arm.pattern, &arm.span)?;
+
+                    let mut bound_symbols = Vec::new();
+                    for (sym_id, ty) in bindings {
+                        self.name_type_map.insert(sym_id, TypeScheme { quantified: vec![], body: ty });
+                        self.local_binding_map.insert(sym_id, ty);
+                        bound_symbols.push(sym_id);
+                    }
+
+                    // guard
+                    if let Some(guard) = arm.guard {
+                        self.infer_expr(guard, Some(self.builtin.bool_ty))?;
+                    }
+
+                    let arm_ty = self.infer_expr(arm.body, match_res_ty)?;
+                    if match_res_ty.is_none() {
+                        match_res_ty = Some(arm_ty);
+                    }
+
+                    for sym_id in bound_symbols {
+                        self.name_type_map.remove(&sym_id);
+                    }
+                    self.current_level = saved_level;
+                }
+
+                // exhaustiveness and usefulness
+                self.check_match_exhaustiveness(scrutinee_ty, &patterns_for_check, &span)?;
+
+                match_res_ty.unwrap_or(self.builtin.unit)
+            }
 
             HirExprKind::Is { expr, pattern } => {
                 let expr_ty = self.infer_expr(*expr, None)?;
@@ -935,8 +1601,35 @@ impl TypeChecker {
         }
     }
 
-    fn infer_call(&mut self, callee: HirExprId, args: &[HirExprId], expected: Option<TyId>, span: &Span) -> Result<TyId, DiagMsg> {
-        let callee_ty = self.infer_expr(callee, None)?;
+    fn infer_call(
+        &mut self,
+        callee: HirExprId,
+        args: &[HirExprId],
+        expected: Option<TyId>,
+        span: &Span,
+    ) -> Result<TyId, DiagMsg> {
+        let callee_kind = self.hir_crate.hir_expr_pool[callee].kind.clone();
+
+        let (callee_ty, fun_info) = if let HirExprKind::Ident(ref name) = callee_kind {
+            if let Some(scheme) = self.name_type_map.get(&name.sym_id).cloned() {
+                let (inst_ty, subst) = self.instantiate_with_map(&scheme);
+                let decl_id = self.sym_to_decl.get(&name.sym_id).copied();
+                let is_fun = decl_id.map_or(false, |id| {
+                    matches!(&self.hir_crate.hir_decl_pool[id].kind, HirDeclKind::Fun { .. })
+                });
+                if is_fun {
+                    let fun_decl_id = decl_id.unwrap();
+                    (inst_ty, Some((fun_decl_id, scheme.quantified, subst)))
+                } else {
+                    (inst_ty, None)
+                }
+            } else {
+                (self.infer_expr(callee, None)?, None)
+            }
+        } else {
+            (self.infer_expr(callee, None)?, None)
+        };
+
         let arg_tys: Vec<TyId> = (0..args.len()).map(|_| self.new_type_var()).collect();
         let ret_ty = expected.unwrap_or_else(|| self.new_type_var());
         let fun_ty = self.new_compound(TypeNodeKind::Fun {
@@ -944,9 +1637,21 @@ impl TypeChecker {
             return_ty: ret_ty,
         });
         self.unify(callee_ty, fun_ty, span.clone())?;
+
         for (arg_id, &expected_arg_ty) in args.iter().zip(&arg_tys) {
             self.infer_expr(*arg_id, Some(expected_arg_ty))?;
         }
+
+        // 检查约束
+        if let Some((decl_id, quantified, subst)) = fun_info {
+            let mut actual_subst = HashMap::new();
+            for (&qv, &fresh_var) in &subst {
+                let actual_ty = self.representative(fresh_var);
+                actual_subst.insert(qv, actual_ty);
+            }
+            self.check_generic_constraints(decl_id, &quantified, &actual_subst, span)?;
+        }
+
         Ok(ret_ty)
     }
 
@@ -1031,94 +1736,13 @@ impl TypeChecker {
         if let Some(e) = expr {
             self.infer_expr(*e, expected)?;
         }
-        Ok(self.builtin.unit)
+        Ok(self.builtin.never)
     }
 
     fn infer_cast(&mut self, expr: HirExprId, type_ann: &HirTypeName, span: &Span) -> Result<TyId, DiagMsg> {
         let target_ty = self.resolve_type_name(type_ann, span.clone())?;
         self.infer_expr(expr, None)?;
         Ok(target_ty)
-    }
-
-    fn check_pattern(
-        &mut self,
-        ty: TyId,
-        pattern: &HirPattern,
-        span: &Span,
-    ) -> Result<Vec<(SymId, TyId)>, DiagMsg> {
-        match pattern {
-            HirPattern::Wildcard => Ok(vec![]),
-
-            HirPattern::Binding(name) => Ok(vec![(name.sym_id, ty)]),
-
-            HirPattern::Constructor {
-                type_name, args, ..
-            } => {
-                let ctor_name = match type_name {
-                    HirTypeName::Named { path, .. } => path,
-                    _ => {
-                        return Err(DiagMsg {
-                            title: format!("{:?}", TypeCheckerError::TypeMismatch),
-                            msg: "constructor pattern requires a named type".into(),
-                            span: span.clone(),
-                        });
-                    }
-                };
-
-                let scheme = self
-                    .name_type_map
-                    .get(&ctor_name.sym_id)
-                    .cloned()
-                    .ok_or_else(|| DiagMsg {
-                        title: format!("{:?}", TypeCheckerError::UndefinedVariable),
-                        msg: format!("constructor `{}` not found", ctor_name.name),
-                        span: self.hir_name_span(&ctor_name, span.clone()),
-                    })?;
-
-                let ctor_ty = self.instantiate(&scheme);
-                let root = self.representative(ctor_ty);
-
-                let (param_tys, adt_ty) = match &self.type_pool[root].kind {
-                    TypeNodeKind::Fun {
-                        param_tys,
-                        return_ty,
-                    } => (param_tys.clone(), *return_ty),
-                    TypeNodeKind::ADT { .. } => (vec![], ctor_ty),
-                    _ => {
-                        return Err(DiagMsg {
-                            title: format!("{:?}", TypeCheckerError::TypeMismatch),
-                            msg: format!("`{}` is not a constructor", ctor_name.name),
-                            span: span.clone(),
-                        });
-                    }
-                };
-
-                self.unify(ty, adt_ty, span.clone())?;
-
-                if args.len() != param_tys.len() {
-                    return Err(DiagMsg {
-                        title: format!("{:?}", TypeCheckerError::ArityMismatch),
-                        msg: format!(
-                            "constructor `{}` expects {} arguments, got {}",
-                            ctor_name.name,
-                            param_tys.len(),
-                            args.len()
-                        ),
-                        span: span.clone(),
-                    });
-                }
-
-                let mut bindings = Vec::new();
-                for (arg_pat, &param_ty) in args.iter().zip(param_tys.iter()) {
-                    let mut inner = self.check_pattern(param_ty, arg_pat, span)?;
-                    bindings.append(&mut inner);
-                }
-
-                Ok(bindings)
-            }
-
-            _ => todo!()
-        }
     }
 
     fn check_decl(&mut self, decl_id: HirDeclId) -> Result<(), DiagMsg> {

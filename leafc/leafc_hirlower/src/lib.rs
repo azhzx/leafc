@@ -1,17 +1,12 @@
-use std::collections::HashMap;
-use std::sync::Arc;
-use leafc_coreapi::ast::{child_decl_red, child_expr_red, child_span_of, AtomExprNode, CrateAst, DeclRedNode, ExprRedNode, GreenCatchClause, GreenChild, GreenCtor, GreenDecl, GreenDeclKind, GreenExpr, GreenExprKind, GreenField, GreenGenericVar, GreenMatchArm, GreenMethodDecl, GreenParam, GreenPattern, GreenPureStaticPath, GreenStructFieldInit, HasTextLen, IdentName, TypeName, Visibility};
+use leafc_coreapi::ast::{child_decl_red, child_expr_red, child_span_of, AtomExprNode, CrateAst, DeclRedNode, ExprRedNode, GreenCatchClause, GreenChild, GreenCtor, GreenDecl, GreenDeclKind, GreenExpr, GreenExprKind, GreenField, GreenGenericVar, GreenMatchArm, GreenMethodDecl, GreenParam, GreenPattern, GreenPureStaticPath, GreenWhereClause, HasTextLen, TypeName, Visibility};
 use leafc_coreapi::diagnostic::DiagMsg;
-use leafc_coreapi::hir::{
-    HirBinOp, HirCatchClause, HirCrate, HirCtorDef, HirDecl, HirDeclId, HirDeclKind,
-    HirExpr, HirExprId, HirExprKind, HirFieldDef, HirGenericParam, HirLit, HirMatchArm,
-    HirMethodDecl, HirName, HirParam, HirPattern, HirTypeName, HirUnaryOp,
-};
+use leafc_coreapi::hir::{HirBinOp, HirCatchClause, HirCrate, HirCtorDef, HirDecl, HirDeclId, HirDeclKind, HirExpr, HirExprId, HirExprKind, HirFieldDef, HirGenericParam, HirLit, HirMatchArm, HirMethodDecl, HirName, HirParam, HirPattern, HirStructPatternField, HirTypeName, HirUnaryOp};
 use leafc_coreapi::hir_lower::{HirLowerApi, HirLowerError};
 use leafc_coreapi::name_pass::NamePassResult;
 use leafc_coreapi::operators::Operator;
 use leafc_coreapi::scope::{ScopeId, SymbolKind};
 use leafc_coreapi::source::Span;
+use std::sync::Arc;
 
 pub struct HirLower<'a> {
     ast_crate: &'a CrateAst,
@@ -215,6 +210,7 @@ impl<'a> HirLower<'a> {
     fn lower_generic_params(
         &self,
         generic_vars: &[GreenChild<GreenGenericVar>],
+        where_clause: Option<&GreenWhereClause>,
         scope_id: ScopeId,
         parent_span: &Span,
     ) -> Result<Vec<HirGenericParam>, DiagMsg> {
@@ -234,7 +230,8 @@ impl<'a> HirLower<'a> {
                     name: sym.name.clone(),
                     sym_id: sym.sym_id,
                 };
-                let constraints = gv
+
+                let mut constraints: Vec<HirTypeName> = gv
                     .constraint
                     .iter()
                     .map(|c| {
@@ -242,6 +239,25 @@ impl<'a> HirLower<'a> {
                         self.lower_type_name(&c.node, scope_id, c_span)
                     })
                     .collect::<Result<_, _>>()?;
+
+                // 2. 来自 where 子句的约束
+                if let Some(wc) = where_clause {
+                    for c_child in &wc.constraints {
+                        let c = &c_child.node;
+                        if c.name.node.name == gv.name.node.name {
+                            let bound_tys: Result<Vec<_>, _> = c.bounds
+                                .iter()
+                                .map(|b| {
+                                    let b_span = child_span_of(parent_span, b);
+                                    self.lower_type_name(&b.node, scope_id, b_span)
+                                })
+                                .collect();
+                            constraints.extend(bound_tys?);
+                            break;
+                        }
+                    }
+                }
+
                 Ok(HirGenericParam { name, constraints })
             })
             .collect()
@@ -257,6 +273,7 @@ impl<'a> HirLower<'a> {
     ) -> Result<HirPattern, DiagMsg> {
         match pattern {
             GreenPattern::Wildcard => Ok(HirPattern::Wildcard),
+            GreenPattern::Rest => Ok(HirPattern::Rest),
             GreenPattern::Literal(lit) => {
                 let hir_lit = self.lower_lit(lit);
                 Ok(HirPattern::Literal(hir_lit))
@@ -287,6 +304,81 @@ impl<'a> HirLower<'a> {
                 Ok(HirPattern::Constructor {
                     type_name: hir_type,
                     args: hir_args,
+                    span: span.clone(),
+                })
+            }
+            GreenPattern::Tuple { elements, .. } => {
+                let hir_elements = elements
+                    .iter()
+                    .map(|e| {
+                        let e_span = child_span_of(span, e);
+                        self.lower_pattern(&e.node, scope_id, &e_span)
+                    })
+                    .collect::<Result<_, _>>()?;
+                Ok(HirPattern::Tuple {
+                    elements: hir_elements,
+                    span: span.clone(),
+                })
+            }
+            GreenPattern::Struct { path, fields, rest, .. } => {
+                let path_span = child_span_of(span, path);
+                let hir_path = self.resolve_static_path(&path.node, scope_id, &path_span)?;
+                let hir_fields = fields
+                    .iter()
+                    .map(|f| {
+                        let field_pat_span = child_span_of(span, &f.pattern);
+                        let pattern = self.lower_pattern(&f.pattern.node, scope_id, &field_pat_span)?;
+                        let field_name_sym = self
+                            .lookup_symbol(scope_id, &f.field_name.name)
+                            .ok_or_else(|| DiagMsg {
+                                title: format!("{:?}", HirLowerError::FieldNotFound),
+                                msg: format!("field `{}` not found", f.field_name.name),
+                                span: field_pat_span.clone(),
+                            })?;
+                        Ok(HirStructPatternField {
+                            field_name: HirName {
+                                name: field_name_sym.name.clone(),
+                                sym_id: field_name_sym.sym_id,
+                            },
+                            pattern,
+                            span: field_pat_span,
+                        })
+                    })
+                    .collect::<Result<_, _>>()?;
+                Ok(HirPattern::Struct {
+                    path: hir_path,
+                    fields: hir_fields,
+                    rest: *rest,
+                    span: span.clone(),
+                })
+            }
+            GreenPattern::Alias { pattern, name, .. } => {
+                let inner_span = child_span_of(span, pattern);
+                let inner = self.lower_pattern(&pattern.node, scope_id, &inner_span)?;
+                let sym = self
+                    .lookup_symbol(scope_id, &name.name)
+                    .ok_or_else(|| DiagMsg {
+                        title: format!("{:?}", HirLowerError::BindingNotFound),
+                        msg: format!("alias `{}` not found", name.name),
+                        span: span.clone(),
+                    })?;
+                Ok(HirPattern::Alias {
+                    pattern: Box::new(inner),
+                    name: HirName {
+                        name: sym.name.clone(),
+                        sym_id: sym.sym_id,
+                    },
+                    span: span.clone(),
+                })
+            }
+            GreenPattern::Or { left, right, .. } => {
+                let left_span = child_span_of(span, left);
+                let right_span = child_span_of(span, right);
+                let hir_left = self.lower_pattern(&left.node, scope_id, &left_span)?;
+                let hir_right = self.lower_pattern(&right.node, scope_id, &right_span)?;
+                Ok(HirPattern::Or {
+                    left: Box::new(hir_left),
+                    right: Box::new(hir_right),
                     span: span.clone(),
                 })
             }
@@ -429,7 +521,8 @@ impl<'a> HirLower<'a> {
             name: sym.name.clone(),
             sym_id: sym.sym_id,
         };
-        let generic_params = self.lower_generic_params(&green_ctor.generic_vars, scope_id, &ctor_span)?;
+        let generic_params = self.lower_generic_params(&green_ctor.generic_vars, None, scope_id, &ctor_span)?;
+
         let from_type = if Self::is_type_empty(&green_ctor.from_type_str.node) {
             None
         } else {
@@ -460,8 +553,13 @@ impl<'a> HirLower<'a> {
         arm_scope: ScopeId,
         parent_span: &Span,
     ) -> Result<HirMatchArm, DiagMsg> {
-        let pattern_span = child_span_of(parent_span, &arm.pattern);
+        let pattern_span = Span {
+            source_id: parent_span.source_id,
+            start_off: parent_span.start_off,
+            end_off: parent_span.start_off + arm.pattern.node.text_len(),
+        };
         let pattern = self.lower_pattern(&arm.pattern.node, arm_scope, &pattern_span)?;
+
         let guard = if let Some(g) = &arm.guard {
             let guard_red = child_expr_red(parent_span, g);
             Some(self.lower_expr(&guard_red, arm_scope)?)
@@ -470,10 +568,11 @@ impl<'a> HirLower<'a> {
         };
         let body_red = child_expr_red(parent_span, &arm.body);
         let body = self.lower_expr(&body_red, arm_scope)?;
+
         let arm_span = Span {
             source_id: parent_span.source_id,
-            start_off: parent_span.start_off + arm.pattern.relative_start,
-            end_off: parent_span.start_off + arm.pattern.relative_start + arm.text_len,
+            start_off: parent_span.start_off,
+            end_off: parent_span.start_off + arm.text_len,
         };
         Ok(HirMatchArm {
             pattern,
@@ -973,8 +1072,18 @@ impl<'a> HirLower<'a> {
             .unwrap_or(file_scope_id);
 
         let kind = match &decl.kind {
-            GreenDeclKind::Fun { params, return_type_str, generic_vars, block, .. } => {
-                let generic_params = self.lower_generic_params(generic_vars, decl_scope, &span)?;
+            GreenDeclKind::Fun {
+                params,
+                return_type_str,
+                generic_vars,
+                block,
+                where_clause
+            } => {
+                let generic_params = self.lower_generic_params(
+                    generic_vars,
+                    where_clause.as_ref().map(|wc| &wc.node).map(|v| &**v),
+                    decl_scope, &span,
+                )?;
                 let hir_params = params
                     .iter()
                     .map(|p| self.lower_param(p, decl_scope, &span))
@@ -997,8 +1106,17 @@ impl<'a> HirLower<'a> {
                 }
             }
 
-            GreenDeclKind::FunDecl { params, return_type_str, generic_vars, .. } => {
-                let generic_params = self.lower_generic_params(generic_vars, decl_scope, &span)?;
+            GreenDeclKind::FunDecl {
+                params,
+                return_type_str,
+                generic_vars,
+                where_clause
+            } => {
+                let generic_params = self.lower_generic_params(
+                    generic_vars,
+                    where_clause.as_ref().map(|wc| &wc.node).map(|v| &**v),
+                    decl_scope, &span,
+                )?;
                 let hir_params = params
                     .iter()
                     .map(|p| self.lower_param(p, decl_scope, &span))
@@ -1017,8 +1135,17 @@ impl<'a> HirLower<'a> {
                 }
             }
 
-            GreenDeclKind::TypeStruct { fields, has_abst, generic_vars, .. } => {
-                let generic_params = self.lower_generic_params(generic_vars, decl_scope, &span)?;
+            GreenDeclKind::TypeStruct {
+                fields,
+                has_abst,
+                generic_vars,
+                where_clause
+            } => {
+                let generic_params = self.lower_generic_params(
+                    generic_vars,
+                    where_clause.as_ref().map(|wc| &wc.node).map(|v| &**v),
+                    decl_scope, &span,
+                )?;
                 let hir_fields = fields
                     .iter()
                     .map(|f| self.lower_field_def(f, decl_scope, &span))
@@ -1042,7 +1169,12 @@ impl<'a> HirLower<'a> {
                 }
             }
 
-            GreenDeclKind::TypeAlias { ref_to, generic_vars, .. } => {
+            GreenDeclKind::TypeAlias {
+                ref_to,
+                generic_vars,
+                where_clause,
+                ..
+            } => {
                 let alias_scope = self.name_pass_result.pool.decl_node_scope_map
                     .get(&decl_red.inner)
                     .copied()
@@ -1051,15 +1183,30 @@ impl<'a> HirLower<'a> {
                 let alias_span = child_span_of(&span, ref_to);
                 let alias_for = self.lower_type_name(&ref_to.node, alias_scope, alias_span)?;
 
-                let generic_params = self.lower_generic_params(generic_vars, alias_scope, &span)?;
+                let generic_params = self.lower_generic_params(
+                    generic_vars,
+                    where_clause.as_ref().map(|wc| &wc.node).map(|v| &**v),
+                    alias_scope,
+                    &span,
+                )?;
+
                 HirDeclKind::TypeAlias {
                     generic_params,
                     alias_for,
                 }
             }
 
-            GreenDeclKind::ADT { has_abst, generic_vars, ctors, .. } => {
-                let generic_params = self.lower_generic_params(generic_vars, decl_scope, &span)?;
+            GreenDeclKind::ADT {
+                has_abst,
+                generic_vars,
+                ctors,
+                where_clause,
+            } => {
+                let generic_params = self.lower_generic_params(
+                    generic_vars,
+                    where_clause.as_ref().map(|wc| &wc.node).map(|v| &**v),
+                    decl_scope, &span,
+                )?;
                 let implemented_abstracts = has_abst
                     .iter()
                     .map(|name_child| {
@@ -1085,8 +1232,17 @@ impl<'a> HirLower<'a> {
                 }
             }
 
-            GreenDeclKind::Abstract { super_abst, generic_vars, methods, .. } => {
-                let generic_params = self.lower_generic_params(generic_vars, decl_scope, &span)?;
+            GreenDeclKind::Abstract {
+                super_abst,
+                generic_vars,
+                methods,
+                where_clause
+            } => {
+                let generic_params = self.lower_generic_params(
+                    generic_vars,
+                    where_clause.as_ref().map(|wc| &wc.node).map(|v| &**v),
+                    decl_scope, &span,
+                )?;
                 let super_abstracts = super_abst
                     .iter()
                     .map(|name_child| {
