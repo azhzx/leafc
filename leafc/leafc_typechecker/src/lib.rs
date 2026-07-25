@@ -1,11 +1,11 @@
 use leafc_coreapi::diagnostic::DiagMsg;
-use leafc_coreapi::hir::{HirBinOp, HirCrate, HirCtorDef, HirDeclId, HirDeclKind, HirExprId, HirExprKind, HirFieldDef, HirGenericParam, HirLit, HirName, HirParam, HirTypeName, HirUnaryOp};
+use leafc_coreapi::hir::{HirBinOp, HirCrate, HirCtorDef, HirDeclId, HirDeclKind, HirExprId, HirExprKind, HirFieldDef, HirGenericParam, HirLit, HirName, HirParam, HirPattern, HirTypeName, HirUnaryOp};
 use leafc_coreapi::lang_items::BuiltinType;
 use leafc_coreapi::name_pass::NamePassResult;
 use leafc_coreapi::scope::SymId;
 use leafc_coreapi::source::Span;
 use leafc_coreapi::type_checker::{TypeCheckerApi, TypeCheckerError, TypeCheckerResult};
-use leafc_coreapi::type_system::{HirDeclTypeMap, HirExprTypeMap, LetExprIdTypeMap, NameTypeSchemeMap, TyId, TypeNode, TypeNodeKind, TypeScheme};
+use leafc_coreapi::type_system::{HirDeclTypeMap, HirExprTypeMap, LocalBindingTypeMap, NameTypeSchemeMap, TyId, TypeNode, TypeNodeKind, TypeScheme};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
@@ -32,12 +32,16 @@ pub struct TypeChecker {
     decl_type_map: HirDeclTypeMap,
     expr_type_map: HirExprTypeMap,
     name_type_map: NameTypeSchemeMap,
-    let_type_map: LetExprIdTypeMap,
+
+    local_binding_map: LocalBindingTypeMap,
 
     sym_to_decl: HashMap<SymId, HirDeclId>,
 
     type_pool: Vec<TypeNode>,
     current_level: u32,
+
+    // ResumeType, catch body has met resume?
+    current_resume_ty: Option<(TyId, bool)>,
 
     builtin: BuiltinTypes,
 }
@@ -254,7 +258,7 @@ impl TypeChecker {
                     .map(|&s| self.copy_type_with_subst(s, subst))
                     .collect();
                 Ok(self.new_compound(TypeNodeKind::Struct {
-                    decl_id: decl_id,
+                    decl_id,
                     subst: new_subst?,
                 }))
             },
@@ -266,7 +270,7 @@ impl TypeChecker {
                     .map(|&s| self.copy_type_with_subst(s, subst))
                     .collect();
                 Ok(self.new_compound(TypeNodeKind::ADT {
-                    decl_id: decl_id,
+                    decl_id,
                     subst: new_subst?,
                 }))
             }
@@ -343,7 +347,7 @@ impl TypeChecker {
                     });
                 }
                 for (&a, &b) in s1.iter().zip(s2.iter()) {
-                    if let Err(e) = self.unify(a, b, span.clone()) {
+                    if let Err(_) = self.unify(a, b, span.clone()) {
                         return Err(DiagMsg {
                             title: format!("{:?}", TypeCheckerError::TypeMismatch),
                             msg: format!(
@@ -367,7 +371,7 @@ impl TypeChecker {
                     });
                 }
                 for (&a, &b) in s1.iter().zip(s2.iter()) {
-                    if let Err(e) = self.unify(a, b, span.clone()) {
+                    if let Err(_) = self.unify(a, b, span.clone()) {
                         return Err(DiagMsg {
                             title: format!("{:?}", TypeCheckerError::TypeMismatch),
                             msg: format!(
@@ -477,6 +481,25 @@ impl TypeChecker {
         }
     }
 
+    fn bind_pattern(
+        &mut self,
+        pat: &HirPattern,
+        ty: TyId,
+        bound_symbols: &mut Vec<SymId>,
+    ) -> Result<(), DiagMsg> {
+        match pat {
+            HirPattern::Binding(name) => {
+                self.name_type_map.insert(
+                    name.sym_id,
+                    TypeScheme { quantified: vec![], body: ty },
+                );
+                bound_symbols.push(name.sym_id);
+                Ok(())
+            }
+            _ => todo!()
+        }
+    }
+
     fn infer_expr(&mut self, expr_id: HirExprId, expected: Option<TyId>) -> Result<TyId, DiagMsg> {
         let expr = self.hir_crate.hir_expr_pool[expr_id].clone();
         let span = expr.span.clone();
@@ -570,16 +593,16 @@ impl TypeChecker {
                         var_map.insert(gp.name.sym_id, actual_ty);
                     }
 
-                    let mut inserted_syms = Vec::new();
+                    let mut inserted_symbols = Vec::new();
                     for (&sym_id, &ty) in &var_map {
                         self.name_type_map.insert(sym_id, TypeScheme { quantified: vec![], body: ty });
-                        inserted_syms.push(sym_id);
+                        inserted_symbols.push(sym_id);
                     }
 
                     let field_ty = self.resolve_type_name(&field_type, span.clone())?;
 
                     // 清理
-                    for sym_id in inserted_syms {
+                    for sym_id in inserted_symbols {
                         self.name_type_map.remove(&sym_id);
                     }
 
@@ -621,10 +644,10 @@ impl TypeChecker {
                     var_map.insert(gp.name.sym_id, actual_ty);
                 }
 
-                let mut inserted_syms = Vec::new();
+                let mut inserted_symbols = Vec::new();
                 for (sym_id, &ty) in &var_map {
                     self.name_type_map.insert(*sym_id, TypeScheme { quantified: vec![], body: ty });
-                    inserted_syms.push(*sym_id);
+                    inserted_symbols.push(*sym_id);
                 }
 
                 for (field_name, field_expr) in fields {
@@ -640,7 +663,7 @@ impl TypeChecker {
                 }
 
                 // 清理
-                for sym_id in inserted_syms {
+                for sym_id in inserted_symbols {
                     self.name_type_map.remove(&sym_id);
                 }
 
@@ -726,10 +749,140 @@ impl TypeChecker {
             HirExprKind::UnsafeExternalCall { callee, args } =>
                 self.infer_call(*callee, args, expected, &span)?,
 
-            HirExprKind::Resume { expr } => todo!(),
-            HirExprKind::With { .. } => todo!(),
+            HirExprKind::Resume { expr } => {
+                let resume_fun_ty = {
+                    let (ty, called) = self.current_resume_ty.as_mut()
+                        .ok_or_else(|| DiagMsg {
+                            title: format!("{:?}", TypeCheckerError::InternalError),
+                            msg: "`resume` used outside of a catch clause".into(),
+                            span: span.clone(),
+                        })?;
+
+                    *called = true;
+                    *ty
+                };
+
+                let root = self.representative(resume_fun_ty);
+
+                let (arg_ty, ret_ty) = match &self.type_pool[root].kind {
+                    TypeNodeKind::Fun { param_tys, return_ty } =>
+                        (param_tys[0], *return_ty),
+                    _ => unreachable!(),
+                };
+
+                let val_ty = self.infer_expr(*expr, Some(arg_ty))?;
+                self.unify(val_ty, arg_ty, span.clone())?;
+                ret_ty
+            }
+
+            HirExprKind::With { handler, clauses } => {
+                let body_ty = self.infer_expr(*handler, expected)?;
+
+                for clause in clauses {
+                    let scheme = self.name_type_map.get(&clause.control_path.sym_id)
+                        .cloned()
+                        .ok_or_else(|| DiagMsg {
+                            title: format!("{:?}", TypeCheckerError::UndefinedVariable),
+                            msg: format!("control `{}` not found", clause.control_path.name),
+                            span: clause.span.clone(),
+                        })?;
+
+                    let ctrl_ty = self.instantiate(&scheme);
+                    let ctrl_root = self.representative(ctrl_ty);
+
+                    let (ctrl_param_tys, ctrl_ret_ty) =
+                        if let TypeNodeKind::Fun { param_tys, return_ty } =
+                            &self.type_pool[ctrl_root].kind
+                        {
+                            (param_tys.clone(), *return_ty)
+                        } else {
+                            return Err(DiagMsg {
+                                title: format!("{:?}", TypeCheckerError::InvalidControlType),
+                                msg: format!("control `{}` is not a function", clause.control_path.name),
+                                span: clause.span.clone(),
+                            });
+                        };
+
+                    if clause.params.len() != ctrl_param_tys.len() {
+                        return Err(DiagMsg {
+                            title: format!("{:?}", TypeCheckerError::ArityMismatch),
+                            msg: format!(
+                                "control `{}` expects {} arguments, got {}",
+                                clause.control_path.name,
+                                ctrl_param_tys.len(),
+                                clause.params.len()
+                            ),
+                            span: clause.span.clone(),
+                        });
+                    }
+
+                    // 新作用域
+                    let saved_level = self.current_level;
+                    self.current_level += 1;
+
+                    let mut bound_symbols = Vec::new();
+                    for (pat, &pty) in clause.params.iter().zip(&ctrl_param_tys) {
+                        if let HirPattern::Binding(name) = pat {
+                            self.local_binding_map.insert(name.sym_id, pty);
+                        }
+                        self.bind_pattern(pat, pty, &mut bound_symbols)?;
+                    }
+
+                    let resume_fun_ty = self.new_compound(TypeNodeKind::Fun {
+                        param_tys: vec![ctrl_ret_ty],
+                        return_ty: body_ty,
+                    });
+
+                    self.current_resume_ty = Some((resume_fun_ty, false));
+
+                    let clause_ty = self.infer_expr(clause.body, Some(body_ty))?;
+                    self.unify(clause_ty, body_ty, clause.span.clone())?;
+
+                    let (_, resume_called) = self.current_resume_ty.unwrap();
+
+                    let ctrl_ret_root = self.representative(ctrl_ret_ty);
+                    let is_unit = matches!(
+                        &self.type_pool[ctrl_ret_root].kind,
+                        TypeNodeKind::Tuple(elems) if elems.is_empty()
+                    );
+
+                    if !is_unit && !resume_called {
+                        return Err(DiagMsg {
+                            title: format!("{:?}", TypeCheckerError::MissingResume),
+                            msg: format!(
+                                "control `{}` expects a return value of type `{}`, but `resume` was never called in the handler",
+                                clause.control_path.name,
+                                self.ty_to_string(ctrl_ret_ty)
+                            ),
+                            span: clause.span.clone(),
+                        });
+                    }
+
+                    // 清理
+                    self.current_resume_ty = None;
+                    for sym_id in bound_symbols {
+                        self.name_type_map.remove(&sym_id);
+                    }
+                    self.current_level = saved_level;
+                }
+
+                body_ty
+            }
+
             HirExprKind::Match { .. } => todo!(),
-            HirExprKind::Is { .. } => todo!(),
+
+            HirExprKind::Is { expr, pattern } => {
+                let expr_ty = self.infer_expr(*expr, None)?;
+                let bindings = self.check_pattern(expr_ty, pattern, &span)?;
+
+                for (sym_id, ty) in bindings {
+                    self.name_type_map
+                        .insert(sym_id, TypeScheme { quantified: vec![], body: ty });
+                    self.local_binding_map.insert(sym_id, ty);
+                }
+
+                self.builtin.bool_ty
+            }
 
             HirExprKind::Ellipsis => todo!("maybe deprecated?"),
 
@@ -825,7 +978,7 @@ impl TypeChecker {
         }
         let scheme = self.generalize(init_ty);
         self.name_type_map.insert(name.sym_id, scheme.clone());
-        self.let_type_map.insert(let_expr_id, scheme.body);
+        self.local_binding_map.insert(name.sym_id, init_ty);
         Ok(self.builtin.unit)
     }
 
@@ -885,6 +1038,87 @@ impl TypeChecker {
         let target_ty = self.resolve_type_name(type_ann, span.clone())?;
         self.infer_expr(expr, None)?;
         Ok(target_ty)
+    }
+
+    fn check_pattern(
+        &mut self,
+        ty: TyId,
+        pattern: &HirPattern,
+        span: &Span,
+    ) -> Result<Vec<(SymId, TyId)>, DiagMsg> {
+        match pattern {
+            HirPattern::Wildcard => Ok(vec![]),
+
+            HirPattern::Binding(name) => Ok(vec![(name.sym_id, ty)]),
+
+            HirPattern::Constructor {
+                type_name, args, ..
+            } => {
+                let ctor_name = match type_name {
+                    HirTypeName::Named { path, .. } => path,
+                    _ => {
+                        return Err(DiagMsg {
+                            title: format!("{:?}", TypeCheckerError::TypeMismatch),
+                            msg: "constructor pattern requires a named type".into(),
+                            span: span.clone(),
+                        });
+                    }
+                };
+
+                let scheme = self
+                    .name_type_map
+                    .get(&ctor_name.sym_id)
+                    .cloned()
+                    .ok_or_else(|| DiagMsg {
+                        title: format!("{:?}", TypeCheckerError::UndefinedVariable),
+                        msg: format!("constructor `{}` not found", ctor_name.name),
+                        span: self.hir_name_span(&ctor_name, span.clone()),
+                    })?;
+
+                let ctor_ty = self.instantiate(&scheme);
+                let root = self.representative(ctor_ty);
+
+                let (param_tys, adt_ty) = match &self.type_pool[root].kind {
+                    TypeNodeKind::Fun {
+                        param_tys,
+                        return_ty,
+                    } => (param_tys.clone(), *return_ty),
+                    TypeNodeKind::ADT { .. } => (vec![], ctor_ty),
+                    _ => {
+                        return Err(DiagMsg {
+                            title: format!("{:?}", TypeCheckerError::TypeMismatch),
+                            msg: format!("`{}` is not a constructor", ctor_name.name),
+                            span: span.clone(),
+                        });
+                    }
+                };
+
+                self.unify(ty, adt_ty, span.clone())?;
+
+                if args.len() != param_tys.len() {
+                    return Err(DiagMsg {
+                        title: format!("{:?}", TypeCheckerError::ArityMismatch),
+                        msg: format!(
+                            "constructor `{}` expects {} arguments, got {}",
+                            ctor_name.name,
+                            param_tys.len(),
+                            args.len()
+                        ),
+                        span: span.clone(),
+                    });
+                }
+
+                let mut bindings = Vec::new();
+                for (arg_pat, &param_ty) in args.iter().zip(param_tys.iter()) {
+                    let mut inner = self.check_pattern(param_ty, arg_pat, span)?;
+                    bindings.append(&mut inner);
+                }
+
+                Ok(bindings)
+            }
+
+            _ => todo!()
+        }
     }
 
     fn check_decl(&mut self, decl_id: HirDeclId) -> Result<(), DiagMsg> {
@@ -1213,8 +1447,6 @@ impl TypeChecker {
         decl_id: HirDeclId,
         controls: &[(HirName, Vec<HirParam>, Option<HirTypeName>)]
     ) -> Result<(), DiagMsg> {
-        let saved_level = self.current_level;
-        self.current_level += 1;
 
         for (ctrl_name, params, ret_opt) in controls {
             let mut param_tys = Vec::new();
@@ -1238,12 +1470,11 @@ impl TypeChecker {
                 return_ty: ret_ty,
             });
 
-            let scheme = self.generalize(fun_ty);
-
-            self.name_type_map.insert(ctrl_name.sym_id, scheme);
+            self.name_type_map.insert(
+                ctrl_name.sym_id,
+                TypeScheme { quantified: vec![], body: fun_ty },
+            );
         }
-
-        self.current_level = saved_level;
         Ok(())
     }
 
@@ -1344,10 +1575,11 @@ impl TypeCheckerApi for TypeChecker {
             decl_type_map: HashMap::new(),
             expr_type_map: HashMap::new(),
             name_type_map: HashMap::new(),
-            let_type_map: HashMap::new(),
+            local_binding_map: HashMap::new(),
             sym_to_decl: HashMap::new(),
             type_pool: ty_pool,
             current_level: 0,
+            current_resume_ty: None,
             builtin,
         }
     }
@@ -1378,8 +1610,8 @@ impl TypeCheckerApi for TypeChecker {
         Ok(TypeCheckerResult {
             decl_type_map: self.decl_type_map,
             expr_type_map: self.expr_type_map,
-            let_type_map: self.let_type_map,
             hir: self.hir_crate,
+            local_binding_map: self.local_binding_map,
         })
     }
 }

@@ -1,8 +1,6 @@
-use crate::ast::CrateAst;
 use crate::diagnostic::DiagMsg;
 use crate::hir::HirCrate;
-use crate::name_pass::NamePassResult;
-use crate::type_system::{HirDeclTypeMap, HirExprTypeMap, LetExprIdTypeMap};
+use crate::type_system::{HirDeclTypeMap, HirExprTypeMap, LocalBindingTypeMap};
 
 #[derive(Debug)]
 pub enum TypeCheckerError {
@@ -19,12 +17,14 @@ pub enum TypeCheckerError {
     MissingTypeAnnotation,
     UndefinedType,
     RecursiveTypeAlias,
+    MissingResume,
+    InvalidControlType,
 }
 
 pub struct TypeCheckerResult {
     pub decl_type_map: HirDeclTypeMap,
     pub expr_type_map: HirExprTypeMap,
-    pub let_type_map: LetExprIdTypeMap,
+    pub local_binding_map: LocalBindingTypeMap,
     pub hir: HirCrate
 }
 

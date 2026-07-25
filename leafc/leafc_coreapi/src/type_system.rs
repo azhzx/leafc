@@ -14,8 +14,8 @@ pub type HirExprTypeMap = HashMap<HirExprId, TyId>;
 /// sym => scheme
 pub type NameTypeSchemeMap = HashMap<SymId, TypeScheme>;
 
-/// let expr id => let decl type
-pub type LetExprIdTypeMap = HashMap<HirExprId, TyId>;
+/// id => type
+pub type LocalBindingTypeMap = HashMap<SymId, TyId>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeNodeKind {

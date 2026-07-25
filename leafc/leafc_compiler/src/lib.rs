@@ -219,7 +219,7 @@ impl CompilerApi for NativeCompiler {
 
         let hir = match hir_lower.lower() {
             Ok(hir) => {
-                println!("=== hir name ===");
+                println!("=== hir crate name ===");
                 println!("{:#?}", hir.name);
                 println!("=== === ===");
 
@@ -263,8 +263,8 @@ impl CompilerApi for NativeCompiler {
                 println!("{:#?}", result.expr_type_map);
                 println!("=== === ===");
 
-                println!("=== ty let map ===");
-                println!("{:#?}", result.let_type_map);
+                println!("=== ty binding map ===");
+                println!("{:#?}", result.local_binding_map);
                 println!("=== === ===");
 
                 println!("=== hir ty pool ===");
