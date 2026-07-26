@@ -52,3 +52,11 @@ pub struct TypeScheme {
     pub quantified: Vec<TyId>,
     pub body: TyId,
 }
+
+pub fn get_type_root(type_pool: &[TypeNode], id: TyId) -> TyId {
+    let mut cur = id;
+    while type_pool[cur].parent != cur {
+        cur = type_pool[cur].parent;
+    }
+    cur
+}

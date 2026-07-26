@@ -524,9 +524,43 @@ impl TypeChecker {
                 TypeScheme { quantified: vec![], body: actual_ty },
             );
 
-            for constraint in &gp.constraints {
-                let c_ty = self.resolve_type_name(constraint, span.clone())?;
-                self.unify(actual_ty, c_ty, span.clone())?;
+            // or
+            if !gp.constraints.is_empty() {
+                let mut matched = false;
+                let mut expected_names = Vec::new();
+
+                for constraint in &gp.constraints {
+                    let c_ty = self.resolve_type_name(constraint, span.clone())?;
+                    expected_names.push(format!("\"{}\"", self.ty_to_string(c_ty)));
+
+                    let saved_pool = self.type_pool.clone();
+
+                    if self.unify(actual_ty, c_ty, span.clone()).is_ok() {
+                        matched = true;
+                        break;
+                    } else {
+                        self.type_pool = saved_pool;
+                    }
+                }
+
+                if !matched {
+                    let expected_str = if expected_names.len() == 1 {
+                        expected_names[0].clone()
+                    } else {
+                        let last = expected_names.pop().unwrap();
+                        format!("{} or {}", expected_names.join(" or "), last) // 也可以用 ", " 分隔前面部分
+                    };
+
+                    return Err(DiagMsg {
+                        title: format!("{:?}", TypeCheckerError::TypeMismatch),
+                        msg: format!(
+                            "expected {}, but got \"{}\"",
+                            expected_str,
+                            self.ty_to_string(actual_ty)
+                        ),
+                        span: span.clone(),
+                    });
+                }
             }
 
             if let Some(old_scheme) = old {
@@ -1236,13 +1270,7 @@ impl TypeChecker {
                         span: span.clone(),
                     })?
                     .clone();
-                let mut subst_map = HashMap::new();
-                for (i, &qv) in struct_scheme.quantified.iter().enumerate() {
-                    if i < subst.len() {
-                        subst_map.insert(qv, subst[i]);
-                    }
-                }
-                self.check_generic_constraints(decl_id, &struct_scheme.quantified, &subst_map, &span)?;
+
 
                 let mut var_map: HashMap<SymId, TyId> = HashMap::new();
                 for (gp, &actual_ty) in generic_params.iter().zip(subst.iter()) {
@@ -1267,10 +1295,18 @@ impl TypeChecker {
                     self.infer_expr(*field_expr, Some(field_ty))?;
                 }
 
-                // 清理临时泛型绑定
+                // 清理
                 for sym_id in inserted_symbols {
                     self.name_type_map.remove(&sym_id);
                 }
+
+                let mut actual_subst = HashMap::new();
+                for (i, &qv) in struct_scheme.quantified.iter().enumerate() {
+                    if i < subst.len() {
+                        actual_subst.insert(qv, self.representative(subst[i]));
+                    }
+                }
+                self.check_generic_constraints(decl_id, &struct_scheme.quantified, &actual_subst, &span)?;
 
                 struct_ty
             },
@@ -1611,15 +1647,21 @@ impl TypeChecker {
         let callee_kind = self.hir_crate.hir_expr_pool[callee].kind.clone();
 
         let (callee_ty, fun_info) = if let HirExprKind::Ident(ref name) = callee_kind {
-            if let Some(scheme) = self.name_type_map.get(&name.sym_id).cloned() {
+            let scheme_and_decl = if let Some(scheme) = self.name_type_map.get(&name.sym_id).cloned() {
+                Some((scheme, self.sym_to_decl.get(&name.sym_id).copied()))
+            } else if let Some(&decl_id) = self.sym_to_decl.get(&name.sym_id) {
+                self.decl_type_map.get(&decl_id).cloned().map(|s| (s, Some(decl_id)))
+            } else {
+                None
+            };
+
+            if let Some((scheme, decl_id_opt)) = scheme_and_decl {
                 let (inst_ty, subst) = self.instantiate_with_map(&scheme);
-                let decl_id = self.sym_to_decl.get(&name.sym_id).copied();
-                let is_fun = decl_id.map_or(false, |id| {
+                let is_fun = decl_id_opt.map_or(false, |id| {
                     matches!(&self.hir_crate.hir_decl_pool[id].kind, HirDeclKind::Fun { .. })
                 });
                 if is_fun {
-                    let fun_decl_id = decl_id.unwrap();
-                    (inst_ty, Some((fun_decl_id, scheme.quantified, subst)))
+                    (inst_ty, Some((decl_id_opt.unwrap(), scheme.quantified, subst)))
                 } else {
                     (inst_ty, None)
                 }
@@ -2208,7 +2250,7 @@ impl TypeCheckerApi for TypeChecker {
         }
     }
 
-    fn check(mut self) -> Result<TypeCheckerResult, DiagMsg> {
+    fn check(mut self) -> Result<(TypeCheckerResult, HirCrate), DiagMsg> {
 
         self.build_sym_to_decl();
 
@@ -2229,13 +2271,14 @@ impl TypeCheckerApi for TypeChecker {
         for decl_id in 0..self.hir_crate.hir_decl_pool.len() {
             self.check_decl(decl_id)?;
         }
-        self.hir_crate.type_pool = self.type_pool;
 
-        Ok(TypeCheckerResult {
+        Ok((TypeCheckerResult {
             decl_type_map: self.decl_type_map,
             expr_type_map: self.expr_type_map,
-            hir: self.hir_crate,
             local_binding_map: self.local_binding_map,
-        })
+            name_type_map: self.name_type_map,
+            sym_to_decl: self.sym_to_decl,
+            type_pool: self.type_pool,
+        }, self.hir_crate))
     }
 }

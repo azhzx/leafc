@@ -1398,7 +1398,6 @@ impl<'a> HirLowerApi<'a> for HirLower<'a> {
                 hir_expr_pool: vec![],
                 hir_decl_pool: vec![],
                 pub_decl_ids: vec![],
-                type_pool: vec![],
                 name_pass_result: None,
             },
         }

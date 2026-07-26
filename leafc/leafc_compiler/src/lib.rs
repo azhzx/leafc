@@ -223,10 +223,6 @@ impl CompilerApi for NativeCompiler {
                 println!("{:#?}", hir.name);
                 println!("=== === ===");
 
-                println!("=== hir ty pool ===");
-                println!("{:#?}", hir.type_pool);
-                println!("=== === ===");
-
                 println!("=== hir main fun ===");
                 println!("{:#?}", hir.main_fun);
                 println!("=== === ===");
@@ -253,27 +249,27 @@ impl CompilerApi for NativeCompiler {
         };
 
         let type_checker = TypeChecker::new(hir);
-        let ty_map = match type_checker.check() {
-            Ok(result) => {
+        let (ty_map, hir) = match type_checker.check() {
+            Ok((ty_map, hir)) => {
                 println!("=== ty decl map ===");
-                println!("{:#?}", result.decl_type_map);
+                println!("{:#?}", ty_map.decl_type_map);
                 println!("=== === ===");
 
                 println!("=== ty expr map ===");
-                println!("{:#?}", result.expr_type_map);
+                println!("{:#?}", ty_map.expr_type_map);
                 println!("=== === ===");
 
                 println!("=== ty binding map ===");
-                println!("{:#?}", result.local_binding_map);
+                println!("{:#?}", ty_map.local_binding_map);
                 println!("=== === ===");
 
                 println!("=== hir ty pool ===");
-                for (index, ty) in result.hir.type_pool.iter().enumerate() {
+                for (index, ty) in ty_map.type_pool.iter().enumerate() {
                     println!("{} => {:?}", index, ty);
                 }
                 println!("=== === ===");
 
-                result
+                (ty_map, hir)
             }
             Err(e) => {
                 println!("{}", diag.report(e));
@@ -282,7 +278,7 @@ impl CompilerApi for NativeCompiler {
             }
         };
 
-        let mir_lower = MirLower::new(ty_map);
+        let mir_lower = MirLower::new(ty_map, hir);
         let mir = match mir_lower.lower() {
             Ok(mir) => {
                 println!("=== mir ===");

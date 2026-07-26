@@ -971,6 +971,7 @@ impl<'a> Parser<'a> {
         } else {
             self.skip_token_only(TokenType::Indent)?;
             while self.current_token().kind != TokenType::Dedent {
+                self.skip_token_if_newlines()?;
                 let expr_red = self.parse_expr()?;
                 let expr_span = expr_red.span;
                 block_children.push(GreenChild {

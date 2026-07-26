@@ -11,27 +11,9 @@ type Int64;
 type Never;
 
 type Maybe [T]
-where T: Int8
     | Just of T
-    | Nothing
-
-type Point[T]
-where T: Int8
-    a: T
-
-fun pass()
-    return
-
-fun foo[T](a: T) -> T
-where T: Int8
-    return a
+    | None
 
 fun main()
-    let c = foo(100)
-    let b = Point { a=100 }
-    let a = Maybe.Just( 100 )
-    when a
-        Maybe.Just(binding a) => do
-            pass()
-        Maybe.Nothing() => do
-            pass()
+    let a = 100
+    let b = (a + 1 + 3) as Int64

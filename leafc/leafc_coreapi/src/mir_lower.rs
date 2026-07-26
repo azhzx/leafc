@@ -8,6 +8,6 @@ pub enum MirLowerError {
 }
 
 pub trait MirLowerApi {
-    fn new(hir_and_types: TypeCheckerResult) -> Self;
+    fn new(ty_ck_result: TypeCheckerResult, hir_crate: HirCrate) -> Self;
     fn lower(self) -> Result<MirCrate, DiagMsg>;
 }

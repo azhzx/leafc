@@ -8,9 +8,14 @@ pub type StaticId = usize;
 
 pub type TagId = usize;
 
+pub type ControlId = usize;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MirCrate {
+    pub name: String,
     pub functions: Vec<MirFun>,
+    pub extern_decls: Vec<ExternDecl>,
+    pub statics: Vec<StaticDecl>,
     pub blocks: Vec<BasicBlock>,
 }
 
@@ -21,6 +26,20 @@ pub struct MirFun {
     pub signature: FnSig,
     pub local_decls: Vec<LocalDecl>,
     pub blocks: Vec<BasicBlockId>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExternDecl {
+    pub name: String,
+    pub signature: FnSig,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StaticDecl {
+    pub name: String,
+    pub ty: TyId,
+    pub mutable: bool,
+    pub init: Const, // todo : 暂时const
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -76,20 +95,20 @@ pub enum Place {
     },
     EnumItem {
         place: Box<Place>,
-        variant: TagId
-    }
+        variant: TagId,
+    },
 }
 
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Rvalue {
     BinaryOp  {
-        op: BinOp,
+        op: MirBinOp,
         left: Box<Rvalue>,
         right: Box<Rvalue>,
     },
     UnaryOp  {
-        op: UnOp,
+        op: MirUnOp,
         right: Box<Rvalue>,
     },
     Index {
@@ -142,6 +161,18 @@ pub enum TerminatorKind {
         dest: Place,
         target: Option<BasicBlockId>,
     },
+    Raise {
+        control_name: ControlId,
+        args: Vec<Rvalue>,
+    },
+    InstallHandler {
+        handler_block: BasicBlockId,
+        next: BasicBlockId,
+    },
+    Resume {
+        place: Place,
+        target: BasicBlockId,
+    },
     Return,
     Unreachable,
 }
@@ -179,7 +210,7 @@ pub enum Const {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum BinOp {
+pub enum MirBinOp {
     Add,
     Sub,
     Mul,
@@ -199,7 +230,7 @@ pub enum BinOp {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum UnOp {
+pub enum MirUnOp {
     Neg,
     Not,
 }

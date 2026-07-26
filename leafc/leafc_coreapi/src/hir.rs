@@ -16,8 +16,6 @@ pub struct HirCrate {
     /// 模块中对外公开的声明(PublicExternal)
     pub pub_decl_ids: Vec<HirDeclId>,
 
-    pub type_pool: Vec<TypeNode>,
-
     pub name_pass_result: Option<NamePassResult>
 }
 
