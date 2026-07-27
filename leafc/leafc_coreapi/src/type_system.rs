@@ -28,14 +28,16 @@ pub enum TypeNodeKind {
         param_tys: Vec<TyId>,
         return_ty: TyId,
     },
+    Tuple(Vec<TyId>),
     Struct {
         decl_id: HirDeclId,
         subst: Vec<TyId>,
+        field_tys: Vec<TyId>,
     },
-    Tuple(Vec<TyId>),
     ADT {
         decl_id: HirDeclId,
         subst: Vec<TyId>,
+        variants: Vec<Option<TyId>>,
     },
     Never,
 }

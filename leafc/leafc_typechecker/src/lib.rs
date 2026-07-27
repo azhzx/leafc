@@ -257,27 +257,38 @@ impl TypeChecker {
                     .collect();
                 Ok(self.new_compound(TypeNodeKind::Tuple(new_elems?)))
             }
-            TypeNodeKind::Struct { decl_id, subst: existing_subst } => {
+            TypeNodeKind::Ref(_) => todo!(),
+            TypeNodeKind::MutRef(_) => todo!(),
+            TypeNodeKind::Share(_) => todo!(),
+            TypeNodeKind::Struct { decl_id, subst: existing_subst, field_tys } => {
                 let new_subst: Result<Vec<_>, _> = existing_subst.iter()
                     .map(|&s| self.copy_type_with_subst(s, subst))
+                    .collect();
+                let new_field_tys: Result<Vec<_>, _> = field_tys.iter()
+                    .map(|&ft| self.copy_type_with_subst(ft, subst))
                     .collect();
                 Ok(self.new_compound(TypeNodeKind::Struct {
                     decl_id,
                     subst: new_subst?,
+                    field_tys: new_field_tys?,
                 }))
             },
-            TypeNodeKind::Ref(_) => todo!(),
-            TypeNodeKind::MutRef(_) => todo!(),
-            TypeNodeKind::Share(_) => todo!(),
-            TypeNodeKind::ADT { decl_id, subst: existing_subst } => {
+            TypeNodeKind::ADT { decl_id, subst: existing_subst, variants } => {
                 let new_subst: Result<Vec<_>, _> = existing_subst.iter()
                     .map(|&s| self.copy_type_with_subst(s, subst))
+                    .collect();
+                let new_variants: Result<Vec<Option<TyId>>, _> = variants.iter()
+                    .map(|opt| match opt {
+                        Some(ty) => Ok(Some(self.copy_type_with_subst(*ty, subst)?)),
+                        None => Ok(None),
+                    })
                     .collect();
                 Ok(self.new_compound(TypeNodeKind::ADT {
                     decl_id,
                     subst: new_subst?,
+                    variants: new_variants?,
                 }))
-            }
+            },
         }
     }
 
@@ -341,8 +352,8 @@ impl TypeChecker {
                 }
                 Ok(())
             }
-            (TypeNodeKind::Struct { decl_id: d1, subst: s1 },
-                TypeNodeKind::Struct { decl_id: d2, subst: s2 }) if d1 == d2 => {
+            (TypeNodeKind::Struct { decl_id: d1, subst: s1, .. },
+                TypeNodeKind::Struct { decl_id: d2, subst: s2, .. }) if d1 == d2 => {
                 if s1.len() != s2.len() {
                     return Err(DiagMsg {
                         title: format!("{:?}", TypeCheckerError::ArityMismatch),
@@ -365,8 +376,8 @@ impl TypeChecker {
                 }
                 Ok(())
             }
-            (TypeNodeKind::ADT { decl_id: d1, subst: s1 },
-                TypeNodeKind::ADT { decl_id: d2, subst: s2 }) if d1 == d2 => {
+            (TypeNodeKind::ADT { decl_id: d1, subst: s1, .. },
+                TypeNodeKind::ADT { decl_id: d2, subst: s2, .. }) if d1 == d2 => {
                 if s1.len() != s2.len() {
                     return Err(DiagMsg {
                         title: format!("{:?}", TypeCheckerError::ArityMismatch),
@@ -749,7 +760,7 @@ impl TypeChecker {
                 self.unify(ty, adt_ty, pat_span.clone())?;
 
                 let adt_root = self.representative(adt_ty);
-                if let TypeNodeKind::ADT { decl_id, subst } = &self.type_pool[adt_root].kind.clone() {
+                if let TypeNodeKind::ADT { decl_id, subst, .. } = &self.type_pool[adt_root].kind.clone() {
                     let adt_scheme = self.decl_type_map.get(decl_id)
                         .ok_or_else(|| DiagMsg {
                             title: format!("{:?}", TypeCheckerError::InternalError),
@@ -1176,7 +1187,7 @@ impl TypeChecker {
                 let obj_ty = self.infer_expr(*obj, None)?;
                 let obj_root = self.representative(obj_ty);
 
-                if let TypeNodeKind::Struct { decl_id, subst } = &self.type_pool[obj_root].kind.clone() {
+                if let TypeNodeKind::Struct { decl_id, subst, .. } = &self.type_pool[obj_root].kind.clone() {
                     let (field_type, subst_clone, generic_params) = {
                         let decl = &self.hir_crate.hir_decl_pool[*decl_id];
                         match &decl.kind {
@@ -1230,7 +1241,7 @@ impl TypeChecker {
             HirExprKind::MakeStruct { path, fields } => {
                 let struct_ty = self.infer_expr(*path, None)?;
                 let struct_root = self.representative(struct_ty);
-                let (decl_id, subst) = if let TypeNodeKind::Struct { decl_id, subst } = &self.type_pool[struct_root].kind {
+                let (decl_id, subst) = if let TypeNodeKind::Struct { decl_id, subst, .. } = &self.type_pool[struct_root].kind {
                     (*decl_id, subst.clone())
                 } else {
                     return Err(DiagMsg {
@@ -1347,7 +1358,7 @@ impl TypeChecker {
                 self.unify(arg_ty, param_ty, span.clone())?;
 
                 let result_root = self.representative(result_ty);
-                if let TypeNodeKind::ADT { decl_id, subst } = &self.type_pool[result_root].kind.clone() {
+                if let TypeNodeKind::ADT { decl_id, subst, .. } = &self.type_pool[result_root].kind.clone() {
                     let adt_scheme = self.decl_type_map.get(decl_id)
                         .ok_or_else(|| DiagMsg {
                             title: format!("{:?}", TypeCheckerError::InternalError),
@@ -1918,9 +1929,20 @@ impl TypeChecker {
             self.name_type_map.insert(gp.name.sym_id, TypeScheme { quantified: vec![], body: tv });
         }
 
+        let mut variants = Vec::new();
+        for ctor in ctors {
+            let payload_template = if let Some(from_type) = &ctor.from_type {
+                let ty = self.resolve_type_name(from_type, ctor.span.clone())?;
+                Some(ty)
+            } else {
+                None
+            };
+            variants.push(payload_template);
+        }
         let adt_ty = self.new_compound(TypeNodeKind::ADT {
             decl_id,
             subst: gen_vars.clone(),
+            variants,
         });
 
         for ctor in ctors {
@@ -1973,13 +1995,15 @@ impl TypeChecker {
             gen_vars.push(tv);
             self.name_type_map.insert(gp.name.sym_id, TypeScheme { quantified: vec![], body: tv });
         }
+        let mut field_tys = Vec::new();
         for f in fields {
-            // 仅检查字段类型是否可解析
-            self.resolve_type_name(&f.type_ann, f.span.clone())?;
+            let ty = self.resolve_type_name(&f.type_ann, f.span.clone())?;
+            field_tys.push(ty);
         }
         let struct_ty = self.new_compound(TypeNodeKind::Struct {
             decl_id,
             subst: gen_vars.clone(),
+            field_tys,
         });
 
         // 直接构建类型方案
@@ -2192,7 +2216,7 @@ impl TypeChecker {
                     .collect();
                 format!("({})", elems.join(", "))
             }
-            TypeNodeKind::Struct { decl_id, subst } => {
+            TypeNodeKind::Struct { decl_id, subst, .. } => {
                 let ident = self.hir_crate.hir_decl_pool[*decl_id].ident.clone();
                 let subst_str: Vec<String> = subst.iter().map(|&s| self.ty_to_string(s)).collect();
                 format!("{}{}", ident, if subst_str.is_empty() {
@@ -2204,7 +2228,7 @@ impl TypeChecker {
             TypeNodeKind::Ref(inner) => format!("ref {}", self.ty_to_string(*inner)),
             TypeNodeKind::MutRef(inner) => format!("ref mut {}", self.ty_to_string(*inner)),
             TypeNodeKind::Share(inner) => format!("share {}", self.ty_to_string(*inner)),
-            TypeNodeKind::ADT { decl_id, subst } => {
+            TypeNodeKind::ADT { decl_id, subst, .. } => {
                 let ident = self.hir_crate.hir_decl_pool[*decl_id].ident.clone();
                 let subst_str: Vec<String> = subst.iter().map(|&s| self.ty_to_string(s)).collect();
                 format!("{}{}", ident, if subst_str.is_empty() {

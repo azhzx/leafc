@@ -1,0 +1,6 @@
+[package]
+name = "leafc_mir_lifetime_checker"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]

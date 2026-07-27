@@ -24,7 +24,7 @@ pub type HirExprId = usize;
 
 
 #[derive(Debug, Clone)]
-pub struct HirName { // 具体的SymbolId
+pub struct HirName {
     pub name: String,
     pub sym_id: SymId,
 }
@@ -304,7 +304,7 @@ pub enum HirExprKind {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum HirLit {
     Decimal(String),
     Int(String),
