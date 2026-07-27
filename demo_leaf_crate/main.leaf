@@ -10,11 +10,13 @@ type Int64;
 #lang("builtin_never_type")
 type Never;
 
-type Maybe [T]
-    | Just of T
-    | None
+type Point
+    x: Int32
+    y: Int32
+
+fun add(a, b)
+    return a+b
 
 fun main()
-    let a = Maybe.Just(100)
-    if a is Maybe.Just(binding xx)
-        let xxx = xx
+    let point = Point { x=100, y=200 }
+    let point_x = point.x

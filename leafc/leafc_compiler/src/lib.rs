@@ -15,11 +15,15 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use intervaltree::{Element, IntervalTree};
 use leafc_coreapi::ast::{CrateAst, GreenDecl};
+use leafc_coreapi::codegen::CodegenApi;
 use leafc_coreapi::crate_meta::{CrateManifest, OperatorDef, OperatorKind};
 use leafc_coreapi::mir::MirCrate;
 use leafc_coreapi::mir_lower::MirLowerApi;
+use leafc_coreapi::mir_mono::MirMonoApi;
 use leafc_coreapi::type_checker::TypeCheckerApi;
+use leafc_c_codegen::CCodeGen;
 use leafc_mirlower::MirLower;
+use leafc_mirmono::MirMono;
 use leafc_typechecker::TypeChecker;
 use realworld_io_api::RealWorldIOApi;
 
@@ -92,10 +96,19 @@ impl NativeCompiler {
             .collect();
         IntervalTree::from_iter(elements)
     }
+
+    pub fn write_to_path(&self, src: String) -> std::io::Result<PathBuf> {
+        let out_path = self.crate_path.join("build/out.c");
+        if let Some(parent) = out_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&out_path, src)?;
+        Ok(out_path)
+    }
 }
 
 impl CompilerApi for NativeCompiler {
-    type Output = ();
+    type Output = <CCodeGen as CodegenApi>::Output;
 
     fn new() -> Self {
         Self {
@@ -263,7 +276,7 @@ impl CompilerApi for NativeCompiler {
                 println!("{:#?}", ty_map.local_binding_map);
                 println!("=== === ===");
 
-                println!("=== hir ty pool ===");
+                println!("=== ty pool ===");
                 for (index, ty) in ty_map.type_pool.iter().enumerate() {
                     println!("{} => {:?}", index, ty);
                 }
@@ -279,12 +292,27 @@ impl CompilerApi for NativeCompiler {
         };
 
         let mir_lower = MirLower::new(ty_map, hir);
-        let mir = match mir_lower.lower() {
-            Ok(mir) => {
+        let (mir, ty_map) = match mir_lower.lower() {
+            Ok((mir, ty_map)) => {
                 println!("=== mir ===");
                 println!("{:#?}", mir);
                 println!("=== === ===");
-                mir
+                (mir, ty_map)
+            }
+            Err(e) => {
+                println!("{}", diag.report(e));
+                *out = None;
+                return self;
+            }
+        };
+
+        let mir_mono = MirMono::new(mir, ty_map);
+        let (mono_mir, ty_map) = match mir_mono.mono() {
+            Ok((mir, ty_map)) => {
+                println!("=== mono mir ===");
+                println!("{:#?}", mir);
+                println!("=== === ===");
+                (mir, ty_map)
             }
             Err(e) => {
                 println!("{}", diag.report(e));
@@ -293,8 +321,19 @@ impl CompilerApi for NativeCompiler {
             }
         };
         
+        let codegen = CCodeGen::new(mono_mir, ty_map);
+        let c_code = match codegen.emit() {
+            Ok(c_code) => c_code,
+            Err(e) => {
+                println!("{}", diag.report(e));
+                *out = None;
+                return self;
+            }
+        };
+        
+        
         self.ast_cache = ast;
-        *out = Some(());
+        *out = Some(c_code);
         self
     }
 }

@@ -3,7 +3,7 @@ use leafc_coreapi::hir::{HirBinOp, HirCrate, HirDeclId, HirDeclKind, HirExprId, 
 use leafc_coreapi::mir::{BasicBlock, BasicBlockId, Const, ControlId, ExternDecl, FnSig, FunId, LocalDecl, LocalId, MirBinOp, MirCrate, MirFun, MirStmt, MirStmtKind, MirUnOp, Place, Rvalue, StaticDecl, StaticId, TagId, TerminatorKind};
 use leafc_coreapi::mir_lower::MirLowerApi;
 use leafc_coreapi::scope::SymId;
-use leafc_coreapi::type_checker::TypeCheckerResult;
+use leafc_coreapi::type_system::TypeCtx;
 use leafc_coreapi::type_system::{get_type_root, TyId, TypeNodeKind};
 use std::collections::{HashMap, HashSet};
 use leafc_coreapi::lang_items::BuiltinType;
@@ -326,9 +326,9 @@ impl<'a> DecisionTreeBuilder<'a> {
 
         if is_all_wildcards {
             self.mir.start_block(current_block);
-            for (pat, occ) in first_row.patterns.iter().zip(occurrences.iter()) {
-                self.bind_pattern_variables(pat, occ);
-            }
+            // for (pat, occ) in first_row.patterns.iter().zip(occurrences.iter()) {
+            //     self.bind_pattern_variables(pat, occ);
+            // }
 
             // 如果是 is expr 直接返回 true
             if let Some(result_local) = self.is_result_local {
@@ -436,14 +436,29 @@ impl<'a> DecisionTreeBuilder<'a> {
 
         let mut default_occurrences = occurrences.clone();
         default_occurrences.remove(col_idx);
+
         let default_block = if default_matrix.is_empty() {
             let fail_b = self.mir.new_block();
             self.mir.start_block(fail_b);
-            self.mir.set_terminator(TerminatorKind::Unreachable);
+
+            if let Some(result_local) = self.is_result_local {
+                self.mir.push_stmt(MirStmtKind::Let {
+                    local: result_local,
+                    rvalue: Rvalue::Constant(Const::Bool(false)),
+                });
+                self.mir.set_terminator(TerminatorKind::Goto {
+                    target: self.merge_block,
+                    block_args: vec![Rvalue::Copy(Place::Local(result_local))],
+                });
+            } else {
+                self.mir.set_terminator(TerminatorKind::Unreachable);
+            }
             fail_b
         } else {
             self.compile_matrix(default_matrix, default_occurrences)
         };
+
+        self.mir.start_block(current_block);
 
         if has_testable {
             // SwitchInt
@@ -548,7 +563,8 @@ impl<'a> DecisionTreeBuilder<'a> {
                 targets: switch_targets,
                 default: default_block,
             });
-        } else {
+        }
+        else {
             // 不可反驳列
             let chosen_key = constructors_seen
                 .iter()
@@ -612,7 +628,7 @@ pub struct MirLower {
     statics: Vec<StaticDecl>,
     blocks: Vec<BasicBlock>,
 
-    type_checker_result: TypeCheckerResult,
+    type_checker_result: TypeCtx,
     hir: HirCrate,
 
     fun: Option<FnBuilder>,
@@ -853,7 +869,7 @@ impl MirLower {
 
         self.fun = Some(fun);
 
-        let ret_local = self.new_local(return_ty, true, Some("return".to_string()));
+        let ret_local = self.new_local(return_ty, true, Some("return_val".to_string()));
         self.fun.as_mut().unwrap().return_local = ret_local;
 
         for (param, ty) in params.iter().zip(param_tys.iter()) {
@@ -1185,7 +1201,7 @@ impl MirLower {
                 })
             }
 
-            HirExprKind::MakeStruct { path: _, fields } => {
+            HirExprKind::MakeStruct { path, fields } => {
                 let mut mir_fields = Vec::new();
                 for (_, field_expr) in fields {
                     if let Some(place) = self.compile_expr(*field_expr) {
@@ -1431,7 +1447,7 @@ impl MirLower {
 }
 
 impl MirLowerApi for MirLower {
-    fn new(ty_ck_result: TypeCheckerResult, hir_crate: HirCrate) -> Self {
+    fn new(ty_ck_result: TypeCtx, hir_crate: HirCrate) -> Self {
         let bool_ty = ty_ck_result.type_pool.iter().position(|n| {
             matches!(n.kind, TypeNodeKind::Builtin(BuiltinType::Bool))
         }).unwrap();
@@ -1465,14 +1481,14 @@ impl MirLowerApi for MirLower {
         }
     }
 
-    fn lower(mut self) -> Result<MirCrate, DiagMsg> {
+    fn lower(mut self) -> Result<(MirCrate, TypeCtx), DiagMsg> {
         self.lower_decls();
-        Ok(MirCrate {
+        Ok((MirCrate {
             name: self.hir.name,
             functions: self.functions,
             extern_decls: self.extern_decls,
             statics: self.statics,
             blocks: self.blocks,
-        })
+        }, self.type_checker_result))
     }
 }

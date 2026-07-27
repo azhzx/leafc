@@ -40,14 +40,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "leafc_c_codegen"
+version = "0.1.0"
+dependencies = [
+ "leafc_coreapi",
+]
+
+[[package]]
 name = "leafc_compiler"
 version = "0.1.0"
 dependencies = [
  "intervaltree",
+ "leafc_c_codegen",
  "leafc_coreapi",
  "leafc_diag",
  "leafc_hirlower",
  "leafc_mirlower",
+ "leafc_mirmono",
  "leafc_namepass",
  "leafc_parser",
  "leafc_typechecker",
@@ -90,6 +99,13 @@ dependencies = [
 
 [[package]]
 name = "leafc_mirlower"
+version = "0.1.0"
+dependencies = [
+ "leafc_coreapi",
+]
+
+[[package]]
+name = "leafc_mirmono"
 version = "0.1.0"
 dependencies = [
  "leafc_coreapi",

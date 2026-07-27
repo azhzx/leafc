@@ -62,3 +62,12 @@ pub fn get_type_root(type_pool: &[TypeNode], id: TyId) -> TyId {
     }
     cur
 }
+
+pub struct TypeCtx {
+    pub decl_type_map: HirDeclTypeMap,
+    pub expr_type_map: HirExprTypeMap,
+    pub local_binding_map: LocalBindingTypeMap,
+    pub name_type_map: NameTypeSchemeMap,
+    pub sym_to_decl: HashMap<SymId, HirDeclId>,
+    pub type_pool: Vec<TypeNode>,
+}

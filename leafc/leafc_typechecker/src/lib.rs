@@ -4,8 +4,8 @@ use leafc_coreapi::lang_items::BuiltinType;
 use leafc_coreapi::name_pass::NamePassResult;
 use leafc_coreapi::scope::SymId;
 use leafc_coreapi::source::Span;
-use leafc_coreapi::type_checker::{TypeCheckerApi, TypeCheckerError, TypeCheckerResult};
-use leafc_coreapi::type_system::{HirDeclTypeMap, HirExprTypeMap, LocalBindingTypeMap, NameTypeSchemeMap, TyId, TypeNode, TypeNodeKind, TypeScheme};
+use leafc_coreapi::type_checker::{TypeCheckerApi, TypeCheckerError};
+use leafc_coreapi::type_system::{HirDeclTypeMap, HirExprTypeMap, LocalBindingTypeMap, NameTypeSchemeMap, TyId, TypeCtx, TypeNode, TypeNodeKind, TypeScheme};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
@@ -1228,14 +1228,14 @@ impl TypeChecker {
                         self.name_type_map.remove(&sym_id);
                     }
 
-                    return Ok(field_ty);
+                    field_ty
+                } else {
+                    return Err(DiagMsg {
+                        title: format!("{:?}", TypeCheckerError::TypeMismatch),
+                        msg: format!("cannot access field `{}` on non‑struct type", field),
+                        span: span.clone(),
+                    });
                 }
-
-                return Err(DiagMsg {
-                    title: format!("{:?}", TypeCheckerError::TypeMismatch),
-                    msg: format!("cannot access field `{}` on non‑struct type", field),
-                    span: span.clone(),
-                })
             }
 
             HirExprKind::MakeStruct { path, fields } => {
@@ -2274,7 +2274,7 @@ impl TypeCheckerApi for TypeChecker {
         }
     }
 
-    fn check(mut self) -> Result<(TypeCheckerResult, HirCrate), DiagMsg> {
+    fn check(mut self) -> Result<(TypeCtx, HirCrate), DiagMsg> {
 
         self.build_sym_to_decl();
 
@@ -2296,7 +2296,7 @@ impl TypeCheckerApi for TypeChecker {
             self.check_decl(decl_id)?;
         }
 
-        Ok((TypeCheckerResult {
+        Ok((TypeCtx {
             decl_type_map: self.decl_type_map,
             expr_type_map: self.expr_type_map,
             local_binding_map: self.local_binding_map,
