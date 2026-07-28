@@ -55,6 +55,7 @@ dependencies = [
  "leafc_coreapi",
  "leafc_diag",
  "leafc_hirlower",
+ "leafc_mir_lifetime_checker",
  "leafc_mirlower",
  "leafc_mirmono",
  "leafc_namepass",
@@ -95,6 +96,13 @@ version = "0.1.0"
 dependencies = [
  "leafc_coreapi",
  "unicode-xid",
+]
+
+[[package]]
+name = "leafc_mir_lifetime_checker"
+version = "0.1.0"
+dependencies = [
+ "leafc_coreapi",
 ]
 
 [[package]]

@@ -1,3 +1,4 @@
+use crate::source::Span;
 use crate::type_system::TyId;
 
 pub type LocalId = usize;
@@ -26,12 +27,14 @@ pub struct MirFun {
     pub signature: FnSig,
     pub local_decls: Vec<LocalDecl>,
     pub blocks: Vec<BasicBlockId>,
+    pub span: Span
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExternDecl {
     pub name: String,
     pub signature: FnSig,
+    pub span: Span
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -40,6 +43,7 @@ pub struct StaticDecl {
     pub ty: TyId,
     pub mutable: bool,
     pub init: Const, // todo : 暂时const
+    pub span: Span
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -47,6 +51,7 @@ pub struct LocalDecl {
     pub ty: TyId,
     pub mutable: bool,
     pub name: Option<String>,
+    pub span: Span
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -60,11 +65,13 @@ pub struct BasicBlock {
     pub block_params: Vec<LocalId>,
     pub statements: Vec<MirStmt>,
     pub terminator: TerminatorKind,
+    pub span: Span
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MirStmt {
     pub kind: MirStmtKind,
+    pub span: Span
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -9,8 +9,14 @@ fn main() {
         .expect("fail to set crate path")
         .compile(&mut compile_result);
 
+    if compile_result.is_none() {
+        return;
+    }
     compiler
         .write_to_path(compile_result.unwrap())
+        .unwrap();
+
+    compiler.run_by_gcc()
         .unwrap();
 }
 

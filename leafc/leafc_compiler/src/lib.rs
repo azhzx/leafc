@@ -18,10 +18,13 @@ use leafc_coreapi::ast::{CrateAst, GreenDecl};
 use leafc_coreapi::codegen::CodegenApi;
 use leafc_coreapi::crate_meta::{CrateManifest, OperatorDef, OperatorKind};
 use leafc_coreapi::mir::MirCrate;
+use leafc_coreapi::mir_lifetime_checker::MirLifetimeCheckerApi;
 use leafc_coreapi::mir_lower::MirLowerApi;
 use leafc_coreapi::mir_mono::MirMonoApi;
 use leafc_coreapi::type_checker::TypeCheckerApi;
+use leafc_coreapi::type_system::TypeCtx;
 use leafc_c_codegen::CCodeGen;
+use leafc_mir_lifetime_checker::MirLifetimeChecker;
 use leafc_mirlower::MirLower;
 use leafc_mirmono::MirMono;
 use leafc_typechecker::TypeChecker;
@@ -105,7 +108,66 @@ impl NativeCompiler {
         fs::write(&out_path, src)?;
         Ok(out_path)
     }
-}
+
+    pub fn run_by_gcc(&self) -> std::io::Result<()> {
+        println!("start to run");
+
+        let build_dir = self.crate_path.join("build");
+        let c_file = build_dir.join("out.c");
+        if !c_file.exists() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("C file not found at {}", c_file.display()),
+            ));
+        }
+
+        let clean_path = |p: &std::path::Path| -> String {
+            let s = p.to_str().unwrap_or("");
+            if s.starts_with(r"\\?\") {
+                s[4..].to_string()
+            } else if s.starts_with(r"\\?\UNC\") {
+                format!(r"\\{}", &s[7..])
+            } else {
+                s.to_string()
+            }
+        };
+
+        let c_file_str = clean_path(&c_file);
+
+        let exe_name = if cfg!(target_os = "windows") {
+            "out.exe"
+        } else {
+            "out"
+        };
+        let exe_file = build_dir.join(exe_name);
+        let exe_file_str = clean_path(&exe_file);
+
+        let output = process::Command::new("gcc")
+            .arg(&c_file_str)
+            .arg("-o")
+            .arg(&exe_file_str)
+            .arg("-std=c11")
+            .arg("-Wall")
+            .output()?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("gcc failed:\n{}", stderr),
+            ));
+        }
+
+        let mut child = std::process::Command::new(&exe_file).spawn()?;
+        let status = child.wait()?;
+        if !status.success() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("executable exited with status {}", status),
+            ));
+        }
+        Ok(())
+    }}
 
 impl CompilerApi for NativeCompiler {
     type Output = <CCodeGen as CodegenApi>::Output;
@@ -206,7 +268,7 @@ impl CompilerApi for NativeCompiler {
 
         let mut name_pass = NamePass::new(&ast);
         let name_pass_result = match name_pass.pass() {
-            Ok(res @ NamePassResult { .. })  => {
+            Ok(res)  => {
                 println!("=== scope tree ===");
                 println!("{:#?}", res.pool);
                 println!("=== === ===");
@@ -297,6 +359,18 @@ impl CompilerApi for NativeCompiler {
                 println!("=== mir ===");
                 println!("{:#?}", mir);
                 println!("=== === ===");
+                (mir, ty_map)
+            }
+            Err(e) => {
+                println!("{}", diag.report(e));
+                *out = None;
+                return self;
+            }
+        };
+
+        let lifetime_checker = MirLifetimeChecker::new(mir, ty_map);
+        let (mir, ty_map) = match lifetime_checker.check() {
+            Ok((mir, ty_map)) => {
                 (mir, ty_map)
             }
             Err(e) => {

@@ -1,9 +1,11 @@
 use leafc_coreapi::diagnostic::DiagMsg;
+use leafc_coreapi::hir::HirDeclId;
+use leafc_coreapi::lang_items::BuiltinType;
 use leafc_coreapi::mir::*;
 use leafc_coreapi::mir_mono::MirMonoApi;
-use leafc_coreapi::type_system::TypeCtx;
 use leafc_coreapi::type_system::{get_type_root, TyId, TypeNode};
-use std::collections::HashMap;
+use leafc_coreapi::type_system::{GenericParamDef, TypeCtx, TypeDef, TypeDefKind, TypeNodeKind};
+use std::collections::{HashMap, HashSet};
 
 pub struct MirMono {
     mir: MirCrate,
@@ -14,6 +16,7 @@ impl MirMono {
     fn get_type_pool(&self) -> &[TypeNode] {
         &self.type_checker_result.type_pool
     }
+
 
     fn map_rvalue_ty(&self, rvalue: &mut Rvalue, mapping: &HashMap<TyId, TyId>) {
         let type_pool = self.get_type_pool();
@@ -168,6 +171,177 @@ impl MirMono {
         }
         self.map_terminator_ty(&mut block.terminator, mapping);
     }
+
+
+    fn is_concrete_ty(&self, ty: TyId) -> bool {
+        let pool = self.get_type_pool();
+        let root = get_type_root(pool, ty);
+        match &pool[root].kind {
+            TypeNodeKind::Var => false,
+            TypeNodeKind::Struct { subst, .. } | TypeNodeKind::ADT { subst, .. } => {
+                subst.iter().all(|&s| self.is_concrete_ty(s))
+            }
+            TypeNodeKind::Ref(inner) | TypeNodeKind::MutRef(inner) | TypeNodeKind::Share(inner) => {
+                self.is_concrete_ty(*inner)
+            }
+            TypeNodeKind::Fun { param_tys, return_ty } => {
+                param_tys.iter().all(|&p| self.is_concrete_ty(p)) && self.is_concrete_ty(*return_ty)
+            }
+            TypeNodeKind::Tuple(elems) => elems.iter().all(|&e| self.is_concrete_ty(e)),
+            _ => true,
+        }
+    }
+
+    fn collect_concrete_adt_tys(
+        &self,
+        functions: &[MirFun],
+        blocks: &[BasicBlock],
+        statics: &[StaticDecl],
+    ) -> HashSet<(HirDeclId, Vec<TyId>)> {
+        let pool = self.get_type_pool();
+        let mut result = HashSet::new();
+
+        let mut process_ty = |ty: TyId| {
+            let root = get_type_root(pool, ty);
+            match &pool[root].kind {
+                TypeNodeKind::Struct { decl_id, subst, .. }
+                | TypeNodeKind::ADT { decl_id, subst, .. } => {
+                    if subst.iter().all(|&s| self.is_concrete_ty(s)) {
+                        result.insert((*decl_id, subst.clone()));
+                    }
+                }
+                _ => {}
+            }
+        };
+
+        for fun in functions {
+            for &pty in &fun.signature.params { process_ty(pty); }
+            process_ty(fun.signature.return_ty);
+            for decl in &fun.local_decls { process_ty(decl.ty); }
+        }
+
+        for stat in statics { process_ty(stat.ty); }
+
+        for block in blocks {
+            for stmt in &block.statements {
+                match &stmt.kind {
+                    MirStmtKind::Let { rvalue, .. } | MirStmtKind::Store { rvalue, .. } => {
+                        self.collect_tys_in_rvalue(rvalue, &mut process_ty);
+                    }
+                    _ => {}
+                }
+            }
+            self.collect_tys_in_terminator(&block.terminator, &mut process_ty);
+        }
+
+        result
+    }
+
+    fn collect_tys_in_rvalue(&self, rv: &Rvalue, f: &mut impl FnMut(TyId)) {
+        match rv {
+            Rvalue::Cast(_, target_ty) => f(*target_ty),
+            Rvalue::BinaryOp { left, right, .. } => {
+                self.collect_tys_in_rvalue(left, f);
+                self.collect_tys_in_rvalue(right, f);
+            }
+            Rvalue::UnaryOp { right, .. } => self.collect_tys_in_rvalue(right, f),
+            Rvalue::BuildStruct(fields) | Rvalue::Tuple(fields) => {
+                for field in fields { self.collect_tys_in_rvalue(field, f); }
+            }
+            Rvalue::Variant(_, inner) => self.collect_tys_in_rvalue(inner, f),
+            _ => {}
+        }
+    }
+
+    fn collect_tys_in_terminator(&self, term: &TerminatorKind, f: &mut impl FnMut(TyId)) {
+        match term {
+            TerminatorKind::Goto { block_args, .. } => {
+                for arg in block_args { self.collect_tys_in_rvalue(arg, f); }
+            }
+            TerminatorKind::SwitchInt { discriminant, .. } => {
+                self.collect_tys_in_rvalue(discriminant, f);
+            }
+            TerminatorKind::Call { args, .. } | TerminatorKind::CallByPtr { args, .. } => {
+                for arg in args { self.collect_tys_in_rvalue(arg, f); }
+            }
+            TerminatorKind::Raise { args, .. } => {
+                for arg in args { self.collect_tys_in_rvalue(arg, f); }
+            }
+            _ => {}
+        }
+    }
+
+    fn subst_type_def(&self, generic_def: &TypeDef, subst_map: &HashMap<TyId, TyId>) -> TypeDef {
+        let pool = self.get_type_pool();
+        let subst_ty = |ty: &TyId| -> TyId {
+            let root = get_type_root(pool, *ty);
+            subst_map.get(&root).copied().unwrap_or(*ty)
+        };
+
+        let mut new_def = generic_def.clone();
+        match &mut new_def.kind {
+            TypeDefKind::Struct { fields } => {
+                for f in fields {
+                    f.ty = subst_ty(&f.ty);
+                }
+            }
+            TypeDefKind::Enum { variants } => {
+                for v in variants {
+                    for f in &mut v.fields {
+                        f.ty = subst_ty(&f.ty);
+                    }
+                }
+            }
+        }
+
+        new_def.name = self.mangled_type_name(&generic_def.name, &generic_def.generics, subst_map);
+        new_def.generics.clear();
+        new_def
+    }
+
+    fn mangled_type_name(&self, base: &str, generics: &[GenericParamDef], subst: &HashMap<TyId, TyId>) -> String {
+        let suffix: Vec<String> = generics.iter()
+            .map(|gp| {
+                let concrete = subst.get(&gp.def_id).copied().unwrap_or(gp.def_id);
+                self.ty_to_string(concrete)
+            })
+            .collect();
+        if suffix.is_empty() {
+            base.to_string()
+        } else {
+            format!("{}_{}", base, suffix.join("_"))
+        }
+    }
+
+    fn ty_to_string(&self, ty: TyId) -> String {
+        let pool = self.get_type_pool();
+        let root = get_type_root(pool, ty);
+        match &pool[root].kind {
+            TypeNodeKind::Builtin(b) => match b {
+                BuiltinType::I8 => "int8_t",
+                BuiltinType::I16 => "int16_t",
+                BuiltinType::I32 => "int32_t",
+                BuiltinType::I64 => "int64_t",
+                BuiltinType::U8 => "uint8_t",
+                BuiltinType::U16 => "uint16_t",
+                BuiltinType::U32 => "uint32_t",
+                BuiltinType::U64 => "uint64_t",
+                BuiltinType::F32 => "float",
+                BuiltinType::F64 => "double",
+                BuiltinType::Bool => "bool",
+                _ => "unknown",
+            }.to_string(),
+            TypeNodeKind::Struct { decl_id, subst, .. } | TypeNodeKind::ADT { decl_id, subst, .. } => {
+                if let Some(def) = self.type_checker_result.generic_type_defs.get(decl_id) {
+                    let suffix = subst.iter().map(|&s| self.ty_to_string(s)).collect::<Vec<_>>().join("_");
+                    if suffix.is_empty() { def.name.clone() } else { format!("{}_{}", def.name, suffix) }
+                } else {
+                    format!("unknown_adt_{}", decl_id)
+                }
+            }
+            _ => format!("ty{}", root),
+        }
+    }
 }
 
 impl MirMonoApi for MirMono {
@@ -231,8 +405,9 @@ impl MirMonoApi for MirMono {
             }
             let instances = inst_map.get(&old_fid).cloned().unwrap_or_default();
             let mut instance_map: HashMap<Vec<TyId>, FunId> = HashMap::new();
+
             for concrete_tys in &instances {
-                // 构建替换映射：泛型形参 -> 具体实参
+                // 构建替换映射
                 let mut ty_subst: HashMap<TyId, TyId> = HashMap::new();
                 for (gp, ct) in fun.generic_params.iter().zip(concrete_tys) {
                     ty_subst.insert(*gp, *ct);
@@ -292,6 +467,25 @@ impl MirMonoApi for MirMono {
 
         self.mir.functions = new_functions;
         self.mir.blocks = new_blocks;
+
+
+        let concrete_adts = self.collect_concrete_adt_tys(
+            &self.mir.functions,
+            &self.mir.blocks,
+            &self.mir.statics,
+        );
+        for (decl_id, subst) in &concrete_adts {
+            if let Some(generic_def) = self.type_checker_result.generic_type_defs.get(decl_id).cloned() {
+                let mut subst_map = HashMap::new();
+                for (gp, &ct) in generic_def.generics.iter().zip(subst.iter()) {
+                    subst_map.insert(gp.def_id, ct);
+                }
+                let concrete_def = self.subst_type_def(&generic_def, &subst_map);
+                self.type_checker_result
+                    .concrete_type_defs
+                    .insert((*decl_id, subst.clone()), concrete_def);
+            }
+        }
 
         Ok((self.mir, self.type_checker_result))
     }

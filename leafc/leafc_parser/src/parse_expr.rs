@@ -627,6 +627,81 @@ impl<'a> Parser<'a> {
         })
     }
 
+    /// unsafe_call_external callee(args)
+    pub fn parse_unsafe_call_external_expr(&mut self) -> Result<ExprRedNode, DiagMsg> {
+        let kw_token = self.current_token().clone();
+        let kw_start = kw_token.span.start_off;
+        self.skip_token_only(TokenType::KwUnsafeCallExternal)?;
+
+        let path_start = self.current_token().span.start_off;
+        let callee_path = self.parse_pure_static_path()?;
+        let path_text_len = callee_path.text_len;
+
+        let callee_green = GreenExpr {
+            kind: GreenExprKind::StaticPath {
+                path: GreenChild {
+                    relative_start: 0,
+                    node: Arc::new(callee_path),
+                },
+            },
+            text_len: path_text_len,
+        };
+        let callee_child = GreenChild {
+            relative_start: path_start - kw_start,
+            node: Arc::new(callee_green),
+        };
+
+        if self.current_token().kind != TokenType::Lparen {
+            return Err(DiagMsg {
+                title: format!("{:?}", ParserError::InvalidCallArgumentList),
+                msg: "expected '(' after callee in unsafe external call".to_string(),
+                span: self.current_token().span.clone(),
+            });
+        }
+        self.skip_token(); // '('
+
+        let mut args = vec![];
+        while self.current_token().kind != TokenType::Rparen {
+            let arg_red = self.parse_expr()?;
+            args.push(GreenChild {
+                relative_start: arg_red.span.start_off - kw_start,
+                node: arg_red.inner.clone(),
+            });
+            if self.current_token().kind == TokenType::Comma {
+                self.skip_token();
+            } else if self.current_token().kind == TokenType::Rparen {
+                break;
+            } else {
+                return Err(DiagMsg {
+                    title: format!("{:?}", ParserError::InvalidCallArgumentList),
+                    msg: "invalid argument list in unsafe external call".to_string(),
+                    span: self.current_token().span.clone(),
+                });
+            }
+        }
+
+        self.skip_token_only(TokenType::Rparen)?;
+        let end_off = self.tokens.data[self.index - 1].span.end_off;
+        let text_len = end_off - kw_start;
+
+        let green = GreenExpr {
+            kind: GreenExprKind::UnsafeExternalCall {
+                callee: callee_child,
+                args,
+            },
+            text_len,
+        };
+
+        Ok(ExprRedNode {
+            span: Span {
+                source_id: kw_token.span.source_id,
+                start_off: kw_start,
+                end_off,
+            },
+            inner: Arc::new(green),
+        })
+    }
+
     /// block
     pub fn parse_block_expr(&mut self) -> Result<ExprRedNode, DiagMsg> {
         let start_off = self.current_token().span.start_off; // 'indent' token
@@ -640,10 +715,7 @@ impl<'a> Parser<'a> {
                 relative_start: (expr_start - start_off),
                 node: expr_red.inner.clone(),
             });
-            if self.current_token().kind == TokenType::NewLine {
-                self.skip_token();
-                self.skip_token_if_newlines()?;
-            }
+            self.skip_token_if_newlines()?;
         }
 
         self.skip_token_only(TokenType::Dedent)?;
@@ -694,7 +766,7 @@ impl<'a> Parser<'a> {
         let expr_red = self.parse_expr()?;
         let expr_start = expr_red.span.start_off;
 
-        self.skip_token_only(TokenType::NewLine)?;
+        self.skip_token_if_newlines()?;
         let end_off = self.tokens.data[self.index - 1].span.end_off;
         let text_len = end_off - let_start;
 
@@ -991,6 +1063,7 @@ impl<'a> Parser<'a> {
             TokenType::KwRaise => return self.parse_raise_expr(),
             TokenType::KwWith => return self.parse_with_expr(),
             TokenType::KwResume => return self.parse_resume_expr(),
+            TokenType::KwUnsafeCallExternal => return self.parse_unsafe_call_external_expr(),
             _ => {}
         }
         self.parse_expr_bp(0)

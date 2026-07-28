@@ -382,7 +382,12 @@ impl<'a> NamePass<'a> {
                     self.resolve_expr(&child_expr_red(&expr_red.span, arg), current_scope)?;
                 }
             }
-            GreenExprKind::UnsafeExternalCall { .. } => {}
+            GreenExprKind::UnsafeExternalCall { callee, args, .. } => {
+                self.resolve_expr(&child_expr_red(&expr_red.span, callee), current_scope)?;
+                for arg in args {
+                    self.resolve_expr(&child_expr_red(&expr_red.span, arg), current_scope)?;
+                }
+            }
             GreenExprKind::StaticPath { path } => {
                 let path_span = child_span(&expr_red.span, path.relative_start, path.node.text_len);
                 self.resolve_static_path_with_span(&path.node, &path_span, current_scope)?;
@@ -753,6 +758,24 @@ impl<'a> NamePassApi<'a> for NamePass<'a> {
                             decl_span.clone(),
                             SymbolKind::External,
                         );
+
+                        let external_scope_id = self.scope_pool.push_scope(
+                            Some(file_scope_id),
+                            ScopeKind::Function,
+                            Some(Arc::clone(&decl_red.inner)),
+                            Some(decl_span.clone()),
+                        );
+
+                        for param_child in params {
+                            let param_span = child_span(&decl_span, param_child.relative_start, param_child.node.text_len());
+                            let param_name = param_child.node.name.node.as_ref().clone();
+                            self.scope_pool.add_symbol(
+                                external_scope_id,
+                                param_name.name,
+                                param_span,
+                                SymbolKind::Local,
+                            );
+                        }
                     }
 
                     GreenDeclKind::Abstract { super_abst, generic_vars, methods, where_clause } => {

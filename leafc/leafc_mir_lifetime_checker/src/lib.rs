@@ -1,14 +1,26 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
+use leafc_coreapi::diagnostic::DiagMsg;
+use leafc_coreapi::mir::MirCrate;
+use leafc_coreapi::mir_lifetime_checker::MirLifetimeCheckerApi;
+use leafc_coreapi::type_system::TypeCtx;
+
+pub struct MirLifetimeChecker {
+    mir: MirCrate,
+    type_ctx: TypeCtx,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+impl MirLifetimeChecker {
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
+}
+
+impl MirLifetimeCheckerApi for MirLifetimeChecker {
+    fn new(mir: MirCrate, type_ctx: TypeCtx) -> Self {
+        Self {
+            mir,
+            type_ctx,
+        }
+    }
+
+    fn check(self) -> Result<(MirCrate, TypeCtx), DiagMsg> {
+        Ok((self.mir, self.type_ctx))
     }
 }

@@ -363,6 +363,13 @@ impl<'a> Preprocessor<'a> {
 
     fn expand_all(&mut self, tokens: Vec<Token>) -> Result<Vec<Token>, DiagMsg> {
         let mut current_tokens = tokens;
+
+        // fixme:
+        // __define A 2 * B
+        // __define B A + 3
+        // A
+        // fail to expand
+
         loop {
             let mut result = Vec::new();
             let mut index = 0;

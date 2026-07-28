@@ -7,7 +7,7 @@ use leafc_coreapi::type_system::TypeCtx;
 use leafc_coreapi::type_system::{get_type_root, TyId, TypeNodeKind};
 use std::collections::{HashMap, HashSet};
 use leafc_coreapi::lang_items::BuiltinType;
-
+use leafc_coreapi::source::Span;
 
 #[derive(Clone, Debug)]
 struct MatrixRow<'a> {
@@ -30,12 +30,11 @@ struct DecisionTreeBuilder<'a> {
     merge_block: BasicBlockId,
     dag_cache: HashMap<String, BasicBlockId>,
     is_result_local: Option<LocalId>,
+    span: Span,
 }
 
 impl<'a> DecisionTreeBuilder<'a> {
-    // DAG 缓存暂时禁用
     fn compute_matrix_signature(&self, _matrix: &[MatrixRow], _occurrences: &[Place]) -> String {
-        // 暂时返回空字符串，禁用缓存
         String::new()
     }
 
@@ -128,65 +127,96 @@ impl<'a> DecisionTreeBuilder<'a> {
         base: &Place,
         key: &PatternKindKey,
         pattern: &HirPattern,
-    ) -> Vec<Place> {
+    ) -> Result<Vec<Place>, DiagMsg> {
         match pattern {
             HirPattern::Literal(_)
             | HirPattern::Wildcard
             | HirPattern::Binding(_)
-            | HirPattern::Rest => vec![],
+            | HirPattern::Rest => Ok(vec![]),
             HirPattern::Constructor { args, .. } => {
                 if args.is_empty() {
-                    vec![]
+                    Ok(vec![])
                 } else {
-                    let enum_place = match key {
-                        PatternKindKey::Constructor(sym_id) => {
-                            let discr_ty = self.mir.place_ty(base);
-                            let root_ty = get_type_root(&self.mir.type_checker_result.type_pool, discr_ty);
-                            if let TypeNodeKind::ADT { decl_id, .. } = &self.mir.type_checker_result.type_pool[root_ty].kind {
-                                let tag = *self.mir.adt_variant_map.get(&(*decl_id, *sym_id)).unwrap();
-                                Place::EnumItem { place: Box::new(base.clone()), variant: tag }
-                            } else { unreachable!() }
-                        }
-                        _ => unreachable!(),
-                    };
-                    vec![enum_place]
+                    let discr_ty = self.mir.place_ty(base, self.span.clone())?;
+                    let root_ty = get_type_root(&self.mir.type_checker_result.type_pool, discr_ty);
+                    if let TypeNodeKind::ADT { decl_id, .. } = &self.mir.type_checker_result.type_pool[root_ty].kind {
+                        let sym_id = match key {
+                            PatternKindKey::Constructor(sym) => *sym,
+                            _ => return Err(DiagMsg {
+                                title: "internal error".into(),
+                                msg: "expected constructor key".into(),
+                                span: self.span.clone(),
+                            }),
+                        };
+                        let tag = *self.mir.adt_variant_map.get(&(*decl_id, sym_id))
+                            .ok_or_else(|| DiagMsg {
+                                title: "internal error".into(),
+                                msg: format!("variant for sym {} not found", sym_id),
+                                span: self.span.clone(),
+                            })?;
+                        let enum_place = Place::EnumItem {
+                            place: Box::new(base.clone()),
+                            variant: tag,
+                        };
+                        Ok(vec![enum_place])
+                    } else {
+                        Err(DiagMsg {
+                            title: "type error".into(),
+                            msg: "constructor pattern on non-ADT".into(),
+                            span: self.span.clone(),
+                        })
+                    }
                 }
             }
-            HirPattern::Tuple { elements, .. } => (0..elements.len())
-                .map(|i| Place::Field {
-                    base: Box::new(base.clone()),
-                    field: i,
-                })
-                .collect(),
+            HirPattern::Tuple { elements, .. } => {
+                Ok((0..elements.len())
+                    .map(|i| Place::Field {
+                        base: Box::new(base.clone()),
+                        field: i,
+                    })
+                    .collect())
+            }
             HirPattern::Struct { fields, .. } => {
-                let base_ty = self.mir.place_ty(base);
+                let base_ty = self.mir.place_ty(base, self.span.clone())?;
                 let root_ty = get_type_root(&self.mir.type_checker_result.type_pool, base_ty);
                 let decl_id = match &self.mir.type_checker_result.type_pool[root_ty].kind {
                     TypeNodeKind::Struct { decl_id, .. } => *decl_id,
-                    _ => panic!("Expected struct type for struct pattern"),
+                    _ => {
+                        return Err(DiagMsg {
+                            title: "type error".into(),
+                            msg: "expected struct type for struct pattern".into(),
+                            span: self.span.clone(),
+                        });
+                    }
                 };
-                fields
-                    .iter()
-                    .map(|sf| {
-                        let idx = *self
-                            .mir
-                            .struct_field_map
-                            .get(&(decl_id, sf.field_name.name.clone()))
-                            .expect(&format!(
-                                "Field {} not found in struct",
-                                sf.field_name.name
-                            ));
-                        Place::Field {
-                            base: Box::new(base.clone()),
-                            field: idx,
-                        }
-                    })
-                    .collect()
+                let mut places = Vec::new();
+                for sf in fields {
+                    let idx = *self
+                        .mir
+                        .struct_field_map
+                        .get(&(decl_id, sf.field_name.name.clone()))
+                        .ok_or_else(|| DiagMsg {
+                            title: "internal error".into(),
+                            msg: format!("field {} not found in struct", sf.field_name.name),
+                            span: self.span.clone(),
+                        })?;
+                    places.push(Place::Field {
+                        base: Box::new(base.clone()),
+                        field: idx,
+                    });
+                }
+                Ok(places)
             }
             HirPattern::Alias { pattern, .. } => {
                 self.generate_sub_occurrences(base, key, pattern)
             }
-            HirPattern::Or { .. } => unreachable!("Or should have been expanded"),
+            HirPattern::Or { .. } => {
+                Err(DiagMsg {
+                    title: "internal error".into(),
+                    msg: "or pattern should have been expanded".into(),
+                    span: self.span.clone(),
+                })
+            }
         }
     }
 
@@ -220,26 +250,32 @@ impl<'a> DecisionTreeBuilder<'a> {
         }
     }
 
-    fn bind_pattern_variables(&mut self, pattern: &HirPattern, place: &Place) {
+    fn bind_pattern_variables(&mut self, pattern: &HirPattern, place: &Place) -> Result<(), DiagMsg> {
         match pattern {
             HirPattern::Binding(name) => {
-                let ty = self.mir.place_ty(place);
-                let local = self.mir.new_local(ty, true, Some(name.name.clone()));
+                let ty = self.mir.place_ty(place, self.span.clone())?;
+                let local = self.mir.new_local(ty, true, Some(name.name.clone()), self.span.clone());
                 self.mir.bind_local(name.sym_id, local);
-                self.mir.push_stmt(MirStmtKind::Let {
-                    local,
-                    rvalue: Rvalue::Copy(place.clone()),
-                });
+                self.mir.push_stmt(
+                    MirStmtKind::Let {
+                        local,
+                        rvalue: Rvalue::Copy(place.clone()),
+                    },
+                    self.span.clone(),
+                );
             }
             HirPattern::Alias { pattern, name, .. } => {
-                self.bind_pattern_variables(pattern, place);
-                let ty = self.mir.place_ty(place);
-                let local = self.mir.new_local(ty, true, Some(name.name.clone()));
+                self.bind_pattern_variables(pattern, place)?;
+                let ty = self.mir.place_ty(place, self.span.clone())?;
+                let local = self.mir.new_local(ty, true, Some(name.name.clone()), self.span.clone());
                 self.mir.bind_local(name.sym_id, local);
-                self.mir.push_stmt(MirStmtKind::Let {
-                    local,
-                    rvalue: Rvalue::Copy(place.clone()),
-                });
+                self.mir.push_stmt(
+                    MirStmtKind::Let {
+                        local,
+                        rvalue: Rvalue::Copy(place.clone()),
+                    },
+                    self.span.clone(),
+                );
             }
             HirPattern::Tuple { elements, .. } => {
                 for (idx, elem) in elements.iter().enumerate() {
@@ -247,20 +283,26 @@ impl<'a> DecisionTreeBuilder<'a> {
                         base: Box::new(place.clone()),
                         field: idx,
                     };
-                    self.bind_pattern_variables(elem, &field_place);
+                    self.bind_pattern_variables(elem, &field_place)?;
                 }
             }
             HirPattern::Constructor { args, .. } => {
                 if let Some(arg) = args.first() {
-                    self.bind_pattern_variables(arg, place);
+                    self.bind_pattern_variables(arg, place)?;
                 }
             }
             HirPattern::Struct { fields, .. } => {
-                let base_ty = self.mir.place_ty(place);
+                let base_ty = self.mir.place_ty(place, self.span.clone())?;
                 let root_ty = get_type_root(&self.mir.type_checker_result.type_pool, base_ty);
                 let decl_id = match &self.mir.type_checker_result.type_pool[root_ty].kind {
                     TypeNodeKind::Struct { decl_id, .. } => *decl_id,
-                    _ => panic!("Expected struct type"),
+                    _ => {
+                        return Err(DiagMsg {
+                            title: "type error".into(),
+                            msg: "expected struct type".into(),
+                            span: self.span.clone(),
+                        });
+                    }
                 };
                 for sf in fields {
                     if let Some(&field_idx) = self
@@ -272,13 +314,14 @@ impl<'a> DecisionTreeBuilder<'a> {
                             base: Box::new(place.clone()),
                             field: field_idx,
                         };
-                        self.bind_pattern_variables(&sf.pattern, &field_place);
+                        self.bind_pattern_variables(&sf.pattern, &field_place)?;
                     }
                 }
             }
             HirPattern::Wildcard | HirPattern::Literal(_) | HirPattern::Rest => {}
             HirPattern::Or { .. } => {}
         }
+        Ok(())
     }
 
     fn is_all_wildcards(patterns: &[&HirPattern]) -> bool {
@@ -301,17 +344,17 @@ impl<'a> DecisionTreeBuilder<'a> {
         &mut self,
         matrix: Vec<MatrixRow>,
         occurrences: Vec<Place>,
-    ) -> BasicBlockId {
+    ) -> Result<BasicBlockId, DiagMsg> {
         let saved_block = self.mir.current_block;
         let saved_stmts = std::mem::take(&mut self.mir.current_stmts);
 
         if matrix.is_empty() {
-            let fail_block = self.mir.new_block();
+            let fail_block = self.mir.new_block(self.span.clone());
             self.mir.start_block(fail_block);
             self.mir.set_terminator(TerminatorKind::Unreachable);
             self.mir.current_block = saved_block;
             self.mir.current_stmts = saved_stmts;
-            return fail_block;
+            return Ok(fail_block);
         }
 
         let mut expanded_matrix = Vec::new();
@@ -319,87 +362,104 @@ impl<'a> DecisionTreeBuilder<'a> {
             expanded_matrix.extend(self.expand_patterns(&row));
         }
 
-        let current_block = self.mir.new_block();
+        let current_block = self.mir.new_block(self.span.clone());
 
         let first_row = &expanded_matrix[0];
         let is_all_wildcards = Self::is_all_wildcards(&first_row.patterns);
 
         if is_all_wildcards {
             self.mir.start_block(current_block);
-            // for (pat, occ) in first_row.patterns.iter().zip(occurrences.iter()) {
-            //     self.bind_pattern_variables(pat, occ);
-            // }
 
-            // 如果是 is expr 直接返回 true
             if let Some(result_local) = self.is_result_local {
-                self.mir.push_stmt(MirStmtKind::Let {
-                    local: result_local,
-                    rvalue: Rvalue::Constant(Const::Bool(true)),
-                });
+                for (pat, occ) in first_row.patterns.iter().zip(occurrences.iter()) {
+                    self.bind_pattern_variables(pat, occ)?;
+                }
+                self.mir.push_stmt(
+                    MirStmtKind::Let {
+                        local: result_local,
+                        rvalue: Rvalue::Constant(Const::Bool(true)),
+                    },
+                    self.span.clone(),
+                );
                 self.mir.set_terminator(TerminatorKind::Goto {
                     target: self.merge_block,
                     block_args: vec![Rvalue::Copy(Place::Local(result_local))],
                 });
                 self.mir.current_block = saved_block;
                 self.mir.current_stmts = saved_stmts;
-                return current_block;
+                return Ok(current_block);
             }
 
             let arm = &self.arms[first_row.arm_idx];
 
             for (pat, occ) in first_row.patterns.iter().zip(occurrences.iter()) {
-                self.bind_pattern_variables(pat, occ);
+                self.bind_pattern_variables(pat, occ)?;
             }
 
-            // 处理 guard
+            // guard
             if let Some(guard_expr) = arm.guard {
-                let guard_place = self.mir.compile_expr(guard_expr).unwrap();
-                let next_eval_block = self.mir.new_block();
-                let fail_eval_block = self.mir.new_block();
+                let guard_place = self.mir.compile_expr(guard_expr)?.ok_or_else(|| DiagMsg {
+                    title: "internal error".into(),
+                    msg: "guard expression produced no place".into(),
+                    span: self.span.clone(),
+                })?;
+                let guard_success_block = self.mir.new_block(self.span.clone());
+                let guard_fail_block = self.mir.new_block(self.span.clone());
 
                 self.mir.set_terminator(TerminatorKind::SwitchInt {
                     discriminant: Rvalue::Copy(guard_place),
-                    targets: vec![(Const::Bool(true), next_eval_block)],
-                    default: fail_eval_block,
+                    targets: vec![(Const::Bool(true), guard_success_block)],
+                    default: guard_fail_block,
                 });
 
-                // guard fail
+                // guard 成功
+                self.mir.start_block(guard_success_block);
+                let body_place = self.mir.compile_expr(arm.body)?;
+                let ret_val = body_place
+                    .map(Rvalue::Move)
+                    .unwrap_or(Rvalue::Tuple(vec![]));
+                self.mir.set_terminator(TerminatorKind::Goto {
+                    target: self.merge_block,
+                    block_args: vec![ret_val],
+                });
+
+                // guard 失败
                 let remaining_matrix: Vec<MatrixRow> = expanded_matrix
                     .iter()
                     .filter(|r| r.arm_idx != first_row.arm_idx)
                     .cloned()
                     .collect();
-                let fallback_block = self.compile_matrix(remaining_matrix, occurrences);
-                self.mir.start_block(fail_eval_block);
+                let fallback_block = self.compile_matrix(remaining_matrix, occurrences)?;
+                self.mir.start_block(guard_fail_block);
                 self.mir.set_terminator(TerminatorKind::Goto {
                     target: fallback_block,
                     block_args: vec![],
                 });
 
-                self.mir.start_block(next_eval_block);
+                self.mir.current_block = saved_block;
+                self.mir.current_stmts = saved_stmts;
+                return Ok(current_block);
             }
 
-            let body_block = self.mir.switch_to_new_block();
-            let body_place = self.mir.compile_expr(arm.body);
-
-            if self.mir.current_block == body_block &&
-                self.mir.blocks[body_block].terminator == TerminatorKind::Unreachable
-            {
-                let ret_val = body_place.map(Rvalue::Move).unwrap_or(Rvalue::Tuple(vec![]));
-                self.mir.set_terminator(TerminatorKind::Goto {
-                    target: self.merge_block,
-                    block_args: vec![ret_val],
-                });
-            }
+            // 直接编译 body 并跳转
+            let body_place = self.mir.compile_expr(arm.body)?;
+            let ret_val = body_place
+                .map(Rvalue::Move)
+                .unwrap_or(Rvalue::Tuple(vec![]));
+            self.mir.set_terminator(TerminatorKind::Goto {
+                target: self.merge_block,
+                block_args: vec![ret_val],
+            });
 
             self.mir.current_block = saved_block;
             self.mir.current_stmts = saved_stmts;
-            return current_block;
+            return Ok(current_block);
         }
 
+        // 不可反驳列处理
         let col_idx = self.select_best_column(&expanded_matrix, occurrences.len());
         let place_to_test = occurrences[col_idx].clone();
-        let discr_ty = self.mir.place_ty(&place_to_test);
+        let discr_ty = self.mir.place_ty(&place_to_test, self.span.clone())?;
 
         let mut constructors_seen = Vec::new();
         for row in &expanded_matrix {
@@ -411,20 +471,18 @@ impl<'a> DecisionTreeBuilder<'a> {
 
         let has_testable = constructors_seen.iter().any(|k| {
             matches!(
-            k,
-            PatternKindKey::Literal(_) | PatternKindKey::Constructor(_)
-        )
+                k,
+                PatternKindKey::Literal(_) | PatternKindKey::Constructor(_)
+            )
         });
 
         self.mir.start_block(current_block);
 
-        // 生成默认矩阵
+        // 默认矩阵
         let mut default_matrix = Vec::new();
         for row in &expanded_matrix {
             let pat = row.patterns[col_idx];
-            if Self::is_wildcard_or_binding(pat)
-
-        {
+            if Self::is_wildcard_or_binding(pat) {
                 let mut new_patterns = row.patterns.clone();
                 new_patterns.remove(col_idx);
                 default_matrix.push(MatrixRow {
@@ -438,14 +496,17 @@ impl<'a> DecisionTreeBuilder<'a> {
         default_occurrences.remove(col_idx);
 
         let default_block = if default_matrix.is_empty() {
-            let fail_b = self.mir.new_block();
+            let fail_b = self.mir.new_block(self.span.clone());
             self.mir.start_block(fail_b);
 
             if let Some(result_local) = self.is_result_local {
-                self.mir.push_stmt(MirStmtKind::Let {
-                    local: result_local,
-                    rvalue: Rvalue::Constant(Const::Bool(false)),
-                });
+                self.mir.push_stmt(
+                    MirStmtKind::Let {
+                        local: result_local,
+                        rvalue: Rvalue::Constant(Const::Bool(false)),
+                    },
+                    self.span.clone(),
+                );
                 self.mir.set_terminator(TerminatorKind::Goto {
                     target: self.merge_block,
                     block_args: vec![Rvalue::Copy(Place::Local(result_local))],
@@ -455,13 +516,12 @@ impl<'a> DecisionTreeBuilder<'a> {
             }
             fail_b
         } else {
-            self.compile_matrix(default_matrix, default_occurrences)
+            self.compile_matrix(default_matrix, default_occurrences)?
         };
 
         self.mir.start_block(current_block);
 
         if has_testable {
-            // SwitchInt
             let mut switch_targets = Vec::new();
 
             for ctor_key in &constructors_seen {
@@ -476,17 +536,24 @@ impl<'a> DecisionTreeBuilder<'a> {
                             HirLit::Bool(b) => Const::Bool(*b),
                         };
 
+                        let first_matching_pat = expanded_matrix
+                            .iter()
+                            .find_map(|r| {
+                                self.specialize_pattern(r.patterns[col_idx], ctor_key)
+                                    .map(|_| r.patterns[col_idx])
+                            })
+                            .ok_or_else(|| DiagMsg {
+                                title: "internal error".into(),
+                                msg: "no matching pattern for literal key".into(),
+                                span: self.span.clone(),
+                            })?;
+
                         let sub_occurrences = self.generate_sub_occurrences(
                             &place_to_test,
                             ctor_key,
-                            expanded_matrix
-                                .iter()
-                                .find_map(|r| {
-                                    self.specialize_pattern(r.patterns[col_idx], ctor_key)
-                                        .map(|_| r.patterns[col_idx])
-                                })
-                                .unwrap(),
-                        );
+                            first_matching_pat,
+                        )?;
+
                         let mut spec_occurrences = occurrences[..col_idx].to_vec();
                         spec_occurrences.extend(sub_occurrences);
                         spec_occurrences.extend_from_slice(&occurrences[col_idx + 1..]);
@@ -505,7 +572,7 @@ impl<'a> DecisionTreeBuilder<'a> {
                             }
                         }
 
-                        let target_block = self.compile_matrix(spec_matrix, spec_occurrences);
+                        let target_block = self.compile_matrix(spec_matrix, spec_occurrences)?;
                         switch_targets.push((mir_const, target_block));
                     }
                     PatternKindKey::Constructor(sym_id) => {
@@ -513,26 +580,43 @@ impl<'a> DecisionTreeBuilder<'a> {
                             get_type_root(&self.mir.type_checker_result.type_pool, discr_ty);
                         let decl_id = match &self.mir.type_checker_result.type_pool[root_ty].kind {
                             TypeNodeKind::ADT { decl_id, .. } => *decl_id,
-                            _ => panic!("Constructor pattern on non-ADT type"),
+                            _ => {
+                                return Err(DiagMsg {
+                                    title: "type error".into(),
+                                    msg: "constructor pattern on non-ADT type".into(),
+                                    span: self.span.clone(),
+                                });
+                            }
                         };
                         let tag = *self
                             .mir
                             .adt_variant_map
                             .get(&(decl_id, *sym_id))
-                            .unwrap_or_else(|| panic!("Variant {:?} not found", sym_id));
+                            .ok_or_else(|| DiagMsg {
+                                title: "internal error".into(),
+                                msg: format!("variant {:?} not found", sym_id),
+                                span: self.span.clone(),
+                            })?;
                         let const_val = Const::Int32(tag as i32);
+
+                        let first_matching_pat = expanded_matrix
+                            .iter()
+                            .find_map(|r| {
+                                self.specialize_pattern(r.patterns[col_idx], ctor_key)
+                                    .map(|_| r.patterns[col_idx])
+                            })
+                            .ok_or_else(|| DiagMsg {
+                                title: "internal error".into(),
+                                msg: "no matching pattern for constructor key".into(),
+                                span: self.span.clone(),
+                            })?;
 
                         let sub_occurrences = self.generate_sub_occurrences(
                             &place_to_test,
                             ctor_key,
-                            expanded_matrix
-                                .iter()
-                                .find_map(|r| {
-                                    self.specialize_pattern(r.patterns[col_idx], ctor_key)
-                                        .map(|_| r.patterns[col_idx])
-                                })
-                                .unwrap(),
-                        );
+                            first_matching_pat,
+                        )?;
+
                         let mut spec_occurrences = occurrences[..col_idx].to_vec();
                         spec_occurrences.extend(sub_occurrences);
                         spec_occurrences.extend_from_slice(&occurrences[col_idx + 1..]);
@@ -551,7 +635,7 @@ impl<'a> DecisionTreeBuilder<'a> {
                             }
                         }
 
-                        let target_block = self.compile_matrix(spec_matrix, spec_occurrences);
+                        let target_block = self.compile_matrix(spec_matrix, spec_occurrences)?;
                         switch_targets.push((const_val, target_block));
                     }
                     _ => {}
@@ -563,22 +647,30 @@ impl<'a> DecisionTreeBuilder<'a> {
                 targets: switch_targets,
                 default: default_block,
             });
-        }
-        else {
-            // 不可反驳列
+        } else {
+            // 不可反驳列：选取第一个非通配符构造器
             let chosen_key = constructors_seen
                 .iter()
                 .find(|k| !matches!(k, PatternKindKey::WildcardOrBinding))
                 .unwrap_or(&PatternKindKey::WildcardOrBinding);
 
-            let sub_occurrences = if let Some(first_pat) = expanded_matrix.iter().find_map(|r| {
-                self.specialize_pattern(r.patterns[col_idx], chosen_key)
-                    .map(|_| r.patterns[col_idx])
-            }) {
-                self.generate_sub_occurrences(&place_to_test, chosen_key, first_pat)
-            } else {
-                vec![]
-            };
+            let first_matching_pat = expanded_matrix
+                .iter()
+                .find_map(|r| {
+                    self.specialize_pattern(r.patterns[col_idx], chosen_key)
+                        .map(|_| r.patterns[col_idx])
+                })
+                .ok_or_else(|| DiagMsg {
+                    title: "internal error".into(),
+                    msg: "no matching pattern for irrefutable column".into(),
+                    span: self.span.clone(),
+                })?;
+
+            let sub_occurrences = self.generate_sub_occurrences(
+                &place_to_test,
+                chosen_key,
+                first_matching_pat,
+            )?;
 
             let mut spec_occurrences = occurrences[..col_idx].to_vec();
             spec_occurrences.extend(sub_occurrences);
@@ -598,7 +690,7 @@ impl<'a> DecisionTreeBuilder<'a> {
                 }
             }
 
-            let target_block = self.compile_matrix(spec_matrix, spec_occurrences);
+            let target_block = self.compile_matrix(spec_matrix, spec_occurrences)?;
             self.mir.set_terminator(TerminatorKind::Goto {
                 target: target_block,
                 block_args: vec![],
@@ -607,7 +699,7 @@ impl<'a> DecisionTreeBuilder<'a> {
 
         self.mir.current_block = saved_block;
         self.mir.current_stmts = saved_stmts;
-        current_block
+        Ok(current_block)
     }
 }
 
@@ -646,47 +738,42 @@ pub struct MirLower {
 
     bool_ty: TyId,
     uint8_ty: TyId,
-    unit_ty: TyId
+    unit_ty: TyId,
 }
 
 impl MirLower {
-
-    fn new_block(&mut self) -> BasicBlockId {
+    fn new_block(&mut self, span: Span) -> BasicBlockId {
         let id = self.blocks.len();
         self.blocks.push(BasicBlock {
             block_params: vec![],
             statements: vec![],
             terminator: TerminatorKind::Unreachable,
+            span,
         });
         id
     }
 
-    ///
     fn start_block(&mut self, block_id: BasicBlockId) {
         self.current_block = block_id;
         self.current_stmts.clear();
     }
 
-    ///
     fn finish_block(&mut self, terminator: TerminatorKind) {
         let block = &mut self.blocks[self.current_block];
         block.statements = std::mem::take(&mut self.current_stmts);
         block.terminator = terminator;
     }
 
-    ///
-    fn push_stmt(&mut self, kind: MirStmtKind) {
-        self.current_stmts.push(MirStmt { kind });
+    fn push_stmt(&mut self, kind: MirStmtKind, span: Span) {
+        self.current_stmts.push(MirStmt { kind, span });
     }
 
-    ///
     fn set_terminator(&mut self, terminator: TerminatorKind) {
         self.finish_block(terminator);
     }
 
-    ///
-    fn switch_to_new_block(&mut self) -> BasicBlockId {
-        let next_block = self.new_block();
+    fn switch_to_new_block(&mut self, span: Span) -> BasicBlockId {
+        let next_block = self.new_block(span);
         self.set_terminator(TerminatorKind::Goto {
             target: next_block,
             block_args: vec![],
@@ -695,70 +782,87 @@ impl MirLower {
         next_block
     }
 
-
-    fn build_call_by_ptr(&mut self, callee: HirExprId, args: Vec<Rvalue>, dest: LocalId, target: BasicBlockId) -> TerminatorKind {
-        let func_place = self.compile_expr(callee).unwrap();
-        let func_ty = self.expr_ty(callee);
-        TerminatorKind::CallByPtr {
+    fn build_call_by_ptr(
+        &mut self,
+        callee: HirExprId,
+        args: Vec<Rvalue>,
+        dest: LocalId,
+        target: BasicBlockId,
+        span: Span,
+    ) -> Result<TerminatorKind, DiagMsg> {
+        let func_place = self.compile_expr(callee)?
+            .ok_or_else(|| DiagMsg {
+                title: "internal error".into(),
+                msg: "callee expression produced no place".into(),
+                span: span.clone(),
+            })?;
+        Ok(TerminatorKind::CallByPtr {
             func: Rvalue::Move(func_place),
             args,
             dest: Place::Local(dest),
             target: Some(target),
-        }
+        })
     }
 
-    fn expr_ty(&mut self, expr_id: HirExprId) -> TyId {
-        self.type_checker_result.expr_type_map[&expr_id]
+    fn expr_ty(&self, expr_id: HirExprId) -> Result<TyId, DiagMsg> {
+        self.type_checker_result
+            .expr_type_map
+            .get(&expr_id)
+            .copied()
+            .ok_or_else(|| DiagMsg {
+                title: "internal error".into(),
+                msg: format!("type not found for expression {}", expr_id),
+                span: self.hir.hir_expr_pool[expr_id].span.clone(),
+            })
     }
 
     fn get_static_id(&self, decl_id: HirDeclId) -> Option<StaticId> {
         self.decl_to_static.get(&decl_id).copied()
     }
 
-    fn get_fn_sig_from_ty(&self, ty: TyId) -> (Vec<TyId>, TyId) {
-        let root = get_type_root(&*self.type_checker_result.type_pool, ty);
+    fn get_fn_sig_from_ty(&self, ty: TyId, span: Span) -> Result<(Vec<TyId>, TyId), DiagMsg> {
+        let root = get_type_root(&self.type_checker_result.type_pool, ty);
         match &self.type_checker_result.type_pool[root].kind {
-            TypeNodeKind::Fun { param_tys, return_ty } => (param_tys.clone(), *return_ty),
-            _ => unreachable!(),
+            TypeNodeKind::Fun { param_tys, return_ty } => Ok((param_tys.clone(), *return_ty)),
+            _ => Err(DiagMsg {
+                title: "internal error".into(),
+                msg: "expected function type".into(),
+                span,
+            }),
         }
     }
 
-    ///
-    fn new_local(&mut self, ty: TyId, mutable: bool, name: Option<String>) -> LocalId {
+    fn new_local(&mut self, ty: TyId, mutable: bool, name: Option<String>, span: Span) -> LocalId {
         let fun = self.fun.as_mut().unwrap();
         let id = fun.local_decls.len();
         fun.local_decls.push(LocalDecl {
             ty,
             mutable,
             name,
+            span,
         });
         id
     }
 
-    ///
-    fn new_mutable_temp(&mut self, ty: TyId) -> LocalId {
-        self.new_local(ty, true, None)
+    fn new_mutable_temp(&mut self, ty: TyId, span: Span) -> LocalId {
+        self.new_local(ty, true, None, span)
     }
 
-    ///
-    fn new_immutable_temp(&mut self, ty: TyId) -> LocalId {
-        self.new_local(ty, false, None)
+    fn new_immutable_temp(&mut self, ty: TyId, span: Span) -> LocalId {
+        self.new_local(ty, false, None, span)
     }
 
-    ///
     fn bind_local(&mut self, sym: SymId, local: LocalId) {
         let fun = self.fun.as_mut().expect("no function being built");
         fun.locals_map.insert(sym, local);
     }
 
-    ///
     fn resolve_constructor_tag(&self, type_name: &HirTypeName, ty: TyId) -> Option<TagId> {
         let root_ty = get_type_root(&self.type_checker_result.type_pool, ty);
         let decl_id = match &self.type_checker_result.type_pool[root_ty].kind {
             TypeNodeKind::ADT { decl_id, .. } => *decl_id,
             _ => return None,
         };
-
         match type_name {
             HirTypeName::Named { path, .. } => {
                 self.adt_variant_map.get(&(decl_id, path.sym_id)).copied()
@@ -767,7 +871,6 @@ impl MirLower {
         }
     }
 
-    ///
     fn lookup_place(&self, sym: SymId) -> Option<Place> {
         if let Some(fun) = &self.fun {
             if let Some(&local) = fun.locals_map.get(&sym) {
@@ -779,7 +882,6 @@ impl MirLower {
                 return Some(Place::Static(static_id));
             }
         }
-
         None
     }
 
@@ -787,38 +889,57 @@ impl MirLower {
         self.uint8_ty
     }
 
-    fn lower_decls(&mut self) {
+    fn lower_decls(&mut self) -> Result<(), DiagMsg> {
         let decls = self.hir.hir_decl_pool.clone();
         for (decl_id, decl) in decls.iter().enumerate() {
             match &decl.kind {
                 HirDeclKind::External { sym_name, .. } => {
                     let scheme = self.type_checker_result.decl_type_map.get(&decl_id)
-                        .expect("external decl type not found");
-                    let (param_tys, return_ty) = self.get_fn_sig_from_ty(scheme.body);
+                        .ok_or_else(|| DiagMsg {
+                            title: "internal error".into(),
+                            msg: "external decl type not found".into(),
+                            span: decl.span.clone(),
+                        })?;
+                    let (param_tys, return_ty) = self.get_fn_sig_from_ty(scheme.body, decl.span.clone())?;
                     self.extern_decls.push(ExternDecl {
                         name: sym_name.clone(),
+                        signature: FnSig { params: param_tys.clone(), return_ty },
+                        span: decl.span.clone(),
+                    });
+
+                    let fun_id = self.functions.len();
+                    self.decl_to_fun.insert(decl_id, fun_id);
+                    self.functions.push(MirFun {
+                        name: sym_name.clone(),
+                        generic_params: vec![],
                         signature: FnSig { params: param_tys, return_ty },
+                        local_decls: vec![],
+                        blocks: vec![],
+                        span: decl.span.clone(),
                     });
                 }
                 HirDeclKind::Global { .. } | HirDeclKind::Const { .. } => {
                     let scheme = self.type_checker_result.decl_type_map.get(&decl_id)
-                        .expect("global/const type not found");
+                        .ok_or_else(|| DiagMsg {
+                            title: "internal error".into(),
+                            msg: "global/const type not found".into(),
+                            span: decl.span.clone(),
+                        })?;
                     let ty = scheme.body;
-
                     let static_id = self.statics.len();
                     self.decl_to_static.insert(decl_id, static_id);
-
                     self.statics.push(StaticDecl {
                         name: decl.ident.clone(),
                         ty,
                         mutable: matches!(&decl.kind, HirDeclKind::Global { .. }),
                         init: todo!("convert const expr"),
+                        span: decl.span.clone(),
                     });
                 }
                 HirDeclKind::Fun { .. } => {
                     let fun_id = self.functions.len();
                     self.decl_to_fun.insert(decl_id, fun_id);
-                    let mir_fun = self.lower_function(decl_id);
+                    let mir_fun = self.lower_function(decl_id)?;
                     self.functions.push(mir_fun);
                 }
                 HirDeclKind::Struct { fields, .. } => {
@@ -840,21 +961,29 @@ impl MirLower {
                 _ => {}
             }
         }
+        Ok(())
     }
 
-    fn lower_function(&mut self, decl_id: HirDeclId) -> MirFun {
+    fn lower_function(&mut self, decl_id: HirDeclId) -> Result<MirFun, DiagMsg> {
         let decl = self.hir.hir_decl_pool[decl_id].clone();
-
         let (params, return_type_ann, body) = match &decl.kind {
             HirDeclKind::Fun { params, return_type, body, .. } => {
                 (params.clone(), return_type.clone(), body.clone())
             }
-            _ => unreachable!(),
+            _ => return Err(DiagMsg {
+                title: "internal error".into(),
+                msg: "expected function declaration".into(),
+                span: decl.span.clone(),
+            }),
         };
 
-        let ty_scheme = self.type_checker_result.decl_type_map.get(&decl_id).unwrap();
-        let (param_tys, return_ty) = self.get_fn_sig_from_ty(ty_scheme.body);
-
+        let ty_scheme = self.type_checker_result.decl_type_map.get(&decl_id)
+            .ok_or_else(|| DiagMsg {
+                title: "internal error".into(),
+                msg: "function type scheme not found".into(),
+                span: decl.span.clone(),
+            })?;
+        let (param_tys, return_ty) = self.get_fn_sig_from_ty(ty_scheme.body, decl.span.clone())?;
         let generic_params = ty_scheme.quantified.clone();
 
         let mut fun = FnBuilder {
@@ -869,40 +998,39 @@ impl MirLower {
 
         self.fun = Some(fun);
 
-        let ret_local = self.new_local(return_ty, true, Some("return_val".to_string()));
+        let ret_local = self.new_local(return_ty, true, Some("return_val".to_string()), decl.span.clone());
         self.fun.as_mut().unwrap().return_local = ret_local;
 
         for (param, ty) in params.iter().zip(param_tys.iter()) {
-            let local = self.new_local(*ty, false, Some(param.name.name.clone()));
+            let param_span = param.span.clone();
+            let local = self.new_local(*ty, false, Some(param.name.name.clone()), param_span);
             self.bind_local(param.name.sym_id, local);
         }
 
-
-        let entry_block = self.new_block();
+        let entry_block = self.new_block(decl.span.clone());
         self.start_block(entry_block);
-
-        let start_block_idx = self.blocks.len() - 1;
 
         let mut last_place = None;
         for stmt_expr in body {
-            last_place = self.compile_expr(stmt_expr);
+            last_place = self.compile_expr(stmt_expr)?;
         }
 
         let need_terminator = matches!(
             self.blocks[self.current_block].terminator,
             TerminatorKind::Unreachable
         );
-        let return_ty = self.fun.as_ref().unwrap().signature.return_ty;
         let is_never = self.type_checker_result.type_pool[return_ty].kind == TypeNodeKind::Never;
 
         if need_terminator && !is_never {
             if let Some(place) = last_place {
                 let ret_id = self.fun.as_ref().unwrap().return_local;
-                let ret_ty = self.fun.as_ref().unwrap().signature.return_ty;
-                self.push_stmt(MirStmtKind::Store {
-                    place: Place::Local(ret_id),
-                    rvalue: Rvalue::Move(place),
-                });
+                self.push_stmt(
+                    MirStmtKind::Store {
+                        place: Place::Local(ret_id),
+                        rvalue: Rvalue::Move(place),
+                    },
+                    decl.span.clone(),
+                );
             }
             self.set_terminator(TerminatorKind::Return);
         }
@@ -910,42 +1038,57 @@ impl MirLower {
         let mut fun = self.fun.take().unwrap();
         fun.blocks = (entry_block..self.blocks.len()).collect();
 
-        MirFun {
+        Ok(MirFun {
             name: fun.name,
             generic_params: fun.generic_params,
             signature: fun.signature,
             local_decls: fun.local_decls,
             blocks: fun.blocks,
-        }
+            span: decl.span,
+        })
     }
 
-    pub fn place_ty(&self, place: &Place) -> TyId {
+    pub fn place_ty(&self, place: &Place, span: Span) -> Result<TyId, DiagMsg> {
         match place {
-            Place::Local(id) => self.fun.as_ref().unwrap().local_decls[*id].ty,
+            Place::Local(id) => Ok(self.fun.as_ref().unwrap().local_decls[*id].ty),
             Place::Field { base, field } => {
-                let base_ty = self.place_ty(base);
+                let base_ty = self.place_ty(base, span.clone())?;
                 let root = get_type_root(&self.type_checker_result.type_pool, base_ty);
                 match &self.type_checker_result.type_pool[root].kind {
-                    TypeNodeKind::Struct { field_tys, .. } => field_tys[*field],
-                    TypeNodeKind::Tuple(elements) => elements[*field],
-                    _ => unreachable!("Field on non-struct/tuple"),
+                    TypeNodeKind::Struct { field_tys, .. } => Ok(field_tys[*field]),
+                    TypeNodeKind::Tuple(elements) => Ok(elements[*field]),
+                    _ => Err(DiagMsg {
+                        title: "internal error".into(),
+                        msg: "field access on non-struct/tuple".into(),
+                        span,
+                    }),
                 }
             }
             Place::EnumItem { place, variant } => {
-                let adt_ty = self.place_ty(place);
+                let adt_ty = self.place_ty(place, span.clone())?;
                 let root = get_type_root(&self.type_checker_result.type_pool, adt_ty);
                 if let TypeNodeKind::ADT { variants, .. } = &self.type_checker_result.type_pool[root].kind {
-                    variants[*variant].unwrap_or(self.unit_ty)
+                    Ok(variants[*variant].unwrap_or(self.unit_ty))
                 } else {
-                    unreachable!("EnumItem on non-ADT")
+                    Err(DiagMsg {
+                        title: "internal error".into(),
+                        msg: "EnumItem on non-ADT".into(),
+                        span,
+                    })
                 }
             }
-            _ => unreachable!(),
+            _ => Err(DiagMsg {
+                title: "internal error".into(),
+                msg: "unsupported place kind".into(),
+                span,
+            }),
         }
     }
 
-    fn compile_expr(&mut self, expr_id: HirExprId) -> Option<Place> {
+    fn compile_expr(&mut self, expr_id: HirExprId) -> Result<Option<Place>, DiagMsg> {
         let expr = self.hir.hir_expr_pool[expr_id].clone();
+        let span = expr.span.clone();
+
         match &expr.kind {
             HirExprKind::Lit(lit) => {
                 let mir_const = match lit {
@@ -957,22 +1100,33 @@ impl MirLower {
                     HirLit::Str(s) => Const::Str(s.clone()),
                     HirLit::Bool(b) => Const::Bool(*b),
                 };
-                let ty = self.expr_ty(expr_id);
-                let temp = self.new_mutable_temp(ty);
-                self.push_stmt(MirStmtKind::Let {
-                    local: temp,
-                    rvalue: Rvalue::Constant(mir_const),
-                });
-                Some(Place::Local(temp))
+                let ty = self.expr_ty(expr_id)?;
+                let temp = self.new_mutable_temp(ty, span.clone());
+                self.push_stmt(
+                    MirStmtKind::Let {
+                        local: temp,
+                        rvalue: Rvalue::Constant(mir_const),
+                    },
+                    span,
+                );
+                Ok(Some(Place::Local(temp)))
             }
 
             HirExprKind::Ident(name) => {
-                self.lookup_place(name.sym_id)
+                Ok(self.lookup_place(name.sym_id))
             }
 
             HirExprKind::Binary { left, right, op } => {
-                let l_place = self.compile_expr(*left)?;
-                let r_place = self.compile_expr(*right)?;
+                let l_place = self.compile_expr(*left)?.ok_or_else(|| DiagMsg {
+                    title: "internal error".into(),
+                    msg: "left operand has no place".into(),
+                    span: span.clone(),
+                })?;
+                let r_place = self.compile_expr(*right)?.ok_or_else(|| DiagMsg {
+                    title: "internal error".into(),
+                    msg: "right operand has no place".into(),
+                    span: span.clone(),
+                })?;
 
                 let mir_op = match op {
                     HirBinOp::Add => MirBinOp::Add,
@@ -990,90 +1144,103 @@ impl MirLower {
                     HirBinOp::Ge => MirBinOp::Ge,
                 };
 
-                let ty = self.expr_ty(expr_id);
-                let temp = self.new_mutable_temp(ty);
-                self.push_stmt(MirStmtKind::Let {
-                    local: temp,
-                    rvalue: Rvalue::BinaryOp {
-                        op: mir_op,
-                        left: Box::new(Rvalue::Copy(l_place)),
-                        right: Box::new(Rvalue::Copy(r_place)),
+                let ty = self.expr_ty(expr_id)?;
+                let temp = self.new_mutable_temp(ty, span.clone());
+                self.push_stmt(
+                    MirStmtKind::Let {
+                        local: temp,
+                        rvalue: Rvalue::BinaryOp {
+                            op: mir_op,
+                            left: Box::new(Rvalue::Copy(l_place)),
+                            right: Box::new(Rvalue::Copy(r_place)),
+                        },
                     },
-                });
-                Some(Place::Local(temp))
+                    span,
+                );
+                Ok(Some(Place::Local(temp)))
             }
 
             HirExprKind::Unary { op, right } => {
-                let r_place = self.compile_expr(*right)?;
+                let r_place = self.compile_expr(*right)?.ok_or_else(|| DiagMsg {
+                    title: "internal error".into(),
+                    msg: "unary operand has no place".into(),
+                    span: span.clone(),
+                })?;
                 let mir_op = match op {
                     HirUnaryOp::Neg => MirUnOp::Neg,
                     HirUnaryOp::Not => MirUnOp::Not,
                 };
 
-                let ty = self.expr_ty(expr_id);
-                let temp = self.new_mutable_temp(ty);
-                self.push_stmt(MirStmtKind::Let {
-                    local: temp,
-                    rvalue: Rvalue::UnaryOp {
-                        op: mir_op,
-                        right: Box::new(Rvalue::Copy(r_place)),
+                let ty = self.expr_ty(expr_id)?;
+                let temp = self.new_mutable_temp(ty, span.clone());
+                self.push_stmt(
+                    MirStmtKind::Let {
+                        local: temp,
+                        rvalue: Rvalue::UnaryOp {
+                            op: mir_op,
+                            right: Box::new(Rvalue::Copy(r_place)),
+                        },
                     },
-                });
-                Some(Place::Local(temp))
+                    span,
+                );
+                Ok(Some(Place::Local(temp)))
             }
 
             HirExprKind::Let { name, init, mutable, .. } => {
-                if let Some(init_place) = self.compile_expr(*init) {
-                    let ty = self.expr_ty(*init);
-                    let local_id = self.new_local(ty, *mutable, Some(name.name.clone()));
+                if let Some(init_place) = self.compile_expr(*init)? {
+                    let ty = self.expr_ty(*init)?;
+                    let local_id = self.new_local(ty, *mutable, Some(name.name.clone()), span.clone());
                     self.bind_local(name.sym_id, local_id);
-
-                    self.push_stmt(MirStmtKind::Let {
-                        local: local_id,
-                        rvalue: Rvalue::Move(init_place),
-                    });
+                    self.push_stmt(
+                        MirStmtKind::Let {
+                            local: local_id,
+                            rvalue: Rvalue::Move(init_place),
+                        },
+                        span,
+                    );
                 }
-                None
+                Ok(None)
             }
 
             HirExprKind::Block { stmts } => {
                 let mut last_place = None;
                 for stmt in stmts {
-                    last_place = self.compile_expr(*stmt);
+                    last_place = self.compile_expr(*stmt)?;
                 }
-                last_place
+                Ok(last_place)
             }
 
             HirExprKind::Return { expr } => {
                 if let Some(ret_expr_id) = expr {
-                    if let Some(place) = self.compile_expr(*ret_expr_id) {
+                    if let Some(place) = self.compile_expr(*ret_expr_id)? {
                         let ret_id = self.fun.as_ref().unwrap().return_local;
-                        let ret_ty = self.fun.as_ref().unwrap().signature.return_ty;
-                        self.push_stmt(MirStmtKind::Store {
-                            place: Place::Local(ret_id),
-                            rvalue: Rvalue::Move(place),
-                        });
+                        self.push_stmt(
+                            MirStmtKind::Store {
+                                place: Place::Local(ret_id),
+                                rvalue: Rvalue::Move(place),
+                            },
+                            span.clone(),
+                        );
                     }
                 }
                 self.set_terminator(TerminatorKind::Return);
-                let block = self.new_block();
+                let block = self.new_block(span);
                 self.start_block(block);
-                None
+                Ok(None)
             }
 
             HirExprKind::Call { callee, args }
             | HirExprKind::UnsafeExternalCall { callee, args } => {
                 let mut mir_args = Vec::new();
                 for arg_expr in args {
-                    if let Some(arg_place) = self.compile_expr(*arg_expr) {
-                        let arg_ty = self.expr_ty(*arg_expr);
-                        mir_args.push(Rvalue::Move(arg_place)); // 后续可改为 self.move_or_copy(arg_place, arg_ty)
+                    if let Some(arg_place) = self.compile_expr(*arg_expr)? {
+                        mir_args.push(Rvalue::Move(arg_place));
                     }
                 }
 
-                let ty = self.expr_ty(expr_id);
-                let result_temp = self.new_mutable_temp(ty);
-                let next_block = self.new_block();
+                let ty = self.expr_ty(expr_id)?;
+                let result_temp = self.new_mutable_temp(ty, span.clone());
+                let next_block = self.new_block(span.clone());
 
                 let callee_expr = &self.hir.hir_expr_pool[*callee];
                 let terminator = if let HirExprKind::Ident(name) = &callee_expr.kind {
@@ -1086,168 +1253,240 @@ impl MirLower {
                                 target: Some(next_block),
                             }
                         } else {
-                            self.build_call_by_ptr(*callee, mir_args, result_temp, next_block)
+                            self.build_call_by_ptr(*callee, mir_args, result_temp, next_block, span.clone())?
                         }
                     } else {
-                        self.build_call_by_ptr(*callee, mir_args, result_temp, next_block)
+                        self.build_call_by_ptr(*callee, mir_args, result_temp, next_block, span.clone())?
                     }
                 } else {
-                    self.build_call_by_ptr(*callee, mir_args, result_temp, next_block)
+                    self.build_call_by_ptr(*callee, mir_args, result_temp, next_block, span.clone())?
                 };
 
                 self.set_terminator(terminator);
                 self.start_block(next_block);
-                Some(Place::Local(result_temp))
+                Ok(Some(Place::Local(result_temp)))
             }
 
             HirExprKind::Tuple { elements } => {
                 let mut mir_elements = Vec::new();
                 for elem in elements {
-                    if let Some(place) = self.compile_expr(*elem) {
+                    if let Some(place) = self.compile_expr(*elem)? {
                         mir_elements.push(Rvalue::Move(place));
                     }
                 }
-
-                let ty = self.expr_ty(expr_id);
-                let temp = self.new_mutable_temp(ty);
-                self.push_stmt(MirStmtKind::Let {
-                    local: temp,
-                    rvalue: Rvalue::Tuple(mir_elements),
-                });
-                Some(Place::Local(temp))
+                let ty = self.expr_ty(expr_id)?;
+                let temp = self.new_mutable_temp(ty, span.clone());
+                self.push_stmt(
+                    MirStmtKind::Let {
+                        local: temp,
+                        rvalue: Rvalue::Tuple(mir_elements),
+                    },
+                    span,
+                );
+                Ok(Some(Place::Local(temp)))
             }
 
             HirExprKind::Move { target } => {
-                let place = self.compile_expr(*target)?;
-                let ty = self.expr_ty(expr_id);
-                let temp = self.new_mutable_temp(ty);
-                self.push_stmt(MirStmtKind::Let {
-                    local: temp,
-                    rvalue: Rvalue::Move(place),
-                });
-                Some(Place::Local(temp))
+                let place = self.compile_expr(*target)?.ok_or_else(|| DiagMsg {
+                    title: "internal error".into(),
+                    msg: "move source has no place".into(),
+                    span: span.clone(),
+                })?;
+                let ty = self.expr_ty(expr_id)?;
+                let temp = self.new_mutable_temp(ty, span.clone());
+                self.push_stmt(
+                    MirStmtKind::Let {
+                        local: temp,
+                        rvalue: Rvalue::Move(place),
+                    },
+                    span,
+                );
+                Ok(Some(Place::Local(temp)))
             }
 
             HirExprKind::Copy { target } => {
-                let place = self.compile_expr(*target)?;
-                let ty = self.expr_ty(expr_id);
-                let temp = self.new_mutable_temp(ty);
-                self.push_stmt(MirStmtKind::Let {
-                    local: temp,
-                    rvalue: Rvalue::Copy(place),
-                });
-                Some(Place::Local(temp))
+                let place = self.compile_expr(*target)?.ok_or_else(|| DiagMsg {
+                    title: "internal error".into(),
+                    msg: "copy source has no place".into(),
+                    span: span.clone(),
+                })?;
+                let ty = self.expr_ty(expr_id)?;
+                let temp = self.new_mutable_temp(ty, span.clone());
+                self.push_stmt(
+                    MirStmtKind::Let {
+                        local: temp,
+                        rvalue: Rvalue::Copy(place),
+                    },
+                    span,
+                );
+                Ok(Some(Place::Local(temp)))
             }
 
             HirExprKind::Ref { target } => {
-                let place = self.compile_expr(*target)?;
-                let ty = self.expr_ty(expr_id);
-                let temp = self.new_mutable_temp(ty);
-                self.push_stmt(MirStmtKind::Let {
-                    local: temp,
-                    rvalue: Rvalue::TempRef(place),
-                });
-                Some(Place::Local(temp))
+                let place = self.compile_expr(*target)?.ok_or_else(|| DiagMsg {
+                    title: "internal error".into(),
+                    msg: "ref target has no place".into(),
+                    span: span.clone(),
+                })?;
+                let ty = self.expr_ty(expr_id)?;
+                let temp = self.new_mutable_temp(ty, span.clone());
+                self.push_stmt(
+                    MirStmtKind::Let {
+                        local: temp,
+                        rvalue: Rvalue::TempRef(place),
+                    },
+                    span,
+                );
+                Ok(Some(Place::Local(temp)))
             }
 
             HirExprKind::MutRef { target } => {
-                let place = self.compile_expr(*target)?;
-                let ty = self.expr_ty(expr_id);
-                let temp = self.new_mutable_temp(ty);
-                self.push_stmt(MirStmtKind::Let {
-                    local: temp,
-                    rvalue: Rvalue::TempRefMut(place),
-                });
-                Some(Place::Local(temp))
+                let place = self.compile_expr(*target)?.ok_or_else(|| DiagMsg {
+                    title: "internal error".into(),
+                    msg: "mut ref target has no place".into(),
+                    span: span.clone(),
+                })?;
+                let ty = self.expr_ty(expr_id)?;
+                let temp = self.new_mutable_temp(ty, span.clone());
+                self.push_stmt(
+                    MirStmtKind::Let {
+                        local: temp,
+                        rvalue: Rvalue::TempRefMut(place),
+                    },
+                    span,
+                );
+                Ok(Some(Place::Local(temp)))
             }
 
             HirExprKind::Share { target } => {
-                let place = self.compile_expr(*target)?;
-                let ty = self.expr_ty(expr_id);
-                let temp = self.new_mutable_temp(ty);
-                self.push_stmt(MirStmtKind::Let {
-                    local: temp,
-                    rvalue: Rvalue::GcObjectRef(Box::new(Rvalue::Move(place))),
-                });
-                Some(Place::Local(temp))
+                let place = self.compile_expr(*target)?.ok_or_else(|| DiagMsg {
+                    title: "internal error".into(),
+                    msg: "share target has no place".into(),
+                    span: span.clone(),
+                })?;
+                let ty = self.expr_ty(expr_id)?;
+                let temp = self.new_mutable_temp(ty, span.clone());
+                self.push_stmt(
+                    MirStmtKind::Let {
+                        local: temp,
+                        rvalue: Rvalue::GcObjectRef(Box::new(Rvalue::Move(place))),
+                    },
+                    span,
+                );
+                Ok(Some(Place::Local(temp)))
             }
 
             HirExprKind::TypeCast { expr: cast_expr, type_ann: _ } => {
-                let place = self.compile_expr(*cast_expr)?;
-                let dest_ty = self.expr_ty(expr_id);
-                let temp = self.new_mutable_temp(dest_ty);
-                self.push_stmt(MirStmtKind::Let {
-                    local: temp,
-                    rvalue: Rvalue::Cast(place, dest_ty),
-                });
-                Some(Place::Local(temp))
+                let place = self.compile_expr(*cast_expr)?.ok_or_else(|| DiagMsg {
+                    title: "internal error".into(),
+                    msg: "cast source has no place".into(),
+                    span: span.clone(),
+                })?;
+                let dest_ty = self.expr_ty(expr_id)?;
+                let temp = self.new_mutable_temp(dest_ty, span.clone());
+                self.push_stmt(
+                    MirStmtKind::Let {
+                        local: temp,
+                        rvalue: Rvalue::Cast(place, dest_ty),
+                    },
+                    span,
+                );
+                Ok(Some(Place::Local(temp)))
             }
 
             HirExprKind::FieldAccess { obj, field } => {
-                let obj_place = self.compile_expr(*obj)?;
-                let obj_ty = self.expr_ty(*obj);
+                let obj_place = self.compile_expr(*obj)?.ok_or_else(|| DiagMsg {
+                    title: "internal error".into(),
+                    msg: "field access object has no place".into(),
+                    span: span.clone(),
+                })?;
+                let obj_ty = self.expr_ty(*obj)?;
                 let obj_root_ty = get_type_root(&self.type_checker_result.type_pool, obj_ty);
-
                 let decl_id = match &self.type_checker_result.type_pool[obj_root_ty].kind {
                     TypeNodeKind::Struct { decl_id, .. } => *decl_id,
-                    _ => unreachable!(),
+                    _ => return Err(DiagMsg {
+                        title: "type error".into(),
+                        msg: "field access on non-struct type".into(),
+                        span: span.clone(),
+                    }),
                 };
-
-                let field_idx = *self.struct_field_map.get(&(decl_id, field.clone())).expect("Field not found in map");
-
-                Some(Place::Field {
+                let field_idx = *self.struct_field_map.get(&(decl_id, field.clone()))
+                    .ok_or_else(|| DiagMsg {
+                        title: "internal error".into(),
+                        msg: format!("field {} not found in struct map", field),
+                        span: span.clone(),
+                    })?;
+                Ok(Some(Place::Field {
                     base: Box::new(obj_place),
                     field: field_idx,
-                })
+                }))
             }
 
-            HirExprKind::MakeStruct { path, fields } => {
+            HirExprKind::MakeStruct { path: _, fields } => {
                 let mut mir_fields = Vec::new();
                 for (_, field_expr) in fields {
-                    if let Some(place) = self.compile_expr(*field_expr) {
+                    if let Some(place) = self.compile_expr(*field_expr)? {
                         mir_fields.push(Rvalue::Move(place));
                     }
                 }
-
-                let ty = self.expr_ty(expr_id);
-                let temp = self.new_mutable_temp(ty);
-                self.push_stmt(MirStmtKind::Let {
-                    local: temp,
-                    rvalue: Rvalue::BuildStruct(mir_fields),
-                });
-                Some(Place::Local(temp))
+                let ty = self.expr_ty(expr_id)?;
+                let temp = self.new_mutable_temp(ty, span.clone());
+                self.push_stmt(
+                    MirStmtKind::Let {
+                        local: temp,
+                        rvalue: Rvalue::BuildStruct(mir_fields),
+                    },
+                    span,
+                );
+                Ok(Some(Place::Local(temp)))
             }
 
             HirExprKind::BuildVariant { variant_name, target } => {
-                let ty = self.expr_ty(expr_id);
+                let ty = self.expr_ty(expr_id)?;
                 let root_ty = get_type_root(&self.type_checker_result.type_pool, ty);
-
                 let decl_id = match &self.type_checker_result.type_pool[root_ty].kind {
                     TypeNodeKind::ADT { decl_id, .. } => *decl_id,
-                    _ => unreachable!()
+                    _ => return Err(DiagMsg {
+                        title: "type error".into(),
+                        msg: "variant construction on non-ADT".into(),
+                        span: span.clone(),
+                    }),
+                };
+                let tag = *self.adt_variant_map.get(&(decl_id, variant_name.sym_id))
+                    .ok_or_else(|| DiagMsg {
+                        title: "internal error".into(),
+                        msg: format!("variant {} not found in ADT map", variant_name.name),
+                        span: span.clone(),
+                    })?;
+
+                let inner_rvalue = if let Some(payload_place) = self.compile_expr(*target)? {
+                    Box::new(Rvalue::Move(payload_place))
+                } else {
+                    Box::new(Rvalue::Tuple(vec![]))
                 };
 
-                let tag = *self.adt_variant_map.get(&(decl_id, variant_name.sym_id)).unwrap();
-
-                let inner_rvalue = self.compile_expr(*target)
-                    .map(|p| Box::new(Rvalue::Move(p)))
-                    .unwrap_or_else(|| Box::new(Rvalue::Tuple(vec![])));
-
-                let temp = self.new_mutable_temp(ty);
-                self.push_stmt(MirStmtKind::Let {
-                    local: temp,
-                    rvalue: Rvalue::Variant(tag, inner_rvalue),
-                });
-                Some(Place::Local(temp))
+                let temp = self.new_mutable_temp(ty, span.clone());
+                self.push_stmt(
+                    MirStmtKind::Let {
+                        local: temp,
+                        rvalue: Rvalue::Variant(tag, inner_rvalue),
+                    },
+                    span,
+                );
+                Ok(Some(Place::Local(temp)))
             }
 
             HirExprKind::If { cond, then, elifs, else_opt } => {
-                let result_ty = self.expr_ty(expr_id);
-                let merge_block = self.new_block(); // 合并点，稍后设置 block_params
+                let result_ty = self.expr_ty(expr_id)?;
+                let merge_block = self.new_block(span.clone());
 
-                let cond_place = self.compile_expr(*cond).unwrap();
-                let then_block = self.new_block();
-                let else_block = self.new_block();
+                let cond_place = self.compile_expr(*cond)?.ok_or_else(|| DiagMsg {
+                    title: "internal error".into(),
+                    msg: "if condition has no place".into(),
+                    span: span.clone(),
+                })?;
+                let then_block = self.new_block(span.clone());
+                let else_block = self.new_block(span.clone());
 
                 self.set_terminator(TerminatorKind::SwitchInt {
                     discriminant: Rvalue::Copy(cond_place),
@@ -1256,7 +1495,7 @@ impl MirLower {
                 });
 
                 self.start_block(then_block);
-                let then_place = self.compile_expr(*then);
+                let then_place = self.compile_expr(*then)?;
                 let then_value = if let Some(place) = then_place {
                     Rvalue::Move(place)
                 } else {
@@ -1270,9 +1509,13 @@ impl MirLower {
                 let mut current_else = else_block;
                 for (elif_cond, elif_body) in elifs {
                     self.start_block(current_else);
-                    let cond_place = self.compile_expr(*elif_cond).unwrap();
-                    let elif_then = self.new_block();
-                    let next_else = self.new_block();
+                    let cond_place = self.compile_expr(*elif_cond)?.ok_or_else(|| DiagMsg {
+                        title: "internal error".into(),
+                        msg: "elif condition has no place".into(),
+                        span: span.clone(),
+                    })?;
+                    let elif_then = self.new_block(span.clone());
+                    let next_else = self.new_block(span.clone());
 
                     self.set_terminator(TerminatorKind::SwitchInt {
                         discriminant: Rvalue::Copy(cond_place),
@@ -1281,7 +1524,7 @@ impl MirLower {
                     });
 
                     self.start_block(elif_then);
-                    let elif_place = self.compile_expr(*elif_body);
+                    let elif_place = self.compile_expr(*elif_body)?;
                     let elif_value = if let Some(place) = elif_place {
                         Rvalue::Move(place)
                     } else {
@@ -1297,7 +1540,7 @@ impl MirLower {
 
                 self.start_block(current_else);
                 let else_value = if let Some(else_expr) = else_opt {
-                    if let Some(place) = self.compile_expr(*else_expr) {
+                    if let Some(place) = self.compile_expr(*else_expr)? {
                         Rvalue::Move(place)
                     } else {
                         Rvalue::Tuple(vec![])
@@ -1310,24 +1553,24 @@ impl MirLower {
                     block_args: vec![else_value],
                 });
 
-                let result_local = self.new_mutable_temp(result_ty);
+                let result_local = self.new_mutable_temp(result_ty, span.clone());
                 self.blocks[merge_block].block_params = vec![result_local];
                 self.start_block(merge_block);
 
-                Some(Place::Local(result_local))
-            }
-
-            HirExprKind::Ellipsis => {
-                todo!()
+                Ok(Some(Place::Local(result_local)))
             }
 
             HirExprKind::Match { scrutinee, arms } => {
-                let result_ty = self.expr_ty(expr_id);
-                let merge_block = self.new_block();
-                let result_local = self.new_mutable_temp(result_ty);
+                let result_ty = self.expr_ty(expr_id)?;
+                let merge_block = self.new_block(span.clone());
+                let result_local = self.new_mutable_temp(result_ty, span.clone());
                 self.blocks[merge_block].block_params = vec![result_local];
 
-                let scrutinee_place = self.compile_expr(*scrutinee).unwrap();
+                let scrutinee_place = self.compile_expr(*scrutinee)?.ok_or_else(|| DiagMsg {
+                    title: "internal error".into(),
+                    msg: "match scrutinee has no place".into(),
+                    span: span.clone(),
+                })?;
 
                 let mut initial_matrix = Vec::new();
                 for (idx, arm) in arms.iter().enumerate() {
@@ -1345,33 +1588,37 @@ impl MirLower {
                     merge_block,
                     dag_cache: HashMap::new(),
                     is_result_local: None,
+                    span,
                 };
 
-                let start_block = builder.compile_matrix(initial_matrix, initial_occurrences);
+                let start_block = builder.compile_matrix(initial_matrix, initial_occurrences)?;
 
-                // 将进入 Match 语句的执行流导向决策树 DAG 的根节点
                 self.set_terminator(TerminatorKind::Goto {
                     target: start_block,
                     block_args: vec![],
                 });
 
                 self.start_block(merge_block);
-                Some(Place::Local(result_local))
+                Ok(Some(Place::Local(result_local)))
             }
 
             HirExprKind::Is { expr, pattern } => {
-                let result_ty = self.expr_ty(expr_id);
-                let merge_block = self.new_block();
-                let result_local = self.new_local(result_ty, true, Some("is_result".into()));
+                let result_ty = self.expr_ty(expr_id)?;
+                let merge_block = self.new_block(span.clone());
+                let result_local = self.new_local(result_ty, true, Some("is_result".into()), span.clone());
                 self.blocks[merge_block].block_params = vec![result_local];
 
-                let scrutinee_place = self.compile_expr(*expr).unwrap();
+                let scrutinee_place = self.compile_expr(*expr)?.ok_or_else(|| DiagMsg {
+                    title: "internal error".into(),
+                    msg: "is expression has no place".into(),
+                    span: span.clone(),
+                })?;
 
                 let dummy_arm = HirMatchArm {
                     pattern: pattern.clone(),
                     guard: None,
-                    body: 0,
-                    span: self.hir.hir_expr_pool[expr_id].span.clone(),
+                    body: 0, // 用不到
+                    span: span.clone(),
                 };
                 let arms = vec![dummy_arm];
 
@@ -1381,6 +1628,7 @@ impl MirLower {
                     merge_block,
                     dag_cache: HashMap::new(),
                     is_result_local: Some(result_local),
+                    span,
                 };
 
                 let initial_matrix = vec![MatrixRow {
@@ -1389,7 +1637,7 @@ impl MirLower {
                 }];
                 let initial_occurrences = vec![scrutinee_place];
 
-                let start_block = builder.compile_matrix(initial_matrix, initial_occurrences);
+                let start_block = builder.compile_matrix(initial_matrix, initial_occurrences)?;
 
                 self.set_terminator(TerminatorKind::Goto {
                     target: start_block,
@@ -1397,7 +1645,7 @@ impl MirLower {
                 });
 
                 self.start_block(merge_block);
-                Some(Place::Local(result_local))
+                Ok(Some(Place::Local(result_local)))
             }
 
             HirExprKind::With { handler: _, clauses } => {
@@ -1406,10 +1654,14 @@ impl MirLower {
 
             HirExprKind::Raise { control_name, args } => {
                 let control_id = *self.control_map.get(&control_name.sym_id)
-                    .expect("Unknown effect control name");
+                    .ok_or_else(|| DiagMsg {
+                        title: "internal error".into(),
+                        msg: format!("unknown effect control {}", control_name.name),
+                        span: span.clone(),
+                    })?;
                 let mut mir_args = Vec::new();
                 for arg in args {
-                    if let Some(place) = self.compile_expr(*arg) {
+                    if let Some(place) = self.compile_expr(*arg)? {
                         mir_args.push(Rvalue::Move(place));
                     }
                 }
@@ -1417,33 +1669,41 @@ impl MirLower {
                     control_name: control_id,
                     args: mir_args,
                 });
-                let block = self.new_block();
+                let block = self.new_block(span);
                 self.start_block(block);
-                None
+                Ok(None)
             }
 
             HirExprKind::Resume { expr } => {
                 let target = self.resume_target
-                    .expect("Resume used outside a With handler");
-                let place = self.compile_expr(*expr);
+                    .ok_or_else(|| DiagMsg {
+                        title: "internal error".into(),
+                        msg: "resume used outside handler".into(),
+                        span: span.clone(),
+                    })?;
+                let place = self.compile_expr(*expr)?;
                 let resume_value = match place {
                     Some(p) => Rvalue::Move(p),
                     None => Rvalue::Tuple(vec![]),
                 };
-
-                let expr_ty = self.expr_ty(*expr);
-                let temp = self.new_mutable_temp(expr_ty);
+                let expr_ty = self.expr_ty(*expr)?;
+                let temp = self.new_mutable_temp(expr_ty, span.clone());
                 self.set_terminator(TerminatorKind::Resume {
                     place: Place::Local(temp),
                     target,
                 });
-                let block = self.new_block();
+                let block = self.new_block(span);
                 self.start_block(block);
-                None
+                Ok(None)
             }
+
+            _ => Err(DiagMsg {
+                title: "unsupported".into(),
+                msg: "expression kind not supported yet".into(),
+                span: span.clone(),
+            }),
         }
     }
-
 }
 
 impl MirLowerApi for MirLower {
@@ -1482,7 +1742,7 @@ impl MirLowerApi for MirLower {
     }
 
     fn lower(mut self) -> Result<(MirCrate, TypeCtx), DiagMsg> {
-        self.lower_decls();
+        self.lower_decls()?;
         Ok((MirCrate {
             name: self.hir.name,
             functions: self.functions,

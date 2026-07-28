@@ -5,7 +5,7 @@ use leafc_coreapi::name_pass::NamePassResult;
 use leafc_coreapi::scope::SymId;
 use leafc_coreapi::source::Span;
 use leafc_coreapi::type_checker::{TypeCheckerApi, TypeCheckerError};
-use leafc_coreapi::type_system::{HirDeclTypeMap, HirExprTypeMap, LocalBindingTypeMap, NameTypeSchemeMap, TyId, TypeCtx, TypeNode, TypeNodeKind, TypeScheme};
+use leafc_coreapi::type_system::{FieldDef, GenericParamDef, HirDeclTypeMap, HirExprTypeMap, LocalBindingTypeMap, NameTypeSchemeMap, TyId, TypeCtx, TypeDef, TypeDefKind, TypeNode, TypeNodeKind, TypeScheme, VariantDef};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
@@ -21,6 +21,7 @@ pub struct BuiltinTypes {
     pub float32: TyId,
     pub float64: TyId,
     pub bool_ty: TyId,
+    pub ptr: TyId,
     pub unit: TyId,
     pub never: TyId,
 }
@@ -44,6 +45,8 @@ pub struct TypeChecker {
     current_resume_ty: Option<(TyId, bool)>,
 
     builtin: BuiltinTypes,
+
+    type_defs: HashMap<HirDeclId, TypeDef>,
 }
 
 impl TypeChecker {
@@ -66,9 +69,11 @@ impl TypeChecker {
         let bool_ty = push(TypeNodeKind::Builtin(BuiltinType::Bool));
         let never = push(TypeNodeKind::Never);
         let unit = push(TypeNodeKind::Tuple(vec![]));
+        let ptr = push(TypeNodeKind::Builtin(BuiltinType::Ptr));
         BuiltinTypes {
             int8, int16, int32, int64, uint8, uint16, uint32, uint64,
-            float32, float64, bool_ty, unit, never,
+            float32, float64, bool_ty, ptr,
+            unit, never,
         }
     }
 
@@ -155,7 +160,7 @@ impl TypeChecker {
                         BuiltinType::F64 => self.builtin.float64,
                         BuiltinType::Bool => self.builtin.bool_ty,
                         BuiltinType::Never => self.builtin.never,
-                        BuiltinType::Ptr => todo!("pointer type not yet implemented"),
+                        BuiltinType::Ptr => self.builtin.ptr,                    
                     };
                     return Ok(ty_id);
                 }
@@ -257,9 +262,18 @@ impl TypeChecker {
                     .collect();
                 Ok(self.new_compound(TypeNodeKind::Tuple(new_elems?)))
             }
-            TypeNodeKind::Ref(_) => todo!(),
-            TypeNodeKind::MutRef(_) => todo!(),
-            TypeNodeKind::Share(_) => todo!(),
+            TypeNodeKind::Ref(inner) => {
+                let new_inner = self.copy_type_with_subst(inner, subst)?;
+                Ok(self.new_compound(TypeNodeKind::Ref(new_inner)))
+            }
+            TypeNodeKind::MutRef(inner) => {
+                let new_inner = self.copy_type_with_subst(inner, subst)?;
+                Ok(self.new_compound(TypeNodeKind::MutRef(new_inner)))
+            }
+            TypeNodeKind::Share(inner) => {
+                let new_inner = self.copy_type_with_subst(inner, subst)?;
+                Ok(self.new_compound(TypeNodeKind::Share(new_inner)))
+            }
             TypeNodeKind::Struct { decl_id, subst: existing_subst, field_tys } => {
                 let new_subst: Result<Vec<_>, _> = existing_subst.iter()
                     .map(|&s| self.copy_type_with_subst(s, subst))
@@ -400,6 +414,11 @@ impl TypeChecker {
                 }
                 Ok(())
             }
+            (TypeNodeKind::Ref(a), TypeNodeKind::Ref(b))
+            | (TypeNodeKind::MutRef(a), TypeNodeKind::MutRef(b))
+            | (TypeNodeKind::Share(a), TypeNodeKind::Share(b)) => {
+                self.unify(*a, *b, span)
+            }
             _ => Err(DiagMsg {
                 title: format!("{:?}", TypeCheckerError::TypeMismatch),
                 msg: format!(
@@ -439,6 +458,11 @@ impl TypeChecker {
                     self.check_occurs(var, s, span.clone())?;
                 }
                 Ok(())
+            }
+            TypeNodeKind::Ref(inner)
+            | TypeNodeKind::MutRef(inner)
+            | TypeNodeKind::Share(inner) => {
+                self.check_occurs(var, inner, span)
             }
             _ => Ok(()),
         }
@@ -603,6 +627,11 @@ impl TypeChecker {
                 for s in subst {
                     self.collect_free_vars(s, out);
                 }
+            }
+            TypeNodeKind::Ref(inner)
+            | TypeNodeKind::MutRef(inner)
+            | TypeNodeKind::Share(inner) => {
+                self.collect_free_vars(inner, out);
             }
             _ => {}
         }
@@ -1926,10 +1955,25 @@ impl TypeChecker {
         for gp in generic_params {
             let tv = self.new_type_var();
             gen_vars.push(tv);
-            self.name_type_map.insert(gp.name.sym_id, TypeScheme { quantified: vec![], body: tv });
+            self.name_type_map.insert(
+                gp.name.sym_id,
+                TypeScheme { quantified: vec![], body: tv },
+            );
         }
 
+        let gen_param_defs: Vec<GenericParamDef> = generic_params
+            .iter()
+            .enumerate()
+            .map(|(i, gp)| GenericParamDef {
+                name: gp.name.name.clone(),
+                index: i,
+                default_ty: None,
+                def_id: gen_vars[i],
+            })
+            .collect();
+
         let mut variants = Vec::new();
+        let mut variant_defs = Vec::new();
         for ctor in ctors {
             let payload_template = if let Some(from_type) = &ctor.from_type {
                 let ty = self.resolve_type_name(from_type, ctor.span.clone())?;
@@ -1938,7 +1982,25 @@ impl TypeChecker {
                 None
             };
             variants.push(payload_template);
+
+            let fields = match payload_template {
+                Some(ty) => {
+                    vec![FieldDef {
+                        name: String::new(),
+                        ty,
+                        span: ctor.span.clone(),
+                    }]
+                }
+                None => vec![],
+            };
+            variant_defs.push(VariantDef {
+                name: ctor.name.name.clone(),
+                fields,
+                tag: None,
+                span: ctor.span.clone(),
+            });
         }
+
         let adt_ty = self.new_compound(TypeNodeKind::ADT {
             decl_id,
             subst: gen_vars.clone(),
@@ -1969,7 +2031,6 @@ impl TypeChecker {
         for gp in generic_params {
             self.name_type_map.remove(&gp.name.sym_id);
         }
-
         self.current_level = saved_level;
 
         let scheme = TypeScheme {
@@ -1977,6 +2038,15 @@ impl TypeChecker {
             body: adt_ty,
         };
         self.decl_type_map.insert(decl_id, scheme);
+
+        let decl = &self.hir_crate.hir_decl_pool[decl_id];
+        let type_def = TypeDef {
+            name: decl.ident.clone(),
+            span: decl.span.clone(),
+            generics: gen_param_defs,
+            kind: TypeDefKind::Enum { variants: variant_defs },
+        };
+        self.type_defs.insert(decl_id, type_def);
 
         Ok(())
     }
@@ -1989,17 +2059,35 @@ impl TypeChecker {
     ) -> Result<(), DiagMsg> {
         let saved_level = self.current_level;
         self.current_level += 1;
+
         let mut gen_vars = Vec::new();
         for gp in generic_params {
             let tv = self.new_type_var();
             gen_vars.push(tv);
             self.name_type_map.insert(gp.name.sym_id, TypeScheme { quantified: vec![], body: tv });
         }
+
+        let gen_param_defs: Vec<GenericParamDef> = generic_params.iter().enumerate()
+            .map(|(i, gp)| GenericParamDef {
+                name: gp.name.name.clone(),
+                index: i,
+                default_ty: None,
+                def_id: gen_vars[i],
+            })
+            .collect();
+
         let mut field_tys = Vec::new();
+        let mut field_defs = Vec::new();
         for f in fields {
             let ty = self.resolve_type_name(&f.type_ann, f.span.clone())?;
             field_tys.push(ty);
+            field_defs.push(FieldDef {
+                name: f.name.name.clone(),
+                ty,
+                span: f.span.clone(),
+            });
         }
+
         let struct_ty = self.new_compound(TypeNodeKind::Struct {
             decl_id,
             subst: gen_vars.clone(),
@@ -2017,6 +2105,16 @@ impl TypeChecker {
         }
         self.decl_type_map.insert(decl_id, scheme);
         self.current_level = saved_level;
+
+        let decl = &self.hir_crate.hir_decl_pool[decl_id];
+        let type_def = TypeDef {
+            name: decl.ident.clone(),
+            span: decl.span.clone(),
+            generics: gen_param_defs,
+            kind: TypeDefKind::Struct { fields: field_defs },
+        };
+        self.type_defs.insert(decl_id, type_def);
+
         Ok(())
     }
 
@@ -2271,6 +2369,7 @@ impl TypeCheckerApi for TypeChecker {
             current_level: 0,
             current_resume_ty: None,
             builtin,
+            type_defs: HashMap::new(),
         }
     }
 
@@ -2303,6 +2402,8 @@ impl TypeCheckerApi for TypeChecker {
             name_type_map: self.name_type_map,
             sym_to_decl: self.sym_to_decl,
             type_pool: self.type_pool,
+            generic_type_defs: self.type_defs,
+            concrete_type_defs: HashMap::new(),
         }, self.hir_crate))
     }
 }

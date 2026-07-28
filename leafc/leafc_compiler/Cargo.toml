@@ -10,6 +10,7 @@ leafc_namepass = { path = "../leafc_namepass" }
 leafc_hirlower = { path = "../leafc_hirlower" }
 leafc_typechecker = { path = "../leafc_typechecker" }
 leafc_mirlower = { path = "../leafc_mirlower" }
+leafc_mir_lifetime_checker = { path = "../leafc_mir_lifetime_checker" }
 leafc_mirmono = { path = "../leafc_mirmono" }
 leafc_c_codegen = { path = "../leafc_c_codegen" }
 

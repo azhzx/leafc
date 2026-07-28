@@ -4,10 +4,19 @@ use crate::scope::SymId;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum BuiltinType {
-    I8, I16, I32, I64,
-    U8, U16, U32, U64,
-    F32, F64,
-    Bool, Never, Ptr,
+    I8,
+    I16,
+    I32,
+    I64,
+    U8,
+    U16,
+    U32,
+    U64,
+    F32,
+    F64,
+    Bool,
+    Never,
+    Ptr,
 }
 
 const BUILTIN_COUNT: usize = 13;
