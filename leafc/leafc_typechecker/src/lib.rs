@@ -160,7 +160,7 @@ impl TypeChecker {
                         BuiltinType::F64 => self.builtin.float64,
                         BuiltinType::Bool => self.builtin.bool_ty,
                         BuiltinType::Never => self.builtin.never,
-                        BuiltinType::Ptr => self.builtin.ptr,                    
+                        BuiltinType::Ptr => self.builtin.ptr,
                     };
                     return Ok(ty_id);
                 }
@@ -315,7 +315,6 @@ impl TypeChecker {
         match (&k1, &k2) {
             (TypeNodeKind::Never, _) => {
                 // Never <: T
-                self.type_pool[r1].parent = r2;
                 Ok(())
             }
             (TypeNodeKind::Var, TypeNodeKind::Var) => {
@@ -660,6 +659,7 @@ impl TypeChecker {
         &mut self,
         scrutinee_ty: TyId,
         patterns: &[HirPattern],
+        guards: &[bool],
         span: &Span,
     ) -> Result<(), DiagMsg> {
         let mut matrix: Vec<Vec<&HirPattern>> = Vec::new();
@@ -667,7 +667,6 @@ impl TypeChecker {
         for (idx, pat) in patterns.iter().enumerate() {
             let q = vec![pat];
 
-            // unreachable
             if !self.is_useful(&matrix, &q) {
                 return Err(DiagMsg {
                     title: format!("{:?}", TypeCheckerError::UnreachablePattern),
@@ -676,17 +675,18 @@ impl TypeChecker {
                 });
             }
 
-            matrix.push(q);
+            if !guards[idx] {
+                matrix.push(q);
+            }
         }
 
-        // exhaustiveness)
         let wildcard = HirPattern::Wildcard;
         let q_wildcard = vec![&wildcard];
 
         if self.is_useful(&matrix, &q_wildcard) {
             return Err(DiagMsg {
                 title: format!("{:?}", TypeCheckerError::NonExhaustiveMatch),
-                msg: "match expression is non-exhaustive, add `_ => ...` to cover all cases".into(),
+                msg: "match expression is non-exhaustive, add `_ => expression` to cover all cases".into(),
                 span: span.clone(),
             });
         }
@@ -1212,59 +1212,77 @@ impl TypeChecker {
             }
 
             HirExprKind::FieldAccess { obj, field } => {
+                let mut obj_ty = self.infer_expr(*obj, None)?;
+                // 自动解引用循环
+                loop {
+                    let root = self.representative(obj_ty);
+                    match &self.type_pool[root].kind {
+                        TypeNodeKind::Struct { .. } => break,
+                        TypeNodeKind::Ref(inner)
+                        | TypeNodeKind::MutRef(inner)
+                        | TypeNodeKind::Share(inner) => {
+                            obj_ty = *inner;
+                        }
+                        _ => {
+                            return Err(DiagMsg {
+                                title: format!("{:?}", TypeCheckerError::TypeMismatch),
+                                msg: format!("cannot access field `{}` on non‑struct type", field),
+                                span: span.clone(),
+                            });
+                        }
+                    }
+                }
 
-                let obj_ty = self.infer_expr(*obj, None)?;
-                let obj_root = self.representative(obj_ty);
+                let struct_root = self.representative(obj_ty);
+                let (decl_id, subst) = match &self.type_pool[struct_root].kind {
+                    TypeNodeKind::Struct { decl_id, subst, .. } => (*decl_id, subst.clone()),
+                    _ => unreachable!(),
+                };
 
-                if let TypeNodeKind::Struct { decl_id, subst, .. } = &self.type_pool[obj_root].kind.clone() {
-                    let (field_type, subst_clone, generic_params) = {
-                        let decl = &self.hir_crate.hir_decl_pool[*decl_id];
-                        match &decl.kind {
-                            HirDeclKind::Struct { fields, generic_params, .. } => {
-                                let field_def = fields.iter()
-                                    .find(|f| f.name.name == *field)
-                                    .ok_or_else(|| DiagMsg {
-                                        title: format!("{:?}", TypeCheckerError::FieldNotFound),
-                                        msg: format!("struct `{}` has no field named `{}`", decl.ident, field),
-                                        span: span.clone(),
-                                    })?;
-                                (field_def.type_ann.clone(), subst.clone(), generic_params.clone())
-                            }
-                            _ => return Err(DiagMsg {
+                let (field_type, subst_clone, generic_params) = {
+                    let decl = &self.hir_crate.hir_decl_pool[decl_id];
+                    match &decl.kind {
+                        HirDeclKind::Struct { fields, generic_params, .. } => {
+                            let field_def = fields
+                                .iter()
+                                .find(|f| f.name.name == *field)
+                                .ok_or_else(|| DiagMsg {
+                                    title: format!("{:?}", TypeCheckerError::FieldNotFound),
+                                    msg: format!("struct `{}` has no field named `{}`", decl.ident, field),
+                                    span: span.clone(),
+                                })?;
+                            (field_def.type_ann.clone(), subst.clone(), generic_params.clone())
+                        }
+                        _ => {
+                            return Err(DiagMsg {
                                 title: format!("{:?}", TypeCheckerError::TypeMismatch),
                                 msg: "type is not a struct".into(),
                                 span: span.clone(),
-                            }),
+                            });
                         }
-                    };
-
-                    // SymId => TyId
-                    let mut var_map = HashMap::new();
-                    for (gp, &actual_ty) in generic_params.iter().zip(subst_clone.iter()) {
-                        var_map.insert(gp.name.sym_id, actual_ty);
                     }
+                };
 
-                    let mut inserted_symbols = Vec::new();
-                    for (&sym_id, &ty) in &var_map {
-                        self.name_type_map.insert(sym_id, TypeScheme { quantified: vec![], body: ty });
-                        inserted_symbols.push(sym_id);
-                    }
-
-                    let field_ty = self.resolve_type_name(&field_type, span.clone())?;
-
-                    // 清理
-                    for sym_id in inserted_symbols {
-                        self.name_type_map.remove(&sym_id);
-                    }
-
-                    field_ty
-                } else {
-                    return Err(DiagMsg {
-                        title: format!("{:?}", TypeCheckerError::TypeMismatch),
-                        msg: format!("cannot access field `{}` on non‑struct type", field),
-                        span: span.clone(),
-                    });
+                // SymId => TyId
+                let mut var_map = HashMap::new();
+                for (gp, &actual_ty) in generic_params.iter().zip(subst_clone.iter()) {
+                    var_map.insert(gp.name.sym_id, actual_ty);
                 }
+
+                let mut inserted_symbols = Vec::new();
+                for (&sym_id, &ty) in &var_map {
+                    self.name_type_map.insert(sym_id, TypeScheme { quantified: vec![], body: ty });
+                    inserted_symbols.push(sym_id);
+                }
+
+                let field_ty = self.resolve_type_name(&field_type, span.clone())?;
+
+                // 清理
+                for sym_id in inserted_symbols {
+                    self.name_type_map.remove(&sym_id);
+                }
+
+                field_ty
             }
 
             HirExprKind::MakeStruct { path, fields } => {
@@ -1573,11 +1591,15 @@ impl TypeChecker {
                 let scrutinee_ty = self.infer_expr(*scrutinee, None)?;
 
                 let mut match_res_ty = expected;
-                let mut patterns_for_check = Vec::new();
+
+                let patterns_for_check: Vec<HirPattern> = arms.iter()
+                    .map(|arm| arm.pattern.clone())
+                    .collect();
+                let guards: Vec<bool> = arms.iter()
+                    .map(|arm| arm.guard.is_some())
+                    .collect();
 
                 for arm in arms {
-                    patterns_for_check.push(arm.pattern.clone());
-
                     // new scope
                     let saved_level = self.current_level;
                     self.current_level += 1;
@@ -1607,8 +1629,7 @@ impl TypeChecker {
                     self.current_level = saved_level;
                 }
 
-                // exhaustiveness and usefulness
-                self.check_match_exhaustiveness(scrutinee_ty, &patterns_for_check, &span)?;
+                self.check_match_exhaustiveness(scrutinee_ty, &patterns_for_check, &guards, &span)?;
 
                 match_res_ty.unwrap_or(self.builtin.unit)
             }
@@ -1686,7 +1707,7 @@ impl TypeChecker {
     ) -> Result<TyId, DiagMsg> {
         let callee_kind = self.hir_crate.hir_expr_pool[callee].kind.clone();
 
-        let (callee_ty, fun_info) = if let HirExprKind::Ident(ref name) = callee_kind {
+        let (mut callee_ty, fun_info) = if let HirExprKind::Ident(ref name) = callee_kind {
             let scheme_and_decl = if let Some(scheme) = self.name_type_map.get(&name.sym_id).cloned() {
                 Some((scheme, self.sym_to_decl.get(&name.sym_id).copied()))
             } else if let Some(&decl_id) = self.sym_to_decl.get(&name.sym_id) {
@@ -1711,6 +1732,18 @@ impl TypeChecker {
         } else {
             (self.infer_expr(callee, None)?, None)
         };
+
+        loop {
+            let root = self.representative(callee_ty);
+            match &self.type_pool[root].kind {
+                TypeNodeKind::Ref(inner)
+                | TypeNodeKind::MutRef(inner)
+                | TypeNodeKind::Share(inner) => {
+                    callee_ty = *inner;
+                }
+                _ => break,
+            }
+        }
 
         let arg_tys: Vec<TyId> = (0..args.len()).map(|_| self.new_type_var()).collect();
         let ret_ty = expected.unwrap_or_else(|| self.new_type_var());

@@ -16,26 +16,16 @@ type Float64;
 #lang("builtin_ptr_type")
 type __RawPtr;
 
-external ctype Foo;
-
-
-external fun puts(a: __RawPtr) -> () = "leaf_rt__puts";
+external fun puts(a: __RawPtr) -> ();  = "leaf_rt__puts";
 external fun itoa(a: Int32) -> __RawPtr = "leaf_rt__itoa";
-external fun dtoa(val: Float64) -> __RawPtr = "leaf_rt__dtoa";
-external fun now() -> Float64 = "leaf_rt__now";
 
-fun fib(n)
-    return when n
-        0 => 0
-        1 => 1
-        _ => fib(n - 1) + fib(n - 2)
+fun print_int(a)
+    unsafe_call_external puts(unsafe_call_external itoa(a))
 
+type Foo
+    a: Int32
 
 fun main()
-    let start = unsafe_call_external now()
-
-    let fib30 = fib(35)
-    unsafe_call_external puts(unsafe_call_external itoa(fib30))
-
-    let end = unsafe_call_external now()
-    unsafe_call_external puts(unsafe_call_external dtoa(end - start))
+    let foo = Foo{ a = 66 }
+    let foo2 = move foo
+    print_int(foo2.a)

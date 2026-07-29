@@ -110,7 +110,7 @@ impl NativeCompiler {
     }
 
     pub fn run_by_gcc(&self) -> std::io::Result<()> {
-        println!("start to run");
+        println!("start to call gcc");
 
         let build_dir = self.crate_path.join("build");
         let c_file = build_dir.join("out.c");
@@ -158,6 +158,7 @@ impl NativeCompiler {
             ));
         }
 
+        println!("start to run");
         let mut child = std::process::Command::new(&exe_file).spawn()?;
         let status = child.wait()?;
         if !status.success() {

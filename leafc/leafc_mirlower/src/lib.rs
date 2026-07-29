@@ -1,7 +1,7 @@
 use leafc_coreapi::diagnostic::DiagMsg;
 use leafc_coreapi::hir::{HirBinOp, HirCrate, HirDeclId, HirDeclKind, HirExprId, HirExprKind, HirLit, HirMatchArm, HirPattern, HirTypeName, HirUnaryOp};
 use leafc_coreapi::mir::{BasicBlock, BasicBlockId, Const, ControlId, ExternDecl, FnSig, FunId, LocalDecl, LocalId, MirBinOp, MirCrate, MirFun, MirStmt, MirStmtKind, MirUnOp, Place, Rvalue, StaticDecl, StaticId, TagId, TerminatorKind};
-use leafc_coreapi::mir_lower::MirLowerApi;
+use leafc_coreapi::mir_lower::{MirLowerApi, MirLowerError};
 use leafc_coreapi::scope::SymId;
 use leafc_coreapi::type_system::TypeCtx;
 use leafc_coreapi::type_system::{get_type_root, TyId, TypeNodeKind};
@@ -39,14 +39,18 @@ impl<'a> DecisionTreeBuilder<'a> {
     }
 
     fn select_best_column(&self, matrix: &[MatrixRow], cols: usize) -> usize {
+        if cols == 0 {
+            return 0;
+        }
+
         let mut best_col = 0;
         let mut best_score = (1, usize::MAX, usize::MAX);
 
         for c in 0..cols {
-            let first_pat = matrix.first().map(|r| r.patterns[c]);
+            let first_pat = matrix.first().and_then(|r| r.patterns.get(c));
             let q = matches!(
-                first_pat,
-                Some(HirPattern::Constructor { .. })
+            first_pat,
+            Some(HirPattern::Constructor { .. })
                 | Some(HirPattern::Literal(_))
                 | Some(HirPattern::Struct { .. })
                 | Some(HirPattern::Tuple { .. })
@@ -56,13 +60,14 @@ impl<'a> DecisionTreeBuilder<'a> {
             let mut max_arity = 0;
 
             for row in matrix {
-                let pat = row.patterns[c];
-                distinct_kinds.insert(Self::get_pattern_kind(pat));
-                match pat {
-                    HirPattern::Constructor { args, .. } => max_arity = max_arity.max(args.len()),
-                    HirPattern::Tuple { elements, .. } => max_arity = max_arity.max(elements.len()),
-                    HirPattern::Struct { fields, .. } => max_arity = max_arity.max(fields.len()),
-                    _ => {}
+                if let Some(pat) = row.patterns.get(c) {
+                    distinct_kinds.insert(Self::get_pattern_kind(pat));
+                    match pat {
+                        HirPattern::Constructor { args, .. } => max_arity = max_arity.max(args.len()),
+                        HirPattern::Tuple { elements, .. } => max_arity = max_arity.max(elements.len()),
+                        HirPattern::Struct { fields, .. } => max_arity = max_arity.max(fields.len()),
+                        _ => {}
+                    }
                 }
             }
 
@@ -74,6 +79,7 @@ impl<'a> DecisionTreeBuilder<'a> {
                 best_col = c;
             }
         }
+
         best_col
     }
 
@@ -245,7 +251,10 @@ impl<'a> DecisionTreeBuilder<'a> {
                 Some(fields.iter().map(|f| &f.pattern).collect())
             }
             (HirPattern::Alias { pattern, .. }, _) => self.specialize_pattern(pattern, key),
-            (HirPattern::Wildcard | HirPattern::Binding(_) | HirPattern::Rest, _) => Some(vec![]),
+            (HirPattern::Wildcard | HirPattern::Binding(_) | HirPattern::Rest, PatternKindKey::Literal(_)) => Some(vec![]),
+            (HirPattern::Wildcard | HirPattern::Binding(_) | HirPattern::Rest, _) => {
+                Some(vec![pattern])
+            }
             _ => None,
         }
     }
@@ -254,8 +263,13 @@ impl<'a> DecisionTreeBuilder<'a> {
         match pattern {
             HirPattern::Binding(name) => {
                 let ty = self.mir.place_ty(place, self.span.clone())?;
-                let local = self.mir.new_local(ty, true, Some(name.name.clone()), self.span.clone());
-                self.mir.bind_local(name.sym_id, local);
+                let local = if let Some(&existing) = self.mir.fun.as_ref().unwrap().locals_map.get(&name.sym_id) {
+                    existing
+                } else {
+                    let new_local = self.mir.new_local(ty, true, Some(name.name.clone()), self.span.clone());
+                    self.mir.bind_local(name.sym_id, new_local);
+                    new_local
+                };
                 self.mir.push_stmt(
                     MirStmtKind::Let {
                         local,
@@ -267,8 +281,13 @@ impl<'a> DecisionTreeBuilder<'a> {
             HirPattern::Alias { pattern, name, .. } => {
                 self.bind_pattern_variables(pattern, place)?;
                 let ty = self.mir.place_ty(place, self.span.clone())?;
-                let local = self.mir.new_local(ty, true, Some(name.name.clone()), self.span.clone());
-                self.mir.bind_local(name.sym_id, local);
+                let local = if let Some(&existing) = self.mir.fun.as_ref().unwrap().locals_map.get(&name.sym_id) {
+                    existing
+                } else {
+                    let new_local = self.mir.new_local(ty, true, Some(name.name.clone()), self.span.clone());
+                    self.mir.bind_local(name.sym_id, new_local);
+                    new_local
+                };
                 self.mir.push_stmt(
                     MirStmtKind::Let {
                         local,
@@ -370,6 +389,10 @@ impl<'a> DecisionTreeBuilder<'a> {
         if is_all_wildcards {
             self.mir.start_block(current_block);
 
+            let arm_idx = first_row.arm_idx;
+            let arm = &self.arms[arm_idx];
+
+            // 处理 is 表达式的特殊情况
             if let Some(result_local) = self.is_result_local {
                 for (pat, occ) in first_row.patterns.iter().zip(occurrences.iter()) {
                     self.bind_pattern_variables(pat, occ)?;
@@ -390,30 +413,55 @@ impl<'a> DecisionTreeBuilder<'a> {
                 return Ok(current_block);
             }
 
-            let arm = &self.arms[first_row.arm_idx];
+            if expanded_matrix.len() == 1 {
+                for (pat, occ) in first_row.patterns.iter().zip(occurrences.iter()) {
+                    self.bind_pattern_variables(pat, occ)?;
+                }
 
-            for (pat, occ) in first_row.patterns.iter().zip(occurrences.iter()) {
-                self.bind_pattern_variables(pat, occ)?;
-            }
+                if let Some(guard_expr) = arm.guard {
+                    let guard_place = self.mir.compile_expr(guard_expr)?.ok_or_else(|| DiagMsg {
+                        title: "internal error".into(),
+                        msg: "guard expression produced no place".into(),
+                        span: self.span.clone(),
+                    })?;
+                    let guard_success_block = self.mir.new_block(self.span.clone());
+                    let guard_fail_block = self.mir.new_block(self.span.clone());
 
-            // guard
-            if let Some(guard_expr) = arm.guard {
-                let guard_place = self.mir.compile_expr(guard_expr)?.ok_or_else(|| DiagMsg {
-                    title: "internal error".into(),
-                    msg: "guard expression produced no place".into(),
-                    span: self.span.clone(),
-                })?;
-                let guard_success_block = self.mir.new_block(self.span.clone());
-                let guard_fail_block = self.mir.new_block(self.span.clone());
+                    self.mir.set_terminator(TerminatorKind::SwitchInt {
+                        discriminant: Rvalue::Copy(guard_place),
+                        targets: vec![(Const::Bool(true), guard_success_block)],
+                        default: guard_fail_block,
+                    });
 
-                self.mir.set_terminator(TerminatorKind::SwitchInt {
-                    discriminant: Rvalue::Copy(guard_place),
-                    targets: vec![(Const::Bool(true), guard_success_block)],
-                    default: guard_fail_block,
-                });
+                    // guard 成功
+                    self.mir.start_block(guard_success_block);
+                    let body_place = self.mir.compile_expr(arm.body)?;
+                    let ret_val = body_place
+                        .map(Rvalue::Move)
+                        .unwrap_or(Rvalue::Tuple(vec![]));
+                    self.mir.set_terminator(TerminatorKind::Goto {
+                        target: self.merge_block,
+                        block_args: vec![ret_val],
+                    });
 
-                // guard 成功
-                self.mir.start_block(guard_success_block);
+                    // guard 失败
+                    let remaining_matrix: Vec<MatrixRow> = expanded_matrix
+                        .iter()
+                        .filter(|r| r.arm_idx != first_row.arm_idx)
+                        .cloned()
+                        .collect();
+                    let fallback_block = self.compile_matrix(remaining_matrix, occurrences)?;
+                    self.mir.start_block(guard_fail_block);
+                    self.mir.set_terminator(TerminatorKind::Goto {
+                        target: fallback_block,
+                        block_args: vec![],
+                    });
+
+                    self.mir.current_block = saved_block;
+                    self.mir.current_stmts = saved_stmts;
+                    return Ok(current_block);
+                }
+
                 let body_place = self.mir.compile_expr(arm.body)?;
                 let ret_val = body_place
                     .map(Rvalue::Move)
@@ -423,25 +471,38 @@ impl<'a> DecisionTreeBuilder<'a> {
                     block_args: vec![ret_val],
                 });
 
-                // guard 失败
-                let remaining_matrix: Vec<MatrixRow> = expanded_matrix
-                    .iter()
-                    .filter(|r| r.arm_idx != first_row.arm_idx)
-                    .cloned()
-                    .collect();
-                let fallback_block = self.compile_matrix(remaining_matrix, occurrences)?;
-                self.mir.start_block(guard_fail_block);
-                self.mir.set_terminator(TerminatorKind::Goto {
-                    target: fallback_block,
-                    block_args: vec![],
-                });
-
                 self.mir.current_block = saved_block;
                 self.mir.current_stmts = saved_stmts;
                 return Ok(current_block);
             }
 
-            // 直接编译 body 并跳转
+            let body_block = self.mir.new_block(self.span.clone());
+
+            let mut bind_blocks = Vec::new();
+            for row in &expanded_matrix {
+                if row.arm_idx != arm_idx {
+                    continue;
+                }
+                let bind_block = self.mir.new_block(self.span.clone());
+                bind_blocks.push(bind_block);
+                self.mir.start_block(bind_block);
+                for (pat, occ) in row.patterns.iter().zip(occurrences.iter()) {
+                    self.bind_pattern_variables(pat, occ)?;
+                }
+                if arm.guard.is_some() {
+                    return Err(DiagMsg {
+                        title: "unsupported".into(),
+                        msg: "Or patterns with guard not yet supported".into(),
+                        span: self.span.clone(),
+                    });
+                }
+                self.mir.set_terminator(TerminatorKind::Goto {
+                    target: body_block,
+                    block_args: vec![],
+                });
+            }
+
+            self.mir.start_block(body_block);
             let body_place = self.mir.compile_expr(arm.body)?;
             let ret_val = body_place
                 .map(Rvalue::Move)
@@ -450,6 +511,16 @@ impl<'a> DecisionTreeBuilder<'a> {
                 target: self.merge_block,
                 block_args: vec![ret_val],
             });
+
+            self.mir.start_block(current_block);
+            if let Some(&first_bind) = bind_blocks.first() {
+                self.mir.set_terminator(TerminatorKind::Goto {
+                    target: first_bind,
+                    block_args: vec![],
+                });
+            } else {
+                self.mir.set_terminator(TerminatorKind::Unreachable);
+            }
 
             self.mir.current_block = saved_block;
             self.mir.current_stmts = saved_stmts;
@@ -471,9 +542,9 @@ impl<'a> DecisionTreeBuilder<'a> {
 
         let has_testable = constructors_seen.iter().any(|k| {
             matches!(
-                k,
-                PatternKindKey::Literal(_) | PatternKindKey::Constructor(_)
-            )
+            k,
+            PatternKindKey::Literal(_) | PatternKindKey::Constructor(_)
+        )
         });
 
         self.mir.start_block(current_block);
@@ -648,7 +719,6 @@ impl<'a> DecisionTreeBuilder<'a> {
                 default: default_block,
             });
         } else {
-            // 不可反驳列：选取第一个非通配符构造器
             let chosen_key = constructors_seen
                 .iter()
                 .find(|k| !matches!(k, PatternKindKey::WildcardOrBinding))
@@ -688,6 +758,37 @@ impl<'a> DecisionTreeBuilder<'a> {
                         arm_idx: row.arm_idx,
                     });
                 }
+            }
+
+            if spec_occurrences.is_empty() {
+                let success_block = self.mir.new_block(self.span.clone());
+                self.mir.start_block(success_block);
+                if let Some(result_local) = self.is_result_local {
+                    self.mir.push_stmt(
+                        MirStmtKind::Let {
+                            local: result_local,
+                            rvalue: Rvalue::Constant(Const::Bool(true)),
+                        },
+                        self.span.clone(),
+                    );
+                    self.mir.set_terminator(TerminatorKind::Goto {
+                        target: self.merge_block,
+                        block_args: vec![Rvalue::Copy(Place::Local(result_local))],
+                    });
+                } else {
+                    let arm = &self.arms[first_row.arm_idx];
+                    let body_place = self.mir.compile_expr(arm.body)?;
+                    let ret_val = body_place
+                        .map(Rvalue::Move)
+                        .unwrap_or(Rvalue::Tuple(vec![]));
+                    self.mir.set_terminator(TerminatorKind::Goto {
+                        target: self.merge_block,
+                        block_args: vec![ret_val],
+                    });
+                }
+                self.mir.current_block = saved_block;
+                self.mir.current_stmts = saved_stmts;
+                return Ok(current_block);
             }
 
             let target_block = self.compile_matrix(spec_matrix, spec_occurrences)?;
@@ -790,12 +891,24 @@ impl MirLower {
         target: BasicBlockId,
         span: Span,
     ) -> Result<TerminatorKind, DiagMsg> {
-        let func_place = self.compile_expr(callee)?
-            .ok_or_else(|| DiagMsg {
-                title: "internal error".into(),
-                msg: "callee expression produced no place".into(),
-                span: span.clone(),
-            })?;
+
+        let mut func_place = self.compile_expr(callee)?.ok_or_else(|| DiagMsg {
+            title: "internal error".into(),
+            msg: "callee expression produced no place".into(),
+            span: span.clone(),
+        })?;
+
+        loop {
+            let ty = self.place_ty(&func_place, span.clone())?;
+            let root = get_type_root(&self.type_checker_result.type_pool, ty);
+            match &self.type_checker_result.type_pool[root].kind {
+                TypeNodeKind::Ref(_) | TypeNodeKind::MutRef(_) | TypeNodeKind::Share(_) => {
+                    func_place = Place::Deref(Box::new(func_place));
+                }
+                _ => break,
+            }
+        }
+
         Ok(TerminatorKind::CallByPtr {
             func: Rvalue::Move(func_place),
             args,
@@ -1077,6 +1190,20 @@ impl MirLower {
                     })
                 }
             }
+            Place::Deref(p) => {
+                let inner_ty = self.place_ty(p, span.clone())?;
+                let root = get_type_root(&self.type_checker_result.type_pool, inner_ty);
+                match &self.type_checker_result.type_pool[root].kind {
+                    TypeNodeKind::Ref(inner)
+                    | TypeNodeKind::MutRef(inner)
+                    | TypeNodeKind::Share(inner) => Ok(*inner),
+                    _ => Err(DiagMsg {
+                        title: "internal error".into(),
+                        msg: "Deref on non-reference type".into(),
+                        span,
+                    }),
+                }
+            }
             _ => Err(DiagMsg {
                 title: "internal error".into(),
                 msg: "unsupported place kind".into(),
@@ -1113,7 +1240,30 @@ impl MirLower {
             }
 
             HirExprKind::Ident(name) => {
-                Ok(self.lookup_place(name.sym_id))
+                if let Some(place) = self.lookup_place(name.sym_id) {
+                    return Ok(Some(place));
+                }
+
+                if let Some(&decl_id) = self.type_checker_result.sym_to_decl.get(&name.sym_id) {
+                    if let Some(&fun_id) = self.decl_to_fun.get(&decl_id) {
+                        let ty = self.expr_ty(expr_id)?;
+                        let temp = self.new_mutable_temp(ty, span.clone());
+                        self.push_stmt(
+                            MirStmtKind::Let {
+                                local: temp,
+                                rvalue: Rvalue::GetFunPtr(fun_id),
+                            },
+                            span,
+                        );
+                        return Ok(Some(Place::Local(temp)));
+                    }
+                }
+
+                Err(DiagMsg {
+                    title: "internal error".into(),
+                    msg: format!("cannot find value for `{}`", name.name),
+                    span: span.clone(),
+                })
             }
 
             HirExprKind::Binary { left, right, op } => {
@@ -1395,20 +1545,34 @@ impl MirLower {
             }
 
             HirExprKind::FieldAccess { obj, field } => {
-                let obj_place = self.compile_expr(*obj)?.ok_or_else(|| DiagMsg {
+                let mut obj_place = self.compile_expr(*obj)?.ok_or_else(|| DiagMsg {
                     title: "internal error".into(),
                     msg: "field access object has no place".into(),
                     span: span.clone(),
                 })?;
-                let obj_ty = self.expr_ty(*obj)?;
+                let mut obj_ty = self.expr_ty(*obj)?;
+                // 自动解引用
+                loop {
+                    let root = get_type_root(&self.type_checker_result.type_pool, obj_ty);
+                    match &self.type_checker_result.type_pool[root].kind {
+                        TypeNodeKind::Struct { .. } => break,
+                        TypeNodeKind::Ref(inner)
+                        | TypeNodeKind::MutRef(inner)
+                        | TypeNodeKind::Share(inner) => {
+                            obj_place = Place::Deref(Box::new(obj_place));
+                            obj_ty = *inner;
+                        }
+                        _ => return Err(DiagMsg {
+                            title: "type error".into(),
+                            msg: format!("cannot access field `{}` on non‑struct type", field),
+                            span: span.clone(),
+                        }),
+                    }
+                }
                 let obj_root_ty = get_type_root(&self.type_checker_result.type_pool, obj_ty);
                 let decl_id = match &self.type_checker_result.type_pool[obj_root_ty].kind {
                     TypeNodeKind::Struct { decl_id, .. } => *decl_id,
-                    _ => return Err(DiagMsg {
-                        title: "type error".into(),
-                        msg: "field access on non-struct type".into(),
-                        span: span.clone(),
-                    }),
+                    _ => unreachable!(),
                 };
                 let field_idx = *self.struct_field_map.get(&(decl_id, field.clone()))
                     .ok_or_else(|| DiagMsg {
@@ -1572,8 +1736,29 @@ impl MirLower {
                     span: span.clone(),
                 })?;
 
+                let mut expanded_arms: Vec<HirMatchArm> = Vec::new();
+                for arm in arms {
+                    let mut to_expand = vec![arm.pattern.clone()];
+                    while let Some(pat) = to_expand.pop() {
+                        match pat {
+                            HirPattern::Or { left, right, .. } => {
+                                to_expand.push(*left);
+                                to_expand.push(*right);
+                            }
+                            other => {
+                                expanded_arms.push(HirMatchArm {
+                                    pattern: other,
+                                    guard: arm.guard.clone(),
+                                    body: arm.body,
+                                    span: arm.span.clone(),
+                                });
+                            }
+                        }
+                    }
+                }
+
                 let mut initial_matrix = Vec::new();
-                for (idx, arm) in arms.iter().enumerate() {
+                for (idx, arm) in expanded_arms.iter().enumerate() {
                     initial_matrix.push(MatrixRow {
                         patterns: vec![&arm.pattern],
                         arm_idx: idx,
@@ -1584,7 +1769,7 @@ impl MirLower {
 
                 let mut builder = DecisionTreeBuilder {
                     mir: self,
-                    arms: &arms,
+                    arms: &expanded_arms,
                     merge_block,
                     dag_cache: HashMap::new(),
                     is_result_local: None,

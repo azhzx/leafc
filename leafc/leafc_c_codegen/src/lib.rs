@@ -31,12 +31,29 @@ impl CCodeGen {
                 BuiltinType::Ptr => "void*".into(),
                 _ => "unknown".into(),
             },
+            TypeNodeKind::Ref(inner) | TypeNodeKind::MutRef(inner)=> {
+                let inner_c = self.ty_to_c(*inner);
+                if inner_c.contains("%s") {
+                    inner_c.replacen("%s", "*%s", 1)
+                } else {
+                    format!("{}*", inner_c)
+                }
+            }
+            TypeNodeKind::Share(inner) => {
+                todo!()
+            }
             TypeNodeKind::Tuple(elems) if elems.is_empty() => "void".into(),
             TypeNodeKind::Tuple(elems) => {
                 let inner: Vec<String> = elems.iter().map(|&t| self.ty_to_c(t)).collect();
                 format!("Tuple_{}", inner.join("_"))
             }
-            TypeNodeKind::Fun { .. } => todo!(),
+            TypeNodeKind::Fun { param_tys, return_ty } => {
+                let ret = self.ty_to_c(*return_ty);
+                let params: Vec<String> = param_tys.iter()
+                    .map(|&t| self.ty_to_c(t))
+                    .collect();
+                format!("{} (*%s)({})", ret, params.join(", "))
+            }
             TypeNodeKind::Struct { decl_id, subst, .. }
             | TypeNodeKind::ADT { decl_id, subst, .. } => {
                 let key = (*decl_id, subst.clone());
@@ -68,6 +85,15 @@ impl CCodeGen {
                     TypeNodeKind::Struct { field_tys, .. } => field_tys[*field],
                     TypeNodeKind::Tuple(elements) => elements[*field],
                     _ => unreachable!(),
+                }
+            }
+            Place::Deref(p) => {
+                let inner_place_ty = self.place_ty(p, fun);
+                let pool = &self.type_checker_result.type_pool;
+                let root = get_type_root(pool, inner_place_ty);
+                match &pool[root].kind {
+                    TypeNodeKind::Ref(inner) | TypeNodeKind::MutRef(inner) => *inner,
+                    _ => unreachable!("Deref on non-reference type"),
                 }
             }
             Place::EnumItem { place, variant } => {
@@ -137,7 +163,9 @@ impl CCodeGen {
             Place::Index { place, item_index } => {
                 format!("{}[{}]", self.place_to_c(place, var_names), item_index)
             }
-            Place::Deref(p) => format!("(*{})", self.place_to_c(p, var_names)),
+            Place::Deref(p) => {
+                format!("(*{})", self.place_to_c(p, var_names))
+            }
             Place::EnumItem { place, variant } => {
                 let base = self.place_to_c(place, var_names);
                 format!("{}.data.v{}", base, variant)
@@ -149,13 +177,13 @@ impl CCodeGen {
         self.mono_mir.statics[sid].name.clone()
     }
 
-    fn rvalue_to_c(&self, rv: &Rvalue, var_names: &HashMap<LocalId, String>) -> String {
+    fn rvalue_to_c(&self, rv: &Rvalue, var_names: &HashMap<LocalId, String>, fun: &MirFun) -> String {
         match rv {
             Rvalue::Constant(c) => Self::const_to_c(c),
             Rvalue::Move(place) | Rvalue::Copy(place) => self.place_to_c(place, var_names),
             Rvalue::BinaryOp { op, left, right } => {
-                let l = self.rvalue_to_c(left, var_names);
-                let r = self.rvalue_to_c(right, var_names);
+                let l = self.rvalue_to_c(left, var_names, fun);
+                let r = self.rvalue_to_c(right, var_names, fun);
                 let op_str = match op {
                     MirBinOp::Add => "+",
                     MirBinOp::Sub => "-",
@@ -177,7 +205,7 @@ impl CCodeGen {
                 format!("({} {} {})", l, op_str, r)
             }
             Rvalue::UnaryOp { op, right } => {
-                let r = self.rvalue_to_c(right, var_names);
+                let r = self.rvalue_to_c(right, var_names, fun);
                 let op_str = match op {
                     MirUnOp::Neg => "-",
                     MirUnOp::Not => "!",
@@ -186,9 +214,18 @@ impl CCodeGen {
             }
             Rvalue::Cast(place, target_ty) => {
                 let p = self.place_to_c(place, var_names);
-                let ty = self.ty_to_c(*target_ty);
-                format!("(({}){})", ty, p)
+                let src_ty = self.place_ty(place, fun);
+                if self.is_adt_type(src_ty) {
+                    format!("({})", format!("{}.tag", p))
+                } else {
+                    let ty = self.ty_to_c(*target_ty);
+                    format!("(({}){})", ty, p)
+                }
             }
+            Rvalue::TempRef(place) | Rvalue::TempRefMut(place) => {
+                format!("&({})", self.place_to_c(place, var_names))
+            }
+
             _ => unreachable!("should be handled by rvalue_to_c_with_ty")
         }
     }
@@ -216,12 +253,13 @@ impl CCodeGen {
         rv: &Rvalue,
         ty: TyId,
         var_names: &HashMap<LocalId, String>,
+        fun: &MirFun,
     ) -> String {
         match rv {
             Rvalue::BuildStruct(vals) => {
                 let type_name = self.ty_to_c(ty);
                 let field_vals: Vec<String> = vals.iter()
-                    .map(|v| self.rvalue_to_c(v, var_names))
+                    .map(|v| self.rvalue_to_c(v, var_names, fun))
                     .collect();
                 let init_list = if field_vals.is_empty() {
                     "{0}".to_string()
@@ -246,7 +284,7 @@ impl CCodeGen {
                     }
                 };
                 if has_payload {
-                    let inner_str = self.rvalue_to_c(inner, var_names);
+                    let inner_str = self.rvalue_to_c(inner, var_names, fun);
                     format!(
                         "({}){{ .tag = {}, .data.v{} = {} }}",
                         type_name, tag, tag, inner_str
@@ -261,13 +299,27 @@ impl CCodeGen {
                     "/* void */".into()
                 } else {
                     let fields_str = elements.iter().enumerate()
-                        .map(|(i, e)| format!(".f{} = {}", i, self.rvalue_to_c(e, var_names)))
+                        .map(|(i, e)| format!(".f{} = {}", i, self.rvalue_to_c(
+                            e, var_names, fun)))
                         .collect::<Vec<_>>()
                         .join(", ");
                     format!("({}){{ {} }}", type_name, fields_str)
                 }
             }
-            _ => self.rvalue_to_c(rv, var_names),
+            Rvalue::TempRef(place) | Rvalue::TempRefMut(place) => {
+                format!("&({})", self.place_to_c(place, var_names))
+            }
+            Rvalue::GetFunPtr(fun_id) => {
+                let callee = &self.mono_mir.functions[*fun_id];
+                let mangled = if callee.blocks.is_empty() {
+                    callee.name.clone()
+                } else {
+                    self.mangle(&callee.name, &callee.signature.params)
+                };
+                mangled
+            }
+
+            _ => self.rvalue_to_c(rv, var_names, fun),
         }
     }
 
@@ -278,21 +330,47 @@ impl CCodeGen {
 
         let is_main = fun.name == "main" && fun.signature.params.is_empty();
 
-        let original_ret_ty = self.ty_to_c(fun.signature.return_ty);
-        let mut ret_ty = original_ret_ty.clone();
-        if is_main && ret_ty == "void" {
-            ret_ty = "int".to_string();
-        }
-        let returns_value = ret_ty != "void";
+        let ret_ty_id = fun.signature.return_ty;
+        let ret_root = get_type_root(&self.type_checker_result.type_pool, ret_ty_id);
+
+        let (ret_str, inner_fun_params, inner_fun_ret) =
+            if let TypeNodeKind::Fun { param_tys, return_ty } = &self.type_checker_result.type_pool[ret_root].kind {
+                let ret_c = self.ty_to_c(*return_ty);
+                let params_c: Vec<String> = param_tys.iter().map(|&t| self.ty_to_c(t)).collect();
+                let ret = if is_main {
+                    "int".to_string()
+                } else {
+                    format!("{} (*{}())({})", ret_c, mangled, params_c.join(", "))
+                };
+                (ret, Some(params_c), Some(*return_ty))
+            } else {
+                let mut rty = self.ty_to_c(ret_ty_id);
+                if rty.contains("%s") {
+                    rty = rty.replace("%s", "");
+                }
+                let ret = if is_main && rty == "void" {
+                    "int".to_string()
+                } else {
+                    rty
+                };
+                (ret, None, None)
+            };
+
+        let original_ret_ty = self.ty_to_c(ret_ty_id);
+        let returns_value = ret_str != "void";
 
         let mut var_names: HashMap<LocalId, String> = HashMap::new();
         var_names.insert(0, "_ret".into());
-
+        let mut var_counter = 0u32;
         for (i, decl) in fun.local_decls.iter().enumerate() {
             if i == 0 { continue; }
             let mut name = decl.name.clone().unwrap_or_else(|| format!("v{}", i));
-            if name == "return" { name = "_ret".to_string(); }
-            var_names.insert(i, name);
+            if name == "return" {
+                name = "_ret".to_string();
+            }
+            let unique = format!("{}_{}", name, var_counter);
+            var_counter += 1;
+            var_names.insert(i, unique);
         }
 
         let param_count = fun.signature.params.len();
@@ -301,13 +379,23 @@ impl CCodeGen {
                 let local_id = 1 + i;
                 let ty = self.ty_to_c(fun.local_decls[local_id].ty);
                 let name = var_names[&local_id].clone();
-                format!("{} {}", ty, name)
+                if ty.contains("%s") {
+                    ty.replace("%s", &name)
+                } else {
+                    format!("{} {}", ty, name)
+                }
             })
             .collect();
         let param_str = params.join(", ");
 
         let mut code = String::new();
-        code += &format!("{} {}({}) {{\n", ret_ty, mangled, param_str);
+
+        // function sig
+        if let TypeNodeKind::Fun { .. } = &self.type_checker_result.type_pool[ret_root].kind {
+            code += &format!("{} {{\n", ret_str);
+        } else {
+            code += &format!("{} {}({}) {{\n", ret_str, mangled, param_str);
+        }
 
         for (i, decl) in fun.local_decls.iter().enumerate() {
             if i == 0 && is_main { continue; }
@@ -317,10 +405,28 @@ impl CCodeGen {
             let ty = self.ty_to_c(decl.ty);
             if ty == "void" { continue; }
             let name = &var_names[&i];
-            code += &format!("    {} {};\n", ty, name);
+            let decl_str = if ty.contains("%s") {
+                ty.replace("%s", name)
+            } else {
+                format!("{} {}", ty, name)
+            };
+            code += &format!("    {};\n", decl_str);
         }
+
         if returns_value && !is_main {
-            code += &format!("    {} _ret;\n", ret_ty);
+            let decl_str = if let Some((ref fun_params, fun_ret)) = inner_fun_params.zip(inner_fun_ret) {
+                let ret_c = self.ty_to_c(fun_ret);
+                let params_c = fun_params.iter().map(|t| t.as_str()).collect::<Vec<_>>().join(", ");
+                format!("{} (*_ret)({})", ret_c, params_c)
+            } else {
+                let mut rty = self.ty_to_c(ret_ty_id);
+                if rty.contains("%s") {
+                    rty.replace("%s", "_ret")
+                } else {
+                    format!("{} _ret", rty)
+                }
+            };
+            code += &format!("    {};\n", decl_str);
         }
 
         for &bid in &fun.blocks {
@@ -334,7 +440,7 @@ impl CCodeGen {
                         if self.ty_to_c(ty) == "void" { continue; }
                         if is_main && *local == 0 { continue; }
                         let lhs = var_names[local].clone();
-                        let rhs = self.rvalue_to_c_with_ty(rvalue, ty, &var_names);
+                        let rhs = self.rvalue_to_c_with_ty(rvalue, ty, &var_names, fun);
                         code += &format!("    {} = {};\n", lhs, rhs);
                     }
                     MirStmtKind::Store { place, rvalue } => {
@@ -344,7 +450,7 @@ impl CCodeGen {
                             continue;
                         }
                         let lhs = self.place_to_c(place, &var_names);
-                        let rhs = self.rvalue_to_c_with_ty(rvalue, ty, &var_names);
+                        let rhs = self.rvalue_to_c_with_ty(rvalue, ty, &var_names, fun);
                         code += &format!("    {} = {};\n", lhs, rhs);
                     }
                     MirStmtKind::Nop => {
@@ -378,7 +484,7 @@ impl CCodeGen {
                     let param_ty = fun.local_decls[*param_id].ty;
                     if self.ty_to_c(param_ty) == "void" { continue; }
                     let lhs = var_names[param_id].clone();
-                    let rhs = self.rvalue_to_c(arg, var_names);
+                    let rhs = self.rvalue_to_c(arg, var_names, fun);
                     code += &format!("    {} = {};\n", lhs, rhs);
                 }
                 code += &format!("    goto block_{};\n", target);
@@ -390,10 +496,10 @@ impl CCodeGen {
                         if self.is_adt_type(place_ty) {
                             format!("{}.tag", self.place_to_c(place, var_names))
                         } else {
-                            self.rvalue_to_c(discriminant, var_names)
+                            self.rvalue_to_c(discriminant, var_names, fun)
                         }
                     }
-                    _ => self.rvalue_to_c(discriminant, var_names),
+                    _ => self.rvalue_to_c(discriminant, var_names, fun),
                 };
                 code += &format!("    switch ({}) {{\n", disc_str);
                 for (val, target) in targets {
@@ -411,7 +517,7 @@ impl CCodeGen {
                     self.mangle(&callee.name, &callee.signature.params)
                 };
                 let arg_str: Vec<String> = args.iter()
-                    .map(|a| self.rvalue_to_c(a, var_names))
+                    .map(|a| self.rvalue_to_c(a, var_names, fun))
                     .collect();
                 let call_expr = format!("{}({})", callee_mangled, arg_str.join(", "));
 
@@ -433,6 +539,23 @@ impl CCodeGen {
                     code += "    return _ret;\n";
                 } else {
                     code += "    return;\n";
+                }
+            }
+            TerminatorKind::CallByPtr { func, args, dest, target } => {
+                let func_expr = self.rvalue_to_c(func, var_names, fun);
+                let arg_str: Vec<String> = args.iter()
+                    .map(|a| self.rvalue_to_c(a, var_names, fun))
+                    .collect();
+                let call_expr = format!("{}({})", func_expr, arg_str.join(", "));
+                let dest_ty = self.place_ty(dest, fun);
+                if self.ty_to_c(dest_ty) != "void" {
+                    let lhs = self.place_to_c(dest, var_names);
+                    code += &format!("    {} = {};\n", lhs, call_expr);
+                } else {
+                    code += &format!("    {};\n", call_expr);
+                }
+                if let Some(t) = target {
+                    code += &format!("    goto block_{};\n", t);
                 }
             }
             TerminatorKind::Unreachable => {
@@ -475,38 +598,108 @@ impl CCodeGen {
         code
     }
 
-    fn gen_type_definitions(&self) -> String {
-        let mut out = String::new();
-        for ((_decl_id, _subst), def) in &self.type_checker_result.concrete_type_defs {
-            match &def.kind {
-                TypeDefKind::Struct { fields } => {
-                    let mut fields_code = String::new();
-                    for (i, f) in fields.iter().enumerate() {
-                        let f_ty = self.ty_to_c(f.ty);
-                        fields_code += &format!("    {} f{};\n", f_ty, i);
-                    }
-                    out += &format!("typedef struct {{\n{}}} {};\n\n", fields_code, def.name);
+    fn def_type(
+        &self,
+        ty_id: TyId,
+        out: &mut String,
+        defined: &mut std::collections::HashSet<String>,
+    ) {
+        let c_name = self.ty_to_c(ty_id);
+        if c_name == "void" || defined.contains(&c_name) {
+            return;
+        }
+
+        let pool = &self.type_checker_result.type_pool;
+        let root = get_type_root(pool, ty_id);
+        let node = &pool[root];
+        match &node.kind {
+            TypeNodeKind::Tuple(elements) => {
+                for &elem_ty in elements {
+                    self.def_type(elem_ty, out, defined);
                 }
-                TypeDefKind::Enum { variants } => {
-                    let mut union_fields = String::new();
-                    let mut has_payload = false;
-                    for (i, v) in variants.iter().enumerate() {
-                        if v.fields.len() == 1 {
-                            has_payload = true;
-                            let payload_ty = self.ty_to_c(v.fields[0].ty);
-                            union_fields += &format!("        {} v{}; /* {} */\n", payload_ty, i, v.name);
-                        }
+                let mut fields_code = String::new();
+                for (i, &elem_ty) in elements.iter().enumerate() {
+                    fields_code += &format!("    {} f{};\n", self.ty_to_c(elem_ty), i);
+                }
+                *out += &format!("typedef struct {{\n{}}} {};\n\n", fields_code, c_name);
+                defined.insert(c_name);
+            }
+            TypeNodeKind::Struct { decl_id, subst, field_tys } => {
+                let key = (*decl_id, subst.clone());
+                if let Some(def) = self.type_checker_result.concrete_type_defs.get(&key) {
+                    for &f_ty in field_tys {
+                        self.def_type(f_ty, out, defined);
                     }
-                    if !has_payload {
-                        union_fields += "        int _dummy;\n";
+                    let mut fields_code = String::new();
+                    for (i, &f_ty) in field_tys.iter().enumerate() {
+                        fields_code += &format!("    {} f{};\n", self.ty_to_c(f_ty), i);
                     }
-                    out += &format!(
-                        "typedef struct {{\n    int tag;\n    union {{\n{}}} data;\n}} {};\n\n",
-                        union_fields, def.name
-                    );
+                    *out += &format!("typedef struct {{\n{}}} {};\n\n", fields_code, def.name);
+                    defined.insert(def.name.clone());
                 }
             }
+            TypeNodeKind::ADT { decl_id, subst, .. } => {
+                let key = (*decl_id, subst.clone());
+                if let Some(def) = self.type_checker_result.concrete_type_defs.get(&key) {
+                    if let TypeDefKind::Enum { variants } = &def.kind {
+                        for v in variants {
+                            if v.fields.len() == 1 {
+                                self.def_type(v.fields[0].ty, out, defined);
+                            }
+                        }
+                        let mut union_fields = String::new();
+                        let mut has_payload = false;
+                        for (i, v) in variants.iter().enumerate() {
+                            if v.fields.len() == 1 {
+                                has_payload = true;
+                                let payload_ty = self.ty_to_c(v.fields[0].ty);
+                                union_fields += &format!(
+                                    "        {} v{}; /* {} */\n",
+                                    payload_ty, i, v.name
+                                );
+                            }
+                        }
+                        if !has_payload {
+                            union_fields += "        int _dummy;\n";
+                        }
+                        *out += &format!(
+                            "typedef struct {{\n    int tag;\n    union {{\n{}    }} data;\n}} {};\n\n",
+                            union_fields, def.name
+                        );
+                        defined.insert(def.name.clone());
+                    }
+                }
+            }
+            _ => {}
         }
+    }
+
+    fn gen_type_definitions(&self) -> String {
+        let mut out = String::new();
+        let mut defined = std::collections::HashSet::new();
+
+        let mut used_types = std::collections::HashSet::new();
+
+        for fun in &self.mono_mir.functions {
+            for &ty in &fun.signature.params {
+                used_types.insert(ty);
+            }
+            used_types.insert(fun.signature.return_ty);
+            for local in &fun.local_decls {
+                used_types.insert(local.ty);
+            }
+        }
+        for stat in &self.mono_mir.statics {
+            used_types.insert(stat.ty);
+        }
+
+        let mut ty_ids: Vec<TyId> = used_types.into_iter().collect();
+        ty_ids.sort();
+
+        for ty_id in ty_ids {
+            self.def_type(ty_id, &mut out, &mut defined);
+        }
+
         out
     }
 }
@@ -520,7 +713,7 @@ impl CodegenApi for CCodeGen {
 
     fn emit(self) -> Result<Self::Output, DiagMsg> {
         let mut out = String::new();
-        out += "#include <stdint.h>\n#include \"runtime.h\"\n";
+        out += "#include \"runtime.h\"\n";
 
         out += &self.gen_type_definitions();
         out += "\n";
@@ -534,18 +727,28 @@ impl CodegenApi for CCodeGen {
             } else {
                 self.mangle(&fun.name, &fun.signature.params)
             };
-            let original_ret_ty = self.ty_to_c(fun.signature.return_ty);
+
+            let ret_ty_id = fun.signature.return_ty;
+            let ret_root = get_type_root(&self.type_checker_result.type_pool, ret_ty_id);
             let is_main = fun.name == "main" && fun.signature.params.is_empty();
-            let ret_ty = if is_main && original_ret_ty == "void" {
-                "int".to_string()
+
+            let ret_str = if let TypeNodeKind::Fun { param_tys: fun_params, return_ty: fun_ret } = &self.type_checker_result.type_pool[ret_root].kind {
+                let ret_c = self.ty_to_c(*fun_ret);
+                let params_c: Vec<String> = fun_params.iter().map(|&t| self.ty_to_c(t)).collect();
+                if is_main { "int".to_string() } else { format!("{} (*{}())({})", ret_c, mangled, params_c.join(", ")) }
             } else {
-                original_ret_ty
+                let mut rty = self.ty_to_c(ret_ty_id);
+                if rty.contains("%s") { rty = rty.replace("%s", ""); }
+                if is_main && rty == "void" { "int".to_string() } else { rty }
             };
-            let param_tys: Vec<String> = fun.signature.params.iter()
-                .map(|t| self.ty_to_c(*t))
-                .collect();
-            out += &format!("{} {}({});\n", ret_ty, mangled, param_tys.join(", "));
-        }
+
+            let param_tys: Vec<String> = fun.signature.params.iter().map(|t| self.ty_to_c(*t)).collect();
+            if let TypeNodeKind::Fun { .. } = &self.type_checker_result.type_pool[ret_root].kind {
+                out += &format!("{};\n", ret_str);
+            } else {
+                out += &format!("{} {}({});\n", ret_str, mangled, param_tys.join(", "));
+            }        }
+
         out += "\n";
 
         out += &self.gen_globals();

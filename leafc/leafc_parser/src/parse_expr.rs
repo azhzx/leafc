@@ -334,7 +334,7 @@ impl<'a> Parser<'a> {
         let arm_start = self.current_token().span.start_off;
         let pattern = self.parse_pattern()?;
         let pattern_child = GreenChild {
-            relative_start: (arm_start - match_start),
+            relative_start: 0,
             node: Arc::new(pattern),
         };
 
@@ -344,20 +344,19 @@ impl<'a> Parser<'a> {
             let guard_start = self.current_token().span.start_off;
             let guard_expr = self.parse_expr()?;
             Some(GreenChild {
-                relative_start: (guard_start - match_start),
+                relative_start: (guard_start - arm_start),
                 node: guard_expr.inner.clone(),
             })
         } else {
             None
         };
 
-        // =>
         self.skip_token_only(TokenType::FatArrow)?;
 
         let body_start = self.current_token().span.start_off;
         let body_expr = self.parse_expr()?;
         let body_child = GreenChild {
-            relative_start: (body_start - match_start),
+            relative_start: (body_start - arm_start),
             node: body_expr.inner.clone(),
         };
 
@@ -390,9 +389,10 @@ impl<'a> Parser<'a> {
 
         let mut arms = vec![];
         while self.current_token().kind != TokenType::Dedent {
+            let arm_start = self.current_token().span.start_off;
             let arm = self.parse_match_arm(match_start)?;
             arms.push(GreenChild {
-                relative_start: arm.pattern.relative_start,
+                relative_start: (arm_start - match_start),
                 node: Arc::new(arm),
             });
             if self.current_token().kind == TokenType::NewLine {
@@ -439,12 +439,13 @@ impl<'a> Parser<'a> {
 
         let effect_path_end = segments.len() - 1;
         let effect_segments = segments[..effect_path_end].to_vec();
+
         let effect_path = GreenPureStaticPath {
             segments: effect_segments,
             text_len: 0,
         };
         let effect_path_child = GreenChild {
-            relative_start: (segments[0].relative_start),
+            relative_start: (path_start - raise_start),
             node: Arc::new(effect_path),
         };
 
@@ -453,6 +454,7 @@ impl<'a> Parser<'a> {
             relative_start: (path_start + control_name_seg.relative_start - raise_start) ,
             node: control_name_seg.node.clone(),
         };
+
 
         self.skip_token_only(TokenType::Lparen)?;
         let mut args = vec![];
@@ -518,9 +520,10 @@ impl<'a> Parser<'a> {
             self.skip_token_only(TokenType::KwCatch)?;
             let catch_start = self.current_token().span.start_off;
 
+            let control_path_start = self.current_token().span.start_off;
             let control_path = self.parse_pure_static_path()?;
             let control_path_child = GreenChild {
-                relative_start: 0,
+                relative_start: (control_path_start - catch_start),
                 node: Arc::new(control_path),
             };
 

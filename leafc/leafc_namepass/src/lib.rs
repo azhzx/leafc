@@ -1,4 +1,4 @@
-use leafc_coreapi::ast::{child_decl_red, child_expr_red, child_span, AtomExprNode, CrateAst, DeclRedNode, ExprRedNode, FileRedUnit, GreenCatchClause, GreenChild, GreenDecl, GreenDeclKind, GreenExpr, GreenExprKind, GreenMatchArm, GreenPattern, GreenPureStaticPath, HasTextLen, RequireRedNode, TypeName, Visibility};
+use leafc_coreapi::ast::{child_decl_red, child_expr_red, child_span, child_span_of, AtomExprNode, CrateAst, DeclRedNode, ExprRedNode, FileRedUnit, GreenCatchClause, GreenChild, GreenDecl, GreenDeclKind, GreenExpr, GreenExprKind, GreenMatchArm, GreenPattern, GreenPureStaticPath, HasTextLen, RequireRedNode, TypeName, Visibility};
 use leafc_coreapi::diagnostic::DiagMsg;
 use leafc_coreapi::name_pass::{ArmScopeMap, CatchScopeMap, DoScopeMap, FunScopeMap, NamePassApi, NamePassError, NamePassResult};
 use leafc_coreapi::scope::{ScopeId, ScopeKind, ScopePool, SymbolKind};
@@ -87,7 +87,7 @@ impl<'a> NamePass<'a> {
             GreenPattern::Binding(_) => {}
             GreenPattern::Constructor { type_name, args, .. } => {
                 if let TypeName::Named { path, .. } = type_name.node.as_ref() {
-                    let path_span = child_span(parent_span, type_name.relative_start, type_name.node.text_len());
+                    let path_span = child_span_of(parent_span, path);
                     self.resolve_static_path_with_span(&path.node, &path_span, current_scope)?;
                 }
                 for arg in args {
@@ -99,8 +99,9 @@ impl<'a> NamePass<'a> {
                     self.resolve_pattern(elem, parent_span, current_scope)?;
                 }
             }
+
             GreenPattern::Struct { path, fields, .. } => {
-                let path_span = child_span(parent_span, path.relative_start, path.node.text_len);
+                let path_span = child_span_of(parent_span, path);
                 self.resolve_static_path_with_span(&path.node, &path_span, current_scope)?;
                 for field in fields {
                     self.resolve_pattern(&field.pattern, parent_span, current_scope)?;

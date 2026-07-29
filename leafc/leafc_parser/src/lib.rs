@@ -371,7 +371,7 @@ impl<'a> Parser<'a> {
             };
 
             constraints.push(GreenChild {
-                relative_start: (constraint_start_off - base_offset) ,
+                relative_start: (constraint_start_off - where_start_off),
                 node: Arc::new(constraint),
             });
 
