@@ -328,7 +328,7 @@ impl CCodeGen {
 
         let mangled = self.mangle(&fun.name, &fun.signature.params);
 
-        let is_main = fun.name == "main" && fun.signature.params.is_empty();
+        let is_main = fun.name == "main";
 
         let ret_ty_id = fun.signature.return_ty;
         let ret_root = get_type_root(&self.type_checker_result.type_pool, ret_ty_id);
@@ -348,7 +348,7 @@ impl CCodeGen {
                 if rty.contains("%s") {
                     rty = rty.replace("%s", "");
                 }
-                let ret = if is_main && rty == "void" {
+                let ret = if is_main {
                     "int".to_string()
                 } else {
                     rty
@@ -533,7 +533,7 @@ impl CCodeGen {
                 }
             }
             TerminatorKind::Return => {
-                if is_main && original_ret_ty == "void" {
+                if is_main {
                     code += "    return 0;\n";
                 } else if self.ty_to_c(fun.signature.return_ty) != "void" {
                     code += "    return _ret;\n";
@@ -730,7 +730,7 @@ impl CodegenApi for CCodeGen {
 
             let ret_ty_id = fun.signature.return_ty;
             let ret_root = get_type_root(&self.type_checker_result.type_pool, ret_ty_id);
-            let is_main = fun.name == "main" && fun.signature.params.is_empty();
+            let is_main = fun.name == "main";
 
             let ret_str = if let TypeNodeKind::Fun { param_tys: fun_params, return_ty: fun_ret } = &self.type_checker_result.type_pool[ret_root].kind {
                 let ret_c = self.ty_to_c(*fun_ret);
@@ -739,7 +739,7 @@ impl CodegenApi for CCodeGen {
             } else {
                 let mut rty = self.ty_to_c(ret_ty_id);
                 if rty.contains("%s") { rty = rty.replace("%s", ""); }
-                if is_main && rty == "void" { "int".to_string() } else { rty }
+                if is_main { "int".to_string() } else { rty }
             };
 
             let param_tys: Vec<String> = fun.signature.params.iter().map(|t| self.ty_to_c(*t)).collect();

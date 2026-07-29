@@ -16,7 +16,7 @@ type Float64;
 #lang("builtin_ptr_type")
 type __RawPtr;
 
-external fun puts(a: __RawPtr) -> ();  = "leaf_rt__puts";
+external fun puts(a: __RawPtr) -> ()  = "leaf_rt__puts";
 external fun itoa(a: Int32) -> __RawPtr = "leaf_rt__itoa";
 
 fun print_int(a)
@@ -25,7 +25,10 @@ fun print_int(a)
 type Foo
     a: Int32
 
-fun main()
+fun get_foo()
     let foo = Foo{ a = 66 }
-    let foo2 = move foo
-    print_int(foo2.a)
+    return move foo
+
+fun main()
+    print_int(get_foo().a)
+
