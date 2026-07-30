@@ -41,6 +41,7 @@ pub enum TypeNodeKind {
         variants: Vec<Option<TyId>>,
     },
     Never,
+    RawPtr(TyId),
 }
 
 #[derive(Debug, Clone)]

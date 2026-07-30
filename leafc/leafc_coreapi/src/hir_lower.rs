@@ -21,6 +21,12 @@ pub enum HirLowerError {
     LetNameNotFound,
     ArityMismatch,
     SymbolNotFound,
+    MissingArguments,
+    TooManyArguments,
+    UnexpectedKeywordArg,
+    DuplicateKeywordArg,
+    CannotResolveFunction,
+    ArgumentConflict,
 }
 
 

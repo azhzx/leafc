@@ -95,6 +95,7 @@ pub enum HirDeclKind {
         sym_name: String,
         params: Vec<HirParam>,
         return_type: HirTypeName,
+        is_variadic: bool,
     },
     Effect {
         controls: Vec<(HirName, Vec<HirParam>, Option<HirTypeName>)>,
@@ -251,6 +252,10 @@ pub enum HirExprKind {
     FieldAccess {
         obj: HirExprId,
         field: String,
+    },
+    TupleIndex {
+        expr: HirExprId,
+        index: usize,
     },
     TypeCast {
         expr: HirExprId,

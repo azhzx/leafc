@@ -182,6 +182,17 @@ pub struct GreenStructFieldInit {
     pub text_len: TextLen,
 }
 
+// ===----------------------------
+// Call argument
+// ===----------------------------
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct GreenCallArg {
+    pub name: Option<GreenChild<IdentName>>,
+    pub value: GreenChild<GreenExpr>,
+    pub text_len: TextLen,
+}
+
 
 // ===----------------------------
 // Pattern
@@ -348,7 +359,7 @@ pub enum GreenExprKind {
     },
     Call {
         callee: GreenChild<GreenExpr>,
-        args: Vec<GreenChild<GreenExpr>>,
+        args: Vec<GreenChild<GreenCallArg>>,
     },
     UnsafeExternalCall {
         callee: GreenChild<GreenExpr>,
@@ -407,6 +418,10 @@ pub enum GreenExprKind {
     Resume {
         expr: GreenChild<GreenExpr>,
     },
+    TupleIndex {
+        expr: GreenChild<GreenExpr>,
+        index: usize,
+    }
 }
 
 
@@ -594,6 +609,7 @@ pub enum GreenDeclKind {
         sym_name: GreenChild<IdentName>,
         params: Vec<GreenChild<GreenParam>>,
         return_type_str: GreenChild<TypeName>,
+        is_variadic: bool,
     },
 }
 

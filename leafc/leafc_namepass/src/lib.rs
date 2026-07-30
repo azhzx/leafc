@@ -62,7 +62,8 @@ impl<'a> NamePass<'a> {
                     Self::collect_pattern_bindings(&field.pattern, parent_span, bindings);
                 }
             }
-            GreenPattern::Alias { pattern, .. } => {
+            GreenPattern::Alias { pattern, name, .. } => {
+                bindings.push((name.name.clone(), pat_span));
                 Self::collect_pattern_bindings(pattern, parent_span, bindings);
             }
             GreenPattern::Or { left, right, .. } => {
@@ -202,7 +203,16 @@ impl<'a> NamePass<'a> {
                 self.build_expr_scope(&child_expr_red(&expr_red.span, right), current_scope)?;
             }
 
-            GreenExprKind::Call { callee, args, .. } | GreenExprKind::UnsafeExternalCall { callee, args, .. } => {
+            GreenExprKind::Call { callee, args, .. } => {
+                self.build_expr_scope(&child_expr_red(&expr_red.span, callee), current_scope)?;
+                for arg in args {
+                    self.build_expr_scope(
+                        &child_expr_red(&expr_red.span, &arg.node.value),
+                        current_scope,
+                    )?;
+                }
+            }
+            GreenExprKind::UnsafeExternalCall { callee, args, .. } => {
                 self.build_expr_scope(&child_expr_red(&expr_red.span, callee), current_scope)?;
                 for arg in args {
                     self.build_expr_scope(&child_expr_red(&expr_red.span, arg), current_scope)?;
@@ -213,6 +223,9 @@ impl<'a> NamePass<'a> {
 
             GreenExprKind::MemberAccess { left, .. } => {
                 self.build_expr_scope(&child_expr_red(&expr_red.span, left), current_scope)?;
+            }
+            GreenExprKind::TupleIndex { expr, .. } => {
+                self.build_expr_scope(&child_expr_red(&expr_red.span, expr), current_scope)?;
             }
 
             GreenExprKind::MakeStruct { path, fields } => {
@@ -380,7 +393,10 @@ impl<'a> NamePass<'a> {
             GreenExprKind::Call { callee, args, .. } => {
                 self.resolve_expr(&child_expr_red(&expr_red.span, callee), current_scope)?;
                 for arg in args {
-                    self.resolve_expr(&child_expr_red(&expr_red.span, arg), current_scope)?;
+                    self.resolve_expr(
+                        &child_expr_red(&expr_red.span, &arg.node.value),
+                        current_scope,
+                    )?;
                 }
             }
             GreenExprKind::UnsafeExternalCall { callee, args, .. } => {
@@ -395,6 +411,9 @@ impl<'a> NamePass<'a> {
             }
             GreenExprKind::MemberAccess { left, .. } => {
                 self.resolve_expr(&child_expr_red(&expr_red.span, left), current_scope)?;
+            }
+            GreenExprKind::TupleIndex { expr, .. } => {
+                self.resolve_expr(&child_expr_red(&expr_red.span, expr), current_scope)?;
             }
             GreenExprKind::MakeStruct { path, fields } => {
                 self.resolve_expr(&child_expr_red(&expr_red.span, path), current_scope)?;
@@ -752,7 +771,7 @@ impl<'a> NamePassApi<'a> for NamePass<'a> {
                         );
                     }
 
-                    GreenDeclKind::External { sym_name, params, return_type_str } => {
+                    GreenDeclKind::External { sym_name, params, return_type_str, .. } => {
                         self.scope_pool.add_symbol(
                             file_scope_id,
                             decl_name.name.clone(),

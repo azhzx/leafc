@@ -1,10 +1,11 @@
+use std::collections::{HashMap, HashSet};
 use leafc_coreapi::ast::{child_decl_red, child_expr_red, child_span_of, AtomExprNode, CrateAst, DeclRedNode, ExprRedNode, GreenCatchClause, GreenChild, GreenCtor, GreenDecl, GreenDeclKind, GreenExpr, GreenExprKind, GreenField, GreenGenericVar, GreenMatchArm, GreenMethodDecl, GreenParam, GreenPattern, GreenPureStaticPath, GreenWhereClause, HasTextLen, TypeName, Visibility};
 use leafc_coreapi::diagnostic::DiagMsg;
 use leafc_coreapi::hir::{HirBinOp, HirCatchClause, HirCrate, HirCtorDef, HirDecl, HirDeclId, HirDeclKind, HirExpr, HirExprId, HirExprKind, HirFieldDef, HirGenericParam, HirLit, HirMatchArm, HirMethodDecl, HirName, HirParam, HirPattern, HirStructPatternField, HirTypeName, HirUnaryOp};
 use leafc_coreapi::hir_lower::{HirLowerApi, HirLowerError};
 use leafc_coreapi::name_pass::NamePassResult;
 use leafc_coreapi::operators::Operator;
-use leafc_coreapi::scope::{ScopeId, SymbolKind};
+use leafc_coreapi::scope::{ScopeId, SymId, SymbolKind};
 use leafc_coreapi::source::Span;
 use std::sync::Arc;
 
@@ -12,6 +13,8 @@ pub struct HirLower<'a> {
     ast_crate: &'a CrateAst,
     name_pass_result: NamePassResult,
     hir: HirCrate,
+    /// Function Name SymId => ParamNames
+    param_names_map: HashMap<SymId, Vec<String>>,
 }
 
 impl<'a> HirLower<'a> {
@@ -685,45 +688,139 @@ impl<'a> HirLower<'a> {
             }
 
             GreenExprKind::Call { callee, args } => {
-                if let GreenExprKind::StaticPath { path } = &callee.node.kind {
+                let maybe_func_sym = if let GreenExprKind::StaticPath { path } = &callee.node.kind {
                     let callee_span = child_span_of(&span, callee);
-                    let callee_name = self.resolve_static_path(&path.node, scope_id, &callee_span)?;
-                    let sym = self.name_pass_result.pool.get_symbol_by_id(callee_name.sym_id)
+                    self.resolve_static_path(&path.node, scope_id, &callee_span).ok()
+                } else {
+                    None
+                };
+
+                let has_named = args.iter().any(|a| a.node.name.is_some());
+                let param_names = if has_named {
+                    maybe_func_sym.as_ref()
+                        .and_then(|hir_name| self.param_names_map.get(&hir_name.sym_id))
                         .ok_or_else(|| DiagMsg {
-                            title: format!("{:?}", HirLowerError::SymbolNotFound),
-                            msg: format!("symbol not found for {}", callee_name.name),
-                            span: callee_span.clone(),
-                        })?;
-                    if let SymbolKind::Constructor = sym.kind {
-                        // 构造子只支持一个参数
-                        if args.len() == 1 {
-                            let arg_id = self.lower_expr(&expr_red.child_to_red(&args[0]), scope_id)?;
-                            let kind = HirExprKind::BuildVariant {
-                                variant_name: callee_name,
-                                target: arg_id,
-                            };
-                            let hir_id = self.hir.hir_expr_pool.len();
-                            self.hir.hir_expr_pool.push(HirExpr { kind, hir_id, span: span.clone() });
-                            return Ok(hir_id);
+                            title: format!("{:?}", HirLowerError::CannotResolveFunction),
+                            msg: "cannot resolve function for named arguments".into(),
+                            span: span.clone(),
+                        })?
+                } else {
+                    &vec![]
+                };
+
+                let ordered_args = if has_named {
+                    let mut positional = Vec::new();
+                    let mut named = HashMap::new();
+                    let mut seen_names = HashSet::new();
+
+                    for arg in args {
+                        if let Some(name_child) = &arg.node.name {
+                            let name = name_child.node.name.clone();
+                            if !seen_names.insert(name.clone()) {
+                                return Err(DiagMsg {
+                                    title: format!("{:?}", HirLowerError::DuplicateKeywordArg),
+                                    msg: format!("duplicate keyword argument `{}`", name),
+                                    span: span.clone(),
+                                });
+                            }
+                            named.insert(name, arg);
                         } else {
+                            positional.push(arg);
+                        }
+                    }
+
+                    // 检查命名参数是否都在形参列表中
+                    for name in named.keys() {
+                        if !param_names.contains(name) {
                             return Err(DiagMsg {
-                                title: format!("{:?}", HirLowerError::ArityMismatch),
-                                msg: format!("constructor `{}` expects 1 argument, got {}", callee_name.name, args.len()),
+                                title: format!("{:?}", HirLowerError::UnexpectedKeywordArg),
+                                msg: format!("unexpected keyword argument `{}`", name),
                                 span: span.clone(),
                             });
+                        }
+                    }
+
+                    let total_params = param_names.len();
+                    if positional.len() + named.len() > total_params {
+                        return Err(DiagMsg {
+                            title: format!("{:?}", HirLowerError::TooManyArguments),
+                            msg: "too many arguments".into(),
+                            span: span.clone(),
+                        });
+                    }
+
+                    let mut ordered = vec![None; total_params];
+                    let mut pos_idx = 0;
+
+                    // 填充位置参数
+                    for (i, param) in param_names.iter().enumerate() {
+                        if named.contains_key(param) {
+                            continue;
+                        }
+                        if pos_idx < positional.len() {
+                            ordered[i] = Some(positional[pos_idx]);
+                            pos_idx += 1;
+                        }
+                    }
+
+                    // 填充命名参数
+                    for (name, arg) in named {
+                        let idx = param_names.iter().position(|p| p == &name).unwrap();
+                        if ordered[idx].is_some() {
+                            return Err(DiagMsg {
+                                title: format!("{:?}", HirLowerError::ArgumentConflict),
+                                msg: format!("argument `{}` specified multiple times", name),
+                                span: span.clone(),
+                            });
+                        }
+                        ordered[idx] = Some(arg);
+                    }
+
+                    if ordered.iter().any(|o| o.is_none()) {
+                        return Err(DiagMsg {
+                            title: format!("{:?}", HirLowerError::MissingArguments),
+                            msg: "missing required arguments".into(),
+                            span: span.clone(),
+                        });
+                    }
+
+                    ordered.into_iter().map(|o| o.unwrap().clone()).collect::<Vec<_>>()
+                } else {
+                    args.to_vec()
+                };
+
+                if let Some(func_sym) = maybe_func_sym {
+                    if let Some(sym) = self.name_pass_result.pool.get_symbol_by_id(func_sym.sym_id) {
+                        if let SymbolKind::Constructor = sym.kind {
+                            if ordered_args.len() == 1 {
+                                let arg_id = self.lower_expr(
+                                    &expr_red.child_to_red(&ordered_args[0].node.value), scope_id)?;
+                                let kind = HirExprKind::BuildVariant {
+                                    variant_name: func_sym,
+                                    target: arg_id,
+                                };
+                                let hir_id = self.hir.hir_expr_pool.len();
+                                self.hir.hir_expr_pool.push(HirExpr { kind, hir_id, span });
+                                return Ok(hir_id);
+                            } else {
+                                return Err(DiagMsg {
+                                    title: format!("{:?}", HirLowerError::ArityMismatch),
+                                    msg: format!("constructor expects 1 argument, got {}", ordered_args.len()),
+                                    span: span.clone(),
+                                });
+                            }
                         }
                     }
                 }
 
                 let callee_id = self.lower_expr(&expr_red.child_to_red(callee), scope_id)?;
-                let arg_ids = args
+                let arg_ids = ordered_args
                     .iter()
-                    .map(|a| self.lower_expr(&expr_red.child_to_red(a), scope_id))
+                    .map(|a| self.lower_expr(&expr_red.child_to_red(&a.node.value), scope_id))
                     .collect::<Result<_, _>>()?;
 
                 HirExprKind::Call { callee: callee_id, args: arg_ids }
             }
-
             GreenExprKind::UnsafeExternalCall { callee, args } => {
                 let callee_id = self.lower_expr(&expr_red.child_to_red(callee), scope_id)?;
                 let arg_ids = args
@@ -864,6 +961,13 @@ impl<'a> HirLower<'a> {
                 HirExprKind::FieldAccess {
                     obj: obj_id,
                     field: member.node.name.clone(),
+                }
+            }
+            GreenExprKind::TupleIndex { expr, index } => {
+                let expr_id = self.lower_expr(&expr_red.child_to_red(expr), scope_id)?;
+                HirExprKind::TupleIndex {
+                    expr: expr_id,
+                    index: *index,
                 }
             }
 
@@ -1324,7 +1428,7 @@ impl<'a> HirLower<'a> {
 
             GreenDeclKind::CType => HirDeclKind::CType,
 
-            GreenDeclKind::External { sym_name, params, return_type_str } => {
+            GreenDeclKind::External { sym_name, params, return_type_str, is_variadic } => {
                 let hir_params = params
                     .iter()
                     .map(|p| self.lower_param(p, decl_scope, &span))
@@ -1335,6 +1439,7 @@ impl<'a> HirLower<'a> {
                     sym_name: sym_name.node.name.clone(),
                     params: hir_params,
                     return_type,
+                    is_variadic: *is_variadic,
                 }
             }
         };
@@ -1400,10 +1505,35 @@ impl<'a> HirLowerApi<'a> for HirLower<'a> {
                 pub_decl_ids: vec![],
                 name_pass_result: None,
             },
+            param_names_map: HashMap::new(),
         }
     }
 
     fn lower(mut self) -> Result<HirCrate, DiagMsg> {
+
+        // build param_names_map
+        for file_unit in &self.ast_crate.file_units {
+            let file_scope_id = self.name_pass_result.source_id_to_scope
+                .get(&file_unit.span.source_id)
+                .copied()
+                .expect("file scope not found");
+
+            for decl_child in &file_unit.green.top_decls {
+                let decl = &decl_child.node;
+                if let GreenDeclKind::Fun { params, .. } | GreenDeclKind::FunDecl { params, .. } = &decl.kind {
+                    let func_name = decl.name.node.as_ref().name.clone();
+                    if let Some((sym, _)) = self.name_pass_result.pool.lookup(file_scope_id, &func_name) {
+                        let param_names: Vec<String> = params
+                            .iter()
+                            .map(|p| p.node.name.node.as_ref().name.clone())
+                            .collect();
+                        self.param_names_map.insert(sym.sym_id, param_names);
+                    }
+                }
+            }
+        }
+
+
         for file_unit in &self.ast_crate.file_units {
             let file_source_id = file_unit.span.source_id;
             let file_scope_id = self.name_pass_result.source_id_to_scope

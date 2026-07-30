@@ -312,7 +312,7 @@ impl<'a> Preprocessor<'a> {
 
                     KEYWORD_ENDIF => {
                         if depth == 0 {
-                            // 同级的 endif：整个 if 没有 elif/else，直接结束
+                            // 整个 if 没有 elif/else，直接结束
                             *index += 1;  // 跳过 endif 本身
                             break;
                         }
@@ -809,7 +809,6 @@ impl<'a> Preprocessor<'a> {
 
                     let mut final_ident = String::new();
                     for arg in concat_parts {
-                        // 关键修改：先展开，再拼接
                         let expanded_arg = self.expand_all(arg)?;
                         for token in expanded_arg {
                             final_ident.push_str(&token.text);

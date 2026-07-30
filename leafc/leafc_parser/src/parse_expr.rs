@@ -1,5 +1,5 @@
 use crate::Parser;
-use leafc_coreapi::ast::{AtomExprNode, ExprRedNode, GreenCatchClause, GreenChild, GreenElseIf, GreenExpr, GreenExprKind, GreenMatchArm, GreenPattern, GreenPureStaticPath, GreenStructFieldInit, GreenStructPatternField, HasTextLen, IdentName, TypeName};
+use leafc_coreapi::ast::{AtomExprNode, ExprRedNode, GreenCallArg, GreenCatchClause, GreenChild, GreenElseIf, GreenExpr, GreenExprKind, GreenMatchArm, GreenPattern, GreenPureStaticPath, GreenStructFieldInit, GreenStructPatternField, HasTextLen, IdentName, TypeName};
 use leafc_coreapi::crate_meta::OperatorKind;
 use leafc_coreapi::diagnostic::DiagMsg;
 use leafc_coreapi::token::TokenType;
@@ -90,7 +90,7 @@ impl<'a> Parser<'a> {
                 }
                 _ => Err(DiagMsg {
                     title: format!("{:?}", ParserError::InvalidPattern),
-                    msg: "expected '(' for constructor or '{{' for struct pattern".to_string(),
+                    msg: "expected '(' for constructor or '{' for struct pattern".to_string(),
                     span: self.current_token().span.clone(),
                 }),
             };
@@ -989,36 +989,6 @@ impl<'a> Parser<'a> {
                 text_len,
             }),
             TokenType::DotDotDot => Ok(AtomExprNode::Ellipsis { text_len }),
-            TokenType::Hash => {
-                let hash_start = start_off;
-                self.skip_token_only(TokenType::Lbracket)?;
-                let mut exprs = vec![];
-                while self.current_token().kind != TokenType::Rbracket {
-                    let expr_red = self.parse_expr()?;
-                    exprs.push(GreenChild {
-                        relative_start: (expr_red.span.start_off - hash_start) ,
-                        node: expr_red.inner.clone(),
-                    });
-                    if self.current_token().kind == TokenType::Comma {
-                        self.skip_token();
-                    } else if self.current_token().kind == TokenType::Rbracket {
-                        break;
-                    } else {
-                        return Err(DiagMsg {
-                            title: format!("{:?}", ParserError::InvalidTupleLiteral),
-                            msg: "invalid tuple literal".to_string(),
-                            span: current_token.span.clone(),
-                        });
-                    }
-                }
-                let rbracket_token = self.current_token().clone();
-                self.skip_token_only(TokenType::Rbracket)?;
-                let end = rbracket_token.span.end_off;
-                Ok(AtomExprNode::Tuple {
-                    exprs,
-                    text_len: (end - hash_start) ,
-                })
-            }
             _ => Err(DiagMsg {
                 title: format!("{:?}", ParserError::InvalidExpression),
                 msg: "invalid expression literal".to_string(),
@@ -1154,10 +1124,81 @@ impl<'a> Parser<'a> {
 
             // 括号分组
             TokenType::Lparen => {
-                self.skip_token();
-                let inner = self.parse_expr()?;
-                self.skip_token_only(TokenType::Rparen)?;
-                inner
+                let paren_start = start_off;
+                self.skip_token(); // '('
+
+                // ()
+                if self.current_token().kind == TokenType::Rparen {
+                    self.skip_token(); // ')'
+                    let end = self.tokens.data[self.index - 1].span.end_off;
+                    let text_len = end - paren_start;
+                    let atom = AtomExprNode::Tuple {
+                        exprs: vec![],
+                        text_len,
+                    };
+                    let green = GreenExpr {
+                        kind: GreenExprKind::Atom { expr: atom },
+                        text_len,
+                    };
+                    ExprRedNode {
+                        span: Span {
+                            source_id: token.span.source_id,
+                            start_off: paren_start,
+                            end_off: end,
+                        },
+                        inner: Arc::new(green),
+                    }
+                } else {
+                    let first_red = self.parse_expr()?;
+                    match self.current_token().kind {
+                        TokenType::Rparen => {
+                            self.skip_token();
+                            first_red
+                        }
+                        TokenType::Comma => {
+                            let mut exprs = vec![GreenChild {
+                                relative_start: first_red.span.start_off - paren_start,
+                                node: first_red.inner.clone(),
+                            }];
+
+                            loop {
+                                self.skip_token(); // ','
+                                if self.current_token().kind == TokenType::Rparen {
+                                    break;
+                                }
+                                let expr_red = self.parse_expr()?;
+                                exprs.push(GreenChild {
+                                    relative_start: expr_red.span.start_off - paren_start,
+                                    node: expr_red.inner.clone(),
+                                });
+                                if self.current_token().kind != TokenType::Comma {
+                                    break;
+                                }
+                            }
+                            self.skip_token_only(TokenType::Rparen)?; // 必须有 ')'
+                            let end = self.tokens.data[self.index - 1].span.end_off;
+                            let text_len = end - paren_start;
+                            let atom = AtomExprNode::Tuple { exprs, text_len };
+                            let green = GreenExpr {
+                                kind: GreenExprKind::Atom { expr: atom },
+                                text_len,
+                            };
+                            ExprRedNode {
+                                span: Span {
+                                    source_id: token.span.source_id,
+                                    start_off: paren_start,
+                                    end_off: end,
+                                },
+                                inner: Arc::new(green),
+                            }
+                        }
+                        _ => return Err(DiagMsg {
+                            title: format!("{:?}", ParserError::InvalidExpression),
+                            msg: "expected ')' or ',' after expression in parentheses".to_string(),
+                            span: self.current_token().span.clone(),
+                        }),
+                    }
+                }
             }
 
             // move / copy / share
@@ -1403,14 +1444,60 @@ impl<'a> Parser<'a> {
             match kind {
                 /// call expr
                 TokenType::Lparen => {
-                    self.skip_token();
-                    let mut args = vec![];
+                    self.skip_token(); // '('
+                    let mut args: Vec<GreenChild<GreenCallArg>> = vec![];
+
                     while self.current_token().kind != TokenType::Rparen {
-                        let arg_red = self.parse_expr()?;
-                        args.push(GreenChild {
-                            relative_start: arg_red.span.start_off - token_start,
-                            node: arg_red.inner.clone(),
-                        });
+                        let arg_start = self.current_token().span.start_off;
+
+                        if self.current_token().kind == TokenType::Ident
+                            && self.index + 1 < self.tokens.data.len()
+                            && self.tokens.data[self.index + 1].kind == TokenType::Eq
+                        {
+                            let name_token = self.current_token().clone();
+                            self.skip_token(); // name
+                            self.skip_token(); // '='
+                            let value_red = self.parse_expr()?;
+                            let arg_end = self.tokens.data[self.index - 1].span.end_off;
+
+                            let name_child = GreenChild {
+                                relative_start: name_token.span.start_off - arg_start,
+                                node: Arc::new(IdentName { name: name_token.text.clone() }),
+                            };
+                            let value_child = GreenChild {
+                                relative_start: value_red.span.start_off - arg_start,
+                                node: value_red.inner.clone(),
+                            };
+
+                            args.push(GreenChild {
+                                relative_start: arg_start - token_start,
+                                node: Arc::new(GreenCallArg {
+                                    name: Some(name_child),
+                                    value: value_child,
+                                    text_len: arg_end - arg_start,
+                                }),
+                            });
+                        } else {
+                            // 位置参数
+                            let expr_red = self.parse_expr()?;
+                            let arg_end = expr_red.span.end_off;
+
+                            let value_child = GreenChild {
+                                relative_start: expr_red.span.start_off - arg_start,
+                                node: expr_red.inner.clone(),
+                            };
+
+                            args.push(GreenChild {
+                                relative_start: arg_start - token_start,
+                                node: Arc::new(GreenCallArg {
+                                    name: None,
+                                    value: value_child,
+                                    text_len: arg_end - arg_start,
+                                }),
+                            });
+                        }
+
+                        // 处理逗号或结尾
                         if self.current_token().kind == TokenType::Comma {
                             self.skip_token();
                         } else if self.current_token().kind == TokenType::Rparen {
@@ -1418,26 +1505,29 @@ impl<'a> Parser<'a> {
                         } else {
                             return Err(DiagMsg {
                                 title: format!("{:?}", ParserError::InvalidCallArgumentList),
-                                msg: "invalid call argument list".to_string(),
-                                span: token.span.clone(),
+                                msg: "expected ',' or ')'".to_string(),
+                                span: self.current_token().span.clone(),
                             });
                         }
                     }
-                    self.skip_token_only(TokenType::Rparen)?;
-                    let rparen_span = self.tokens.data[self.index - 1].span.clone();
-                    let expr_start = lhs.span.start_off;
-                    let expr_end = rparen_span.end_off;
 
+                    self.skip_token_only(TokenType::Rparen)?;
+                    let rparen_end = self.tokens.data[self.index - 1].span.end_off;
+                    let expr_start = lhs.span.start_off;
+                    let expr_end = rparen_end;
                     let callee_child = GreenChild {
                         relative_start: lhs.span.start_off - expr_start,
                         node: lhs.inner.clone(),
                     };
 
                     let lparen_offset = token_start - expr_start;
-                    let adjusted_args: Vec<GreenChild<GreenExpr>> = args.into_iter().map(|mut child| {
-                        child.relative_start += lparen_offset;
-                        child
-                    }).collect();
+                    let adjusted_args: Vec<GreenChild<GreenCallArg>> = args
+                        .into_iter()
+                        .map(|mut child| {
+                            child.relative_start += lparen_offset;
+                            child
+                        })
+                        .collect();
 
                     let green = GreenExpr {
                         kind: GreenExprKind::Call {
@@ -1456,7 +1546,6 @@ impl<'a> Parser<'a> {
                     };
                     continue;
                 }
-
                 /// expr is E(binding payload)
                 TokenType::KwIs => {
                     const IS_BP: usize = 30; // 与比较运算符同级
@@ -1540,6 +1629,44 @@ impl<'a> Parser<'a> {
                 /// expr.ident  (仅当 lhs 不是静态路径时发生，因为静态路径已经在 nud 中完整解析)
                 TokenType::Dot => {
                     self.skip_token(); // '.'
+
+                    if self.current_token().kind == TokenType::Int {
+                        let index_token = self.current_token().clone();
+                        let index: usize = index_token.text.parse().map_err(|_| DiagMsg {
+                            title: format!("{:?}", ParserError::InvalidExpression),
+                            msg: "invalid tuple index, expected a non-negative integer".to_string(),
+                            span: index_token.span.clone(),
+                        })?;
+                        let index_start = index_token.span.start_off;
+                        self.skip_token(); // 数字
+
+                        let expr_start = lhs.span.start_off;
+                        let expr_end = index_token.span.end_off;
+                        let text_len = expr_end - expr_start;
+
+                        let expr_child = GreenChild {
+                            relative_start: lhs.span.start_off - expr_start,
+                            node: lhs.inner.clone(),
+                        };
+
+                        let green = GreenExpr {
+                            kind: GreenExprKind::TupleIndex {
+                                expr: expr_child,
+                                index,
+                            },
+                            text_len,
+                        };
+                        lhs = ExprRedNode {
+                            span: Span {
+                                source_id: token.span.source_id,
+                                start_off: expr_start,
+                                end_off: expr_end,
+                            },
+                            inner: Arc::new(green),
+                        };
+                        continue;
+                    }
+
                     let member_token = self.current_token().clone();
                     let member = member_token.text.clone();
                     let member_start = member_token.span.start_off;

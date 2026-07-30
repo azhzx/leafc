@@ -553,7 +553,19 @@ impl<'a> Parser<'a> {
         let name_start_off = name_token.span.start_off;
         self.skip_token_only(TokenType::Ident)?;
 
-        // 仅 `type Name;` 前向声明
+        // 泛型参数
+        let generic_var_children = if self.current_token().kind == TokenType::Lbracket {
+            let (children, start) = self.parse_generic_params()?;
+            let adjusted: Vec<_> = children.into_iter().map(|mut child| {
+                child.relative_start += (start - decl_start_off) ;
+                child
+            }).collect();
+            adjusted
+        } else {
+            vec![]
+        };
+
+        // 仅 type Name;
         if self.current_token().kind == TokenType::Semicolon {
             self.skip_token();
             let decl_end_off = self.tokens.data[self.index - 1].span.end_off;
@@ -582,18 +594,6 @@ impl<'a> Parser<'a> {
                 inner: Arc::new(green_decl),
             });
         }
-
-        // 泛型参数
-        let generic_var_children = if self.current_token().kind == TokenType::Lbracket {
-            let (children, start) = self.parse_generic_params()?;
-            let adjusted: Vec<_> = children.into_iter().map(|mut child| {
-                child.relative_start += (start - decl_start_off) ;
-                child
-            }).collect();
-            adjusted
-        } else {
-            vec![]
-        };
 
         // impl 列表
         let mut impls = vec![];
@@ -1090,7 +1090,12 @@ impl<'a> Parser<'a> {
 
         self.skip_token_only(TokenType::Lparen)?;
         let mut params = vec![];
+
         while self.current_token().kind != TokenType::Rparen {
+            if self.current_token().kind == TokenType::DotDotDot {
+                break;
+            }
+
             let param_start_off = self.current_token().span.start_off;
             let param_name_token = self.current_token().clone();
             self.skip_token_only(TokenType::Ident)?;
@@ -1138,6 +1143,14 @@ impl<'a> Parser<'a> {
                 });
             }
         }
+
+        let is_variadic = if self.current_token().kind == TokenType::DotDotDot {
+            self.skip_token();
+            true
+        } else {
+            false
+        };
+
         self.skip_token_only(TokenType::Rparen)?;
 
         let return_type_start_off = self.current_token().span.start_off;
@@ -1187,6 +1200,7 @@ impl<'a> Parser<'a> {
                 sym_name: sym_name_child,
                 params,
                 return_type_str: return_type_child,
+                is_variadic,
             },
             annotations: ann_children,
             text_len,

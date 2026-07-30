@@ -34,6 +34,7 @@ pub struct MirFun {
 pub struct ExternDecl {
     pub name: String,
     pub signature: FnSig,
+    pub is_variadic: bool,
     pub span: Span
 }
 

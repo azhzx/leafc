@@ -1,6 +1,9 @@
 #lang("builtin_i8_type")
 type Int8;
 
+#lang("builtin_u8_type")
+type UInt8;
+
 #lang("builtin_i32_type")
 type Int32;
 
@@ -13,22 +16,27 @@ type Never;
 #lang("builtin_f64_type")
 type Float64;
 
-#lang("builtin_ptr_type")
-type __RawPtr;
+#lang("builtin_c_void_ptr_type")
+type CVoidPtr;
 
-external fun puts(a: __RawPtr) -> ()  = "leaf_rt__puts";
-external fun itoa(a: Int32) -> __RawPtr = "leaf_rt__itoa";
+#lang("builtin_raw_ptr_type")
+type RawPtr[T];
+
+#lang("builtin_c_char_type")
+type CChar;
+
+
+type Maybe [t]
+    | Just of t
+    | None
+
+external fun printf(fmt: RawPtr[CChar], ...) -> Int32;
+external fun puts(a: CVoidPtr) -> ()  = "leaf_rt__puts";
+external fun itoa(a: Int32) -> CVoidPtr = "leaf_rt__itoa";
 
 fun print_int(a)
     unsafe_call_external puts(unsafe_call_external itoa(a))
 
-type Foo
-    a: Int32
-
-fun get_foo()
-    let foo = Foo{ a = 66 }
-    return move foo
 
 fun main()
-    print_int(get_foo().a)
-
+    print_int(100)

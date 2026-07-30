@@ -28,7 +28,8 @@ impl CCodeGen {
                 BuiltinType::F32 => "float".into(),
                 BuiltinType::F64 => "double".into(),
                 BuiltinType::Bool => "bool".into(),
-                BuiltinType::Ptr => "void*".into(),
+                BuiltinType::CVoidPtr => "void*".into(),
+                BuiltinType::CChar => "char".into(),
                 _ => "unknown".into(),
             },
             TypeNodeKind::Ref(inner) | TypeNodeKind::MutRef(inner)=> {
@@ -66,6 +67,14 @@ impl CCodeGen {
                     } else {
                         format!("/* unknown_type_{} */", decl_id)
                     }
+                }
+            }
+            TypeNodeKind::RawPtr(inner) => {
+                let inner_c = self.ty_to_c(*inner);
+                if inner_c.contains("%s") {
+                    inner_c.replacen("%s", "const *%s", 1)
+                } else {
+                    format!("const {}*", inner_c)
                 }
             }
             TypeNodeKind::Never => "void*".into(),
@@ -593,7 +602,8 @@ impl CCodeGen {
                 .enumerate()
                 .map(|(i, ty)| format!("{} a{}", self.ty_to_c(*ty), i))
                 .collect();
-            code += &format!("extern {} {}({});\n", ret_ty, ext.name, params.join(", "));
+            let variadic = if ext.is_variadic { ", ..." } else { "" };
+            code += &format!("extern {} {}({}{});\n", ret_ty, ext.name, params.join(", "), variadic);
         }
         code
     }
@@ -722,6 +732,10 @@ impl CodegenApi for CCodeGen {
         out += "\n";
 
         for fun in &self.mono_mir.functions {
+            if fun.blocks.is_empty() {
+                continue;
+            }
+
             let mangled = if fun.blocks.is_empty() {
                 fun.name.clone()
             } else {

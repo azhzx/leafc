@@ -4,7 +4,7 @@ mod parse_decl;
 
 use intervaltree::IntervalTree;
 use leafc_coreapi;
-use leafc_coreapi::ast::{CrateAst, FileRedUnit, GreenAnnotation, GreenChild, GreenDecl, GreenFileUnit, GreenPureStaticPath, GreenTupleElement, GreenWhereClause, GreenWhereConstraint, IdentName, TypeName, Visibility};
+use leafc_coreapi::ast::{CrateAst, FileRedUnit, GreenAnnotation, GreenChild, GreenDecl, GreenFileUnit, GreenPureStaticPath, GreenTupleElement, GreenWhereClause, GreenWhereConstraint, HasTextLen, IdentName, TypeName, Visibility};
 use leafc_coreapi::crate_meta::{BuiltinOperator, OperatorDef, OperatorKind};
 use leafc_coreapi::diagnostic::DiagMsg;
 use leafc_coreapi::lexer::{LexerApi, TokenStream};
@@ -409,27 +409,41 @@ impl<'a> Parser<'a> {
             });
         }
 
+        let first_start = self.current_token().span.start_off;
+        let first_name = self.current_token().text.clone();
+        self.skip_token();
+        segments.push(GreenChild {
+            relative_start: first_start - start_off,
+            node: Arc::new(IdentName { name: first_name }),
+        });
+
         loop {
-            let ident_start_off = self.current_token().span.start_off;
-            let name = self.current_token().text.clone();
-            self.skip_token(); // 消费标识符
-
-            segments.push(GreenChild {
-                relative_start: (ident_start_off - start_off),
-                node: Arc::new(IdentName { name }),
-            });
-
             if self.current_token().kind == TokenType::Dot {
-                self.skip_token();
-            } else {
-                break;
+                if self.index + 1 < self.tokens.data.len()
+                    && self.tokens.data[self.index + 1].kind == TokenType::Ident
+                {
+                    self.skip_token(); // '.'
+                    let seg_start = self.current_token().span.start_off;
+                    let seg_name = self.current_token().text.clone();
+                    self.skip_token();
+                    segments.push(GreenChild {
+                        relative_start: seg_start - start_off,
+                        node: Arc::new(IdentName { name: seg_name }),
+                    });
+                    continue;
+                }
             }
+            break;
         }
 
-        let end_off = self.tokens.data[self.index - 1].span.end_off;
+        let end_off = segments.last().map_or(start_off, |seg| {
+            start_off + seg.relative_start + seg.node.text_len()
+        });
+        let text_len = end_off - start_off;
+
         Ok(GreenPureStaticPath {
             segments,
-            text_len: (end_off - start_off),
+            text_len,
         })
     }
 

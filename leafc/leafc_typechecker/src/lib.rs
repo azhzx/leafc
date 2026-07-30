@@ -24,6 +24,8 @@ pub struct BuiltinTypes {
     pub ptr: TyId,
     pub unit: TyId,
     pub never: TyId,
+    pub raw_ptr: TyId,
+    pub c_char: TyId,
 }
 
 pub struct TypeChecker {
@@ -69,11 +71,15 @@ impl TypeChecker {
         let bool_ty = push(TypeNodeKind::Builtin(BuiltinType::Bool));
         let never = push(TypeNodeKind::Never);
         let unit = push(TypeNodeKind::Tuple(vec![]));
-        let ptr = push(TypeNodeKind::Builtin(BuiltinType::Ptr));
+        let ptr = push(TypeNodeKind::Builtin(BuiltinType::CVoidPtr));
+        let raw_ptr = push(TypeNodeKind::Builtin(BuiltinType::RawPtr));
+        let c_char = push(TypeNodeKind::Builtin(BuiltinType::CChar));
         BuiltinTypes {
             int8, int16, int32, int64, uint8, uint16, uint32, uint64,
             float32, float64, bool_ty, ptr,
             unit, never,
+            raw_ptr,
+            c_char,
         }
     }
 
@@ -138,31 +144,47 @@ impl TypeChecker {
 
                 if let Some(builtin_ty) =
                     self.name_pass_result.lang_items.get_builtin_type_by_sym(path.sym_id) {
-
-                    if !generics.is_empty() {
-                        return Err(DiagMsg {
-                            title: format!("{:?}", TypeCheckerError::GenericArityMismatch),
-                            msg: format!("built-in type does not accept generic arguments, got {}", generics.len()),
-                            span,
-                        });
+                    return match builtin_ty {
+                        BuiltinType::RawPtr => {
+                            if generics.len() != 1 {
+                                return Err(DiagMsg {
+                                    title: format!("{:?}", TypeCheckerError::GenericArityMismatch),
+                                    msg: format!("RawPtr expects exactly 1 type argument, got {}", generics.len()),
+                                    span,
+                                });
+                            }
+                            let inner_ty = self.resolve_type_name(&generics[0], span.clone())?;
+                            return Ok(self.new_compound(TypeNodeKind::RawPtr(inner_ty)));
+                        }
+                        _ => {
+                            if !generics.is_empty() {
+                                return Err(DiagMsg {
+                                    title: format!("{:?}", TypeCheckerError::GenericArityMismatch),
+                                    msg: format!("built-in type does not accept generic arguments, got {}", generics.len()),
+                                    span,
+                                });
+                            }
+                            let ty_id = match builtin_ty {
+                                BuiltinType::I8 => self.builtin.int8,
+                                BuiltinType::I16 => self.builtin.int16,
+                                BuiltinType::I32 => self.builtin.int32,
+                                BuiltinType::I64 => self.builtin.int64,
+                                BuiltinType::U8 => self.builtin.uint8,
+                                BuiltinType::U16 => self.builtin.uint16,
+                                BuiltinType::U32 => self.builtin.uint32,
+                                BuiltinType::U64 => self.builtin.uint64,
+                                BuiltinType::F32 => self.builtin.float32,
+                                BuiltinType::F64 => self.builtin.float64,
+                                BuiltinType::Bool => self.builtin.bool_ty,
+                                BuiltinType::Never => self.builtin.never,
+                                BuiltinType::CVoidPtr => self.builtin.ptr,
+                                BuiltinType::RawPtr => self.builtin.raw_ptr,
+                                BuiltinType::CChar => self.builtin.c_char
+                            };
+                            Ok(ty_id)
+                        }
                     }
 
-                    let ty_id = match builtin_ty {
-                        BuiltinType::I8  => self.builtin.int8,
-                        BuiltinType::I16 => self.builtin.int16,
-                        BuiltinType::I32 => self.builtin.int32,
-                        BuiltinType::I64 => self.builtin.int64,
-                        BuiltinType::U8  => self.builtin.uint8,
-                        BuiltinType::U16 => self.builtin.uint16,
-                        BuiltinType::U32 => self.builtin.uint32,
-                        BuiltinType::U64 => self.builtin.uint64,
-                        BuiltinType::F32 => self.builtin.float32,
-                        BuiltinType::F64 => self.builtin.float64,
-                        BuiltinType::Bool => self.builtin.bool_ty,
-                        BuiltinType::Never => self.builtin.never,
-                        BuiltinType::Ptr => self.builtin.ptr,
-                    };
-                    return Ok(ty_id);
                 }
 
                 let decl_id = *self.sym_to_decl.get(&path.sym_id)
@@ -303,6 +325,10 @@ impl TypeChecker {
                     variants: new_variants?,
                 }))
             },
+            TypeNodeKind::RawPtr(inner) => {
+                let new_inner = self.copy_type_with_subst(inner, subst)?;
+                Ok(self.new_compound(TypeNodeKind::RawPtr(new_inner)))
+            }
         }
     }
 
@@ -418,6 +444,7 @@ impl TypeChecker {
             | (TypeNodeKind::Share(a), TypeNodeKind::Share(b)) => {
                 self.unify(*a, *b, span)
             }
+            (TypeNodeKind::RawPtr(a), TypeNodeKind::RawPtr(b)) => self.unify(*a, *b, span),
             _ => Err(DiagMsg {
                 title: format!("{:?}", TypeCheckerError::TypeMismatch),
                 msg: format!(
@@ -463,6 +490,7 @@ impl TypeChecker {
             | TypeNodeKind::Share(inner) => {
                 self.check_occurs(var, inner, span)
             }
+            TypeNodeKind::RawPtr(inner) => self.check_occurs(var, inner, span),
             _ => Ok(()),
         }
     }
@@ -632,6 +660,7 @@ impl TypeChecker {
             | TypeNodeKind::Share(inner) => {
                 self.collect_free_vars(inner, out);
             }
+            TypeNodeKind::RawPtr(inner) => self.collect_free_vars(inner, out),
             _ => {}
         }
     }
@@ -1283,6 +1312,35 @@ impl TypeChecker {
                 }
 
                 field_ty
+            }
+
+            HirExprKind::TupleIndex { expr, index } => {
+                let expr_ty = self.infer_expr(*expr, None)?;
+                let elem_count = index + 1;
+                let elem_tys: Vec<TyId> = (0..elem_count).map(|_| self.new_type_var()).collect();
+                let tuple_ty = self.new_compound(TypeNodeKind::Tuple(elem_tys));
+                self.unify(expr_ty, tuple_ty, span.clone())?;
+
+                let root = self.representative(expr_ty);
+                match &self.type_pool[root].kind {
+                    TypeNodeKind::Tuple(actual_elem_tys) => {
+                        if *index >= actual_elem_tys.len() {
+                            return Err(DiagMsg {
+                                title: format!("{:?}", TypeCheckerError::TypeMismatch),
+                                msg: format!("tuple index {} out of bounds (length {})", index, actual_elem_tys.len()),
+                                span: span.clone(),
+                            });
+                        }
+                        actual_elem_tys[*index]
+                    }
+                    _ => {
+                        return Err(DiagMsg {
+                            title: format!("{:?}", TypeCheckerError::TypeMismatch),
+                            msg: "expected tuple type".to_string(),
+                            span: span.clone(),
+                        })
+                    }
+                }
             }
 
             HirExprKind::MakeStruct { path, fields } => {
@@ -2367,8 +2425,8 @@ impl TypeChecker {
                 } else {
                     format!("[{}]", subst_str.join(", "))
                 })
-            }
-        }
+            },
+            TypeNodeKind::RawPtr(inner) => format!("RawPtr[{}]", self.ty_to_string(*inner)),        }
     }
 
     fn get_root(&self, mut id: TyId) -> TyId {

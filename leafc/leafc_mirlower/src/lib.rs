@@ -392,7 +392,6 @@ impl<'a> DecisionTreeBuilder<'a> {
             let arm_idx = first_row.arm_idx;
             let arm = &self.arms[arm_idx];
 
-            // 处理 is 表达式的特殊情况
             if let Some(result_local) = self.is_result_local {
                 for (pat, occ) in first_row.patterns.iter().zip(occurrences.iter()) {
                     self.bind_pattern_variables(pat, occ)?;
@@ -413,55 +412,53 @@ impl<'a> DecisionTreeBuilder<'a> {
                 return Ok(current_block);
             }
 
-            if expanded_matrix.len() == 1 {
-                for (pat, occ) in first_row.patterns.iter().zip(occurrences.iter()) {
-                    self.bind_pattern_variables(pat, occ)?;
-                }
+            for (pat, occ) in first_row.patterns.iter().zip(occurrences.iter()) {
+                self.bind_pattern_variables(pat, occ)?;
+            }
 
-                if let Some(guard_expr) = arm.guard {
-                    let guard_place = self.mir.compile_expr(guard_expr)?.ok_or_else(|| DiagMsg {
-                        title: "internal error".into(),
-                        msg: "guard expression produced no place".into(),
-                        span: self.span.clone(),
-                    })?;
-                    let guard_success_block = self.mir.new_block(self.span.clone());
-                    let guard_fail_block = self.mir.new_block(self.span.clone());
+            if let Some(guard_expr) = arm.guard {
+                let guard_place = self.mir.compile_expr(guard_expr)?.ok_or_else(|| DiagMsg {
+                    title: "internal error".into(),
+                    msg: "guard expression produced no place".into(),
+                    span: self.span.clone(),
+                })?;
+                let guard_success_block = self.mir.new_block(self.span.clone());
+                let guard_fail_block = self.mir.new_block(self.span.clone());
 
-                    self.mir.set_terminator(TerminatorKind::SwitchInt {
-                        discriminant: Rvalue::Copy(guard_place),
-                        targets: vec![(Const::Bool(true), guard_success_block)],
-                        default: guard_fail_block,
-                    });
+                self.mir.set_terminator(TerminatorKind::SwitchInt {
+                    discriminant: Rvalue::Copy(guard_place),
+                    targets: vec![(Const::Bool(true), guard_success_block)],
+                    default: guard_fail_block,
+                });
 
-                    // guard 成功
-                    self.mir.start_block(guard_success_block);
-                    let body_place = self.mir.compile_expr(arm.body)?;
-                    let ret_val = body_place
-                        .map(Rvalue::Move)
-                        .unwrap_or(Rvalue::Tuple(vec![]));
-                    self.mir.set_terminator(TerminatorKind::Goto {
-                        target: self.merge_block,
-                        block_args: vec![ret_val],
-                    });
+                // guard 成功
+                self.mir.start_block(guard_success_block);
+                let body_place = self.mir.compile_expr(arm.body)?;
+                let ret_val = body_place
+                    .map(Rvalue::Move)
+                    .unwrap_or(Rvalue::Tuple(vec![]));
+                self.mir.set_terminator(TerminatorKind::Goto {
+                    target: self.merge_block,
+                    block_args: vec![ret_val],
+                });
 
-                    // guard 失败
-                    let remaining_matrix: Vec<MatrixRow> = expanded_matrix
-                        .iter()
-                        .filter(|r| r.arm_idx != first_row.arm_idx)
-                        .cloned()
-                        .collect();
-                    let fallback_block = self.compile_matrix(remaining_matrix, occurrences)?;
-                    self.mir.start_block(guard_fail_block);
-                    self.mir.set_terminator(TerminatorKind::Goto {
-                        target: fallback_block,
-                        block_args: vec![],
-                    });
+                // guard 失败
+                let remaining_matrix: Vec<MatrixRow> = expanded_matrix
+                    .iter()
+                    .filter(|r| r.arm_idx != first_row.arm_idx)
+                    .cloned()
+                    .collect();
+                let fallback_block = self.compile_matrix(remaining_matrix, occurrences)?;
+                self.mir.start_block(guard_fail_block);
+                self.mir.set_terminator(TerminatorKind::Goto {
+                    target: fallback_block,
+                    block_args: vec![],
+                });
 
-                    self.mir.current_block = saved_block;
-                    self.mir.current_stmts = saved_stmts;
-                    return Ok(current_block);
-                }
-
+                self.mir.current_block = saved_block;
+                self.mir.current_stmts = saved_stmts;
+                return Ok(current_block);
+            } else {
                 let body_place = self.mir.compile_expr(arm.body)?;
                 let ret_val = body_place
                     .map(Rvalue::Move)
@@ -475,58 +472,7 @@ impl<'a> DecisionTreeBuilder<'a> {
                 self.mir.current_stmts = saved_stmts;
                 return Ok(current_block);
             }
-
-            let body_block = self.mir.new_block(self.span.clone());
-
-            let mut bind_blocks = Vec::new();
-            for row in &expanded_matrix {
-                if row.arm_idx != arm_idx {
-                    continue;
-                }
-                let bind_block = self.mir.new_block(self.span.clone());
-                bind_blocks.push(bind_block);
-                self.mir.start_block(bind_block);
-                for (pat, occ) in row.patterns.iter().zip(occurrences.iter()) {
-                    self.bind_pattern_variables(pat, occ)?;
-                }
-                if arm.guard.is_some() {
-                    return Err(DiagMsg {
-                        title: "unsupported".into(),
-                        msg: "Or patterns with guard not yet supported".into(),
-                        span: self.span.clone(),
-                    });
-                }
-                self.mir.set_terminator(TerminatorKind::Goto {
-                    target: body_block,
-                    block_args: vec![],
-                });
-            }
-
-            self.mir.start_block(body_block);
-            let body_place = self.mir.compile_expr(arm.body)?;
-            let ret_val = body_place
-                .map(Rvalue::Move)
-                .unwrap_or(Rvalue::Tuple(vec![]));
-            self.mir.set_terminator(TerminatorKind::Goto {
-                target: self.merge_block,
-                block_args: vec![ret_val],
-            });
-
-            self.mir.start_block(current_block);
-            if let Some(&first_bind) = bind_blocks.first() {
-                self.mir.set_terminator(TerminatorKind::Goto {
-                    target: first_bind,
-                    block_args: vec![],
-                });
-            } else {
-                self.mir.set_terminator(TerminatorKind::Unreachable);
-            }
-
-            self.mir.current_block = saved_block;
-            self.mir.current_stmts = saved_stmts;
-            return Ok(current_block);
         }
-
         // 不可反驳列处理
         let col_idx = self.select_best_column(&expanded_matrix, occurrences.len());
         let place_to_test = occurrences[col_idx].clone();
@@ -607,11 +553,25 @@ impl<'a> DecisionTreeBuilder<'a> {
                             HirLit::Bool(b) => Const::Bool(*b),
                         };
 
+                        for row in &expanded_matrix {
+                            let pat = row.patterns[col_idx];
+                            if let HirPattern::Alias { .. } = pat {
+                                if self.specialize_pattern(pat, ctor_key).is_some() {
+                                    self.bind_pattern_variables(pat, &place_to_test)?;
+                                }
+                            }
+                        }
+
                         let first_matching_pat = expanded_matrix
                             .iter()
                             .find_map(|r| {
-                                self.specialize_pattern(r.patterns[col_idx], ctor_key)
-                                    .map(|_| r.patterns[col_idx])
+                                let pat = r.patterns[col_idx];
+                                let inner = match pat {
+                                    HirPattern::Alias { pattern, .. } => pattern.as_ref(),
+                                    other => other,
+                                };
+                                self.specialize_pattern(inner, ctor_key)
+                                    .map(|_| pat)
                             })
                             .ok_or_else(|| DiagMsg {
                                 title: "internal error".into(),
@@ -619,10 +579,14 @@ impl<'a> DecisionTreeBuilder<'a> {
                                 span: self.span.clone(),
                             })?;
 
+                        let inner_first = match first_matching_pat {
+                            HirPattern::Alias { pattern, .. } => pattern.as_ref(),
+                            other => other,
+                        };
                         let sub_occurrences = self.generate_sub_occurrences(
                             &place_to_test,
                             ctor_key,
-                            first_matching_pat,
+                            inner_first,
                         )?;
 
                         let mut spec_occurrences = occurrences[..col_idx].to_vec();
@@ -631,9 +595,12 @@ impl<'a> DecisionTreeBuilder<'a> {
 
                         let mut spec_matrix = Vec::new();
                         for row in &expanded_matrix {
-                            if let Some(sub_pats) =
-                                self.specialize_pattern(row.patterns[col_idx], ctor_key)
-                            {
+                            let pat = row.patterns[col_idx];
+                            let inner = match pat {
+                                HirPattern::Alias { pattern, .. } => pattern.as_ref(),
+                                other => other,
+                            };
+                            if let Some(sub_pats) = self.specialize_pattern(inner, ctor_key) {
                                 let mut new_patterns = row.patterns.clone();
                                 new_patterns.remove(col_idx);
                                 spec_matrix.push(MatrixRow {
@@ -670,11 +637,25 @@ impl<'a> DecisionTreeBuilder<'a> {
                             })?;
                         let const_val = Const::Int32(tag as i32);
 
+                        for row in &expanded_matrix {
+                            let pat = row.patterns[col_idx];
+                            if let HirPattern::Alias { .. } = pat {
+                                if self.specialize_pattern(pat, ctor_key).is_some() {
+                                    self.bind_pattern_variables(pat, &place_to_test)?;
+                                }
+                            }
+                        }
+
                         let first_matching_pat = expanded_matrix
                             .iter()
                             .find_map(|r| {
-                                self.specialize_pattern(r.patterns[col_idx], ctor_key)
-                                    .map(|_| r.patterns[col_idx])
+                                let pat = r.patterns[col_idx];
+                                let inner = match pat {
+                                    HirPattern::Alias { pattern, .. } => pattern.as_ref(),
+                                    other => other,
+                                };
+                                self.specialize_pattern(inner, ctor_key)
+                                    .map(|_| pat)
                             })
                             .ok_or_else(|| DiagMsg {
                                 title: "internal error".into(),
@@ -682,10 +663,14 @@ impl<'a> DecisionTreeBuilder<'a> {
                                 span: self.span.clone(),
                             })?;
 
+                        let inner_first = match first_matching_pat {
+                            HirPattern::Alias { pattern, .. } => pattern.as_ref(),
+                            other => other,
+                        };
                         let sub_occurrences = self.generate_sub_occurrences(
                             &place_to_test,
                             ctor_key,
-                            first_matching_pat,
+                            inner_first,
                         )?;
 
                         let mut spec_occurrences = occurrences[..col_idx].to_vec();
@@ -694,9 +679,12 @@ impl<'a> DecisionTreeBuilder<'a> {
 
                         let mut spec_matrix = Vec::new();
                         for row in &expanded_matrix {
-                            if let Some(sub_pats) =
-                                self.specialize_pattern(row.patterns[col_idx], ctor_key)
-                            {
+                            let pat = row.patterns[col_idx];
+                            let inner = match pat {
+                                HirPattern::Alias { pattern, .. } => pattern.as_ref(),
+                                other => other,
+                            };
+                            if let Some(sub_pats) = self.specialize_pattern(inner, ctor_key) {
                                 let mut new_patterns = row.patterns.clone();
                                 new_patterns.remove(col_idx);
                                 spec_matrix.push(MatrixRow {
@@ -724,11 +712,23 @@ impl<'a> DecisionTreeBuilder<'a> {
                 .find(|k| !matches!(k, PatternKindKey::WildcardOrBinding))
                 .unwrap_or(&PatternKindKey::WildcardOrBinding);
 
-            let first_matching_pat = expanded_matrix
+            // 不可反驳列
+            for row in &expanded_matrix {
+                let pat = row.patterns[col_idx];
+                if let HirPattern::Alias { .. } = pat {
+                    self.bind_pattern_variables(pat, &place_to_test)?;
+                }
+            }
+
+            let first_inner_pat = expanded_matrix
                 .iter()
                 .find_map(|r| {
-                    self.specialize_pattern(r.patterns[col_idx], chosen_key)
-                        .map(|_| r.patterns[col_idx])
+                    let pat = r.patterns[col_idx];
+                    let inner = match pat {
+                        HirPattern::Alias { pattern, .. } => pattern.as_ref(),
+                        other => other,
+                    };
+                    self.specialize_pattern(inner, chosen_key).map(|_| inner)
                 })
                 .ok_or_else(|| DiagMsg {
                     title: "internal error".into(),
@@ -739,7 +739,7 @@ impl<'a> DecisionTreeBuilder<'a> {
             let sub_occurrences = self.generate_sub_occurrences(
                 &place_to_test,
                 chosen_key,
-                first_matching_pat,
+                first_inner_pat,
             )?;
 
             let mut spec_occurrences = occurrences[..col_idx].to_vec();
@@ -748,9 +748,12 @@ impl<'a> DecisionTreeBuilder<'a> {
 
             let mut spec_matrix = Vec::new();
             for row in &expanded_matrix {
-                if let Some(sub_pats) =
-                    self.specialize_pattern(row.patterns[col_idx], chosen_key)
-                {
+                let pat = row.patterns[col_idx];
+                let inner = match pat {
+                    HirPattern::Alias { pattern, .. } => pattern.as_ref(),
+                    other => other,
+                };
+                if let Some(sub_pats) = self.specialize_pattern(inner, chosen_key) {
                     let mut new_patterns = row.patterns.clone();
                     new_patterns.remove(col_idx);
                     spec_matrix.push(MatrixRow {
@@ -1006,7 +1009,7 @@ impl MirLower {
         let decls = self.hir.hir_decl_pool.clone();
         for (decl_id, decl) in decls.iter().enumerate() {
             match &decl.kind {
-                HirDeclKind::External { sym_name, .. } => {
+                HirDeclKind::External { sym_name, is_variadic ,.. } => {
                     let scheme = self.type_checker_result.decl_type_map.get(&decl_id)
                         .ok_or_else(|| DiagMsg {
                             title: "internal error".into(),
@@ -1017,6 +1020,7 @@ impl MirLower {
                     self.extern_decls.push(ExternDecl {
                         name: sym_name.clone(),
                         signature: FnSig { params: param_tys.clone(), return_ty },
+                        is_variadic: *is_variadic,
                         span: decl.span.clone(),
                     });
 
@@ -1586,6 +1590,18 @@ impl MirLower {
                 }))
             }
 
+            HirExprKind::TupleIndex { expr, index } => {
+                let obj_place = self.compile_expr(*expr)?.ok_or_else(|| DiagMsg {
+                    title: "internal error".into(),
+                    msg: "tuple index expression has no place".into(),
+                    span: span.clone(),
+                })?;
+                Ok(Some(Place::Field {
+                    base: Box::new(obj_place),
+                    field: *index,
+                }))
+            }
+
             HirExprKind::MakeStruct { path: _, fields } => {
                 let mut mir_fields = Vec::new();
                 for (_, field_expr) in fields {
@@ -1881,12 +1897,7 @@ impl MirLower {
                 self.start_block(block);
                 Ok(None)
             }
-
-            _ => Err(DiagMsg {
-                title: "unsupported".into(),
-                msg: "expression kind not supported yet".into(),
-                span: span.clone(),
-            }),
+            HirExprKind::Ellipsis => todo!()
         }
     }
 }
