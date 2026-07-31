@@ -1,7 +1,7 @@
 use phf::phf_map;
 use crate::scope::SymId;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum BuiltinType {
     I8,

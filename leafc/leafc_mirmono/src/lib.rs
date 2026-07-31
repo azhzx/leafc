@@ -13,17 +13,102 @@ pub struct MirMono {
 }
 
 impl MirMono {
+    fn intern_type(&mut self, kind: TypeNodeKind) -> TyId {
+        self.type_checker_result.intern_type(kind)
+    }
     fn get_type_pool(&self) -> &[TypeNode] {
         &self.type_checker_result.type_pool
     }
 
+    fn subst_ty(&mut self, ty: TyId, mapping: &HashMap<TyId, TyId>) -> TyId {
+        let root = get_type_root(self.get_type_pool(), ty);
+        let kind = &self.type_checker_result.type_pool[root].kind.clone();
+        if let Some(&replacement) = mapping.get(&root) {
+            return replacement;
+        }
+        let new_kind = match kind {
+            TypeNodeKind::Var => unreachable!(),
+            TypeNodeKind::Builtin(_) | TypeNodeKind::Never => return ty,
+            TypeNodeKind::Fun { param_tys, return_ty } => {
+                let new_params: Vec<TyId> = param_tys.iter()
+                    .map(|&t| self.subst_ty(t, mapping))
+                    .collect();
+                let new_ret = self.subst_ty(*return_ty, mapping);
+                TypeNodeKind::Fun { param_tys: new_params, return_ty: new_ret }
+            }
+            TypeNodeKind::Tuple(elems) => {
+                let new_elems: Vec<TyId> = elems.iter()
+                    .map(|&e| self.subst_ty(e, mapping))
+                    .collect();
+                TypeNodeKind::Tuple(new_elems)
+            }
+            TypeNodeKind::Struct { decl_id, subst, field_tys } => {
+                let new_subst: Vec<TyId> = subst.iter()
+                    .map(|&s| self.subst_ty(s, mapping))
+                    .collect();
+                let new_fields: Vec<TyId> = field_tys.iter()
+                    .map(|&f| self.subst_ty(f, mapping))
+                    .collect();
+                TypeNodeKind::Struct { decl_id: *decl_id, subst: new_subst, field_tys: new_fields }
+            }
+            TypeNodeKind::ADT { decl_id, subst, variants } => {
+                let new_subst: Vec<TyId> = subst.iter()
+                    .map(|&s| self.subst_ty(s, mapping))
+                    .collect();
+                let new_variants: Vec<Option<TyId>> = variants.iter()
+                    .map(|opt| opt.map(|t| self.subst_ty(t, mapping)))
+                    .collect();
+                TypeNodeKind::ADT { decl_id: *decl_id, subst: new_subst, variants: new_variants }
+            }
+            TypeNodeKind::Ref(inner) => TypeNodeKind::Ref(self.subst_ty(*inner, mapping)),
+            TypeNodeKind::MutRef(inner) => TypeNodeKind::MutRef(self.subst_ty(*inner, mapping)),
+            TypeNodeKind::Share(inner) => TypeNodeKind::Share(self.subst_ty(*inner, mapping)),
+            TypeNodeKind::RawPtr(inner) => TypeNodeKind::RawPtr(self.subst_ty(*inner, mapping)),
+        };
 
-    fn map_rvalue_ty(&self, rvalue: &mut Rvalue, mapping: &HashMap<TyId, TyId>) {
-        let type_pool = self.get_type_pool();
+        self.intern_type(new_kind)
+    }
+
+    fn match_ty(&self, pattern: TyId, concrete: TyId, mapping: &mut HashMap<TyId, TyId>) -> bool {
+        let pool = self.get_type_pool();
+        let p_root = get_type_root(pool, pattern);
+        let c_root = get_type_root(pool, concrete);
+        if let Some(&mapped) = mapping.get(&p_root) {
+            return mapped == c_root;
+        }
+        match &pool[p_root].kind {
+            TypeNodeKind::Var => {
+                mapping.insert(p_root, c_root);
+                true
+            }
+            _ => {
+                let c_kind = &pool[c_root].kind;
+                match (&pool[p_root].kind, c_kind) {
+                    (TypeNodeKind::Builtin(a), TypeNodeKind::Builtin(b)) => a == b,
+                    (TypeNodeKind::Never, TypeNodeKind::Never) => true,
+                    (TypeNodeKind::Tuple(pe), TypeNodeKind::Tuple(ce)) => {
+                        pe.len() == ce.len() && pe.iter().zip(ce).all(|(p, c)| self.match_ty(*p, *c, mapping))
+                    }
+                    (TypeNodeKind::Struct { decl_id: pd, subst: ps, .. }, TypeNodeKind::Struct { decl_id: cd, subst: cs, .. }) if pd == cd => {
+                        ps.len() == cs.len() && ps.iter().zip(cs).all(|(p, c)| self.match_ty(*p, *c, mapping))
+                    }
+                    (TypeNodeKind::ADT { decl_id: pd, subst: ps, .. }, TypeNodeKind::ADT { decl_id: cd, subst: cs, .. }) if pd == cd => {
+                        ps.len() == cs.len() && ps.iter().zip(cs).all(|(p, c)| self.match_ty(*p, *c, mapping))
+                    }
+                    (TypeNodeKind::Ref(a), TypeNodeKind::Ref(b)) |
+                    (TypeNodeKind::MutRef(a), TypeNodeKind::MutRef(b)) |
+                    (TypeNodeKind::Share(a), TypeNodeKind::Share(b)) |
+                    (TypeNodeKind::RawPtr(a), TypeNodeKind::RawPtr(b)) => self.match_ty(*a, *b, mapping),
+                    _ => false,
+                }
+            }
+        }
+    }
+
+    fn map_rvalue_ty(&mut self, rvalue: &mut Rvalue, mapping: &HashMap<TyId, TyId>) {
         match rvalue {
             Rvalue::Cast(_, target_ty) => {
-                let root = get_type_root(type_pool, *target_ty);
-                *target_ty = mapping[&root];
+                *target_ty = self.subst_ty(*target_ty, mapping);
             }
             Rvalue::BinaryOp { left, right, .. } => {
                 self.map_rvalue_ty(left, mapping);
@@ -56,7 +141,7 @@ impl MirMono {
         }
     }
 
-    fn map_terminator_ty(&self, terminator: &mut TerminatorKind, mapping: &HashMap<TyId, TyId>) {
+    fn map_terminator_ty(&mut self, terminator: &mut TerminatorKind, mapping: &HashMap<TyId, TyId>) {
         match terminator {
             TerminatorKind::Goto { block_args, .. } => {
                 for arg in block_args {
@@ -95,26 +180,24 @@ impl MirMono {
         old_blocks: &[BasicBlock],
         new_blocks: &mut Vec<BasicBlock>,
         old_to_new_block: &mut HashMap<BasicBlockId, BasicBlockId>,
+        global_map: &mut HashMap<BasicBlockId, BasicBlockId>,
     ) -> MirFun {
         let mut new_fun = fun.clone();
-
         for &old_bid in &fun.blocks {
             let new_bid = new_blocks.len();
             let mut new_block = old_blocks[old_bid].clone();
             new_blocks.push(new_block);
             old_to_new_block.insert(old_bid, new_bid);
+            global_map.insert(old_bid, new_bid); // 记录全局映射
         }
-
         for &old_bid in &fun.blocks {
             let new_bid = old_to_new_block[&old_bid];
             let block = &mut new_blocks[new_bid];
             Self::remap_block_terminator(block, old_to_new_block);
         }
-
         new_fun.blocks = fun.blocks.iter()
             .map(|old_bid| old_to_new_block[old_bid])
             .collect();
-
         new_fun
     }
 
@@ -122,23 +205,15 @@ impl MirMono {
         block: &mut BasicBlock,
         old_to_new: &HashMap<BasicBlockId, BasicBlockId>,
     ) {
-        let map = |id: &mut BasicBlockId| {
-            *id = old_to_new[id];
-        };
+        let map = |id: &mut BasicBlockId| { *id = old_to_new[id]; };
         match &mut block.terminator {
             TerminatorKind::Goto { target, .. } => map(target),
             TerminatorKind::SwitchInt { targets, default, .. } => {
-                for (_, target) in targets {
-                    map(target);
-                }
+                for (_, target) in targets { map(target); }
                 map(default);
             }
-            TerminatorKind::Call { target, .. } => {
-                if let Some(t) = target { map(t); }
-            }
-            TerminatorKind::CallByPtr { target, .. } => {
-                if let Some(t) = target { map(t); }
-            }
+            TerminatorKind::Call { target, .. } => { if let Some(t) = target { map(t); } }
+            TerminatorKind::CallByPtr { target, .. } => { if let Some(t) = target { map(t); } }
             TerminatorKind::Resume { target, .. } => map(target),
             TerminatorKind::InstallHandler { handler_block, next, .. } => {
                 map(handler_block);
@@ -148,20 +223,17 @@ impl MirMono {
         }
     }
 
-    fn subst_ty_in_fun(&self, fun: &mut MirFun, mapping: &HashMap<TyId, TyId>) {
-        let type_pool = self.get_type_pool();
-        let apply = |ty: &mut TyId| {
-            let root = get_type_root(type_pool, *ty);
-            if let Some(&new) = mapping.get(&root) {
-                *ty = new;
-            }
-        };
-        for param in &mut fun.signature.params { apply(param); }
-        apply(&mut fun.signature.return_ty);
-        for decl in &mut fun.local_decls { apply(&mut decl.ty); }
+    fn subst_ty_in_fun(&mut self, fun: &mut MirFun, mapping: &HashMap<TyId, TyId>) {
+        for param in &mut fun.signature.params {
+            *param = self.subst_ty(*param, mapping);
+        }
+        fun.signature.return_ty = self.subst_ty(fun.signature.return_ty, mapping);
+        for decl in &mut fun.local_decls {
+            decl.ty = self.subst_ty(decl.ty, mapping);
+        }
     }
 
-    fn subst_ty_in_block(&self, block: &mut BasicBlock, mapping: &HashMap<TyId, TyId>) {
+    fn subst_ty_in_block(&mut self, block: &mut BasicBlock, mapping: &HashMap<TyId, TyId>) {
         for stmt in &mut block.statements {
             match &mut stmt.kind {
                 MirStmtKind::Let { rvalue, .. } => self.map_rvalue_ty(rvalue, mapping),
@@ -171,7 +243,6 @@ impl MirMono {
         }
         self.map_terminator_ty(&mut block.terminator, mapping);
     }
-
 
     fn is_concrete_ty(&self, ty: TyId) -> bool {
         let pool = self.get_type_pool();
@@ -281,19 +352,14 @@ impl MirMono {
         let mut new_def = generic_def.clone();
         match &mut new_def.kind {
             TypeDefKind::Struct { fields } => {
-                for f in fields {
-                    f.ty = subst_ty(&f.ty);
-                }
+                for f in fields { f.ty = subst_ty(&f.ty); }
             }
             TypeDefKind::Enum { variants } => {
                 for v in variants {
-                    for f in &mut v.fields {
-                        f.ty = subst_ty(&f.ty);
-                    }
+                    for f in &mut v.fields { f.ty = subst_ty(&f.ty); }
                 }
             }
         }
-
         new_def.name = self.mangled_type_name(&generic_def.name, &generic_def.generics, subst_map);
         new_def.generics.clear();
         new_def
@@ -306,11 +372,7 @@ impl MirMono {
                 self.ty_to_string(concrete)
             })
             .collect();
-        if suffix.is_empty() {
-            base.to_string()
-        } else {
-            format!("{}_{}", base, suffix.join("_"))
-        }
+        if suffix.is_empty() { base.to_string() } else { format!("{}_{}", base, suffix.join("_")) }
     }
 
     fn ty_to_string(&self, ty: TyId) -> String {
@@ -350,35 +412,51 @@ impl MirMonoApi for MirMono {
     }
 
     fn mono(mut self) -> Result<(MirCrate, TypeCtx), DiagMsg> {
-        let type_pool = self.get_type_pool();
-
+        let functions = std::mem::take(&mut self.mir.functions);
+        let old_blocks = std::mem::take(&mut self.mir.blocks);
         let mut block_to_fun: HashMap<BasicBlockId, &MirFun> = HashMap::new();
-        for fun in &self.mir.functions {
-            for &bid in &fun.blocks {
-                block_to_fun.insert(bid, fun);
-            }
+        for fun in &functions {
+            for &bid in &fun.blocks { block_to_fun.insert(bid, fun); }
         }
 
-        // 收集泛型函数的实例化信息
+        let mut generic_calls: Vec<(BasicBlockId, FunId, Vec<TyId>)> = Vec::new();
         let mut inst_map: HashMap<FunId, Vec<Vec<TyId>>> = HashMap::new();
-        for (bid, block) in self.mir.blocks.iter().enumerate() {
-            if let TerminatorKind::Call { func, args, .. } = &block.terminator {
-                let callee = &self.mir.functions[*func];
+
+        for (bid, block) in old_blocks.iter().enumerate() {
+            if let TerminatorKind::Call { func, args, dest, .. } = &block.terminator {
+                let callee = &functions[*func];
                 if !callee.generic_params.is_empty() {
                     let caller_fun = block_to_fun[&bid];
-                    let mut concrete_tys: Vec<TyId> = args.iter()
-                        .map(|rv| self.rvalue_ty(rv, caller_fun))
+                    let mut mapping: HashMap<TyId, TyId> = HashMap::new();
+                    for (rv, &param_ty) in args.iter().zip(callee.signature.params.iter()) {
+                        let arg_ty = self.rvalue_ty(rv, caller_fun);
+                        if !self.match_ty(param_ty, arg_ty, &mut mapping) {
+                            return Err(DiagMsg {
+                                title: "monomorphization error".into(),
+                                msg: format!("argument type mismatch in call to {}", callee.name),
+                                span: block.span.clone(),
+                            });
+                        }
+                    }
+                    if let Place::Local(dest_id) = dest {
+                        let ret_ty = get_type_root(self.get_type_pool(), caller_fun.local_decls[*dest_id].ty);
+                        if !self.match_ty(callee.signature.return_ty, ret_ty, &mut mapping) {
+                            return Err(DiagMsg {
+                                title: "monomorphization error".into(),
+                                msg: format!("return type mismatch in call to {}", callee.name),
+                                span: block.span.clone(),
+                            });
+                        }
+                    }
+                    let concrete_tys: Vec<TyId> = callee.generic_params.iter()
+                        .map(|gp| {
+                            let root = get_type_root(self.get_type_pool(), *gp);
+                            mapping.get(&root).copied().unwrap_or(root)
+                        })
                         .collect();
 
-                    // return
-                    if let TerminatorKind::Call { dest: Place::Local(dest_id), .. } = &block.terminator {
-                        let ret_ty = get_type_root(type_pool, caller_fun.local_decls[*dest_id].ty);
-                        concrete_tys.push(ret_ty);
-                    }
-                    let entry = inst_map.entry(*func).or_default();
-                    if !entry.contains(&concrete_tys) {
-                        entry.push(concrete_tys);
-                    }
+                    generic_calls.push((bid, *func, concrete_tys.clone()));
+                    inst_map.entry(*func).or_default().push(concrete_tys);
                 }
             }
         }
@@ -387,42 +465,34 @@ impl MirMonoApi for MirMono {
         let mut new_blocks: Vec<BasicBlock> = Vec::new();
         let mut old_to_new_fun: HashMap<FunId, FunId> = HashMap::new();
         let mut old_to_new_instances: HashMap<FunId, HashMap<Vec<TyId>, FunId>> = HashMap::new();
+        let mut global_block_map: HashMap<BasicBlockId, BasicBlockId> = HashMap::new();
 
-        for (old_fid, fun) in self.mir.functions.iter().enumerate() {
-            if !fun.generic_params.is_empty() {
-                continue;
-            }
-            let mut old_to_new_block = HashMap::new();
-            let new_fun = Self::clone_fun_with_blocks(fun, &self.mir.blocks, &mut new_blocks, &mut old_to_new_block);
+        for (old_fid, fun) in functions.iter().enumerate() {
+            if !fun.generic_params.is_empty() { continue; }
+            let mut local_map = HashMap::new();
+            let new_fun = Self::clone_fun_with_blocks(fun, &old_blocks, &mut new_blocks, &mut local_map, &mut global_block_map);
             let new_fid = new_functions.len();
             new_functions.push(new_fun);
             old_to_new_fun.insert(old_fid, new_fid);
         }
 
-        for (old_fid, fun) in self.mir.functions.iter().enumerate() {
-            if fun.generic_params.is_empty() {
-                continue;
-            }
+        for (old_fid, fun) in functions.iter().enumerate() {
+            if fun.generic_params.is_empty() { continue; }
             let instances = inst_map.get(&old_fid).cloned().unwrap_or_default();
             let mut instance_map: HashMap<Vec<TyId>, FunId> = HashMap::new();
-
             for concrete_tys in &instances {
-                // 构建替换映射
                 let mut ty_subst: HashMap<TyId, TyId> = HashMap::new();
                 for (gp, ct) in fun.generic_params.iter().zip(concrete_tys) {
                     ty_subst.insert(*gp, *ct);
                 }
-
-                let mut old_to_new_block = HashMap::new();
-                let mut new_fun = Self::clone_fun_with_blocks(fun, &self.mir.blocks, &mut new_blocks, &mut old_to_new_block);
-
+                let mut local_map = HashMap::new();
+                let mut new_fun = Self::clone_fun_with_blocks(fun, &old_blocks, &mut new_blocks, &mut local_map, &mut global_block_map);
                 new_fun.generic_params.clear();
                 self.subst_ty_in_fun(&mut new_fun, &ty_subst);
                 for &new_bid in &new_fun.blocks {
                     let block = &mut new_blocks[new_bid];
                     self.subst_ty_in_block(block, &ty_subst);
                 }
-
                 let new_fid = new_functions.len();
                 new_functions.push(new_fun);
                 instance_map.insert(concrete_tys.clone(), new_fid);
@@ -430,50 +500,24 @@ impl MirMonoApi for MirMono {
             old_to_new_instances.insert(old_fid, instance_map);
         }
 
-        let mut new_block_to_fun: HashMap<BasicBlockId, &MirFun> = HashMap::new();
-        for (fid, fun) in new_functions.iter().enumerate() {
-            for &bid in &fun.blocks {
-                new_block_to_fun.insert(bid, fun);
-            }
-        }
-
-        let mut replacements: Vec<(usize, FunId)> = Vec::new();
-        for (new_bid, block) in new_blocks.iter().enumerate() {
-            if let TerminatorKind::Call { func, args, .. } = &block.terminator {
-                if let Some(instance_map) = old_to_new_instances.get(func) {
-                    let caller_fun = new_block_to_fun[&new_bid];
-                    let mut concrete_tys: Vec<TyId> = args.iter()
-                        .map(|rv| self.rvalue_ty(rv, caller_fun))
-                        .collect();
-
-                    // return
-                    if let TerminatorKind::Call { dest: Place::Local(dest_id), .. } = &block.terminator {
-                        let ret_ty = get_type_root(type_pool, caller_fun.local_decls[*dest_id].ty);
-                        concrete_tys.push(ret_ty);
-                    }
-                    let new_func = instance_map.get(&concrete_tys)
-                        .expect("monomorphization instance not found");
-                    replacements.push((new_bid, *new_func));
-                } else if let Some(&new_fid) = old_to_new_fun.get(func) {
-                    replacements.push((new_bid, new_fid));
+        for (old_bid, fun_id, concrete_tys) in &generic_calls {
+            let new_bid = global_block_map[old_bid];
+            if let Some(instance_map) = old_to_new_instances.get(fun_id) {
+                let new_func = instance_map.get(concrete_tys).expect("monomorphization instance not found");
+                if let TerminatorKind::Call { func, .. } = &mut new_blocks[new_bid].terminator {
+                    *func = *new_func;
                 }
-            }
-        }
-        for (bid, new_func) in replacements {
-            if let TerminatorKind::Call { func, .. } = &mut new_blocks[bid].terminator {
-                *func = new_func;
+            } else if let Some(&new_fid) = old_to_new_fun.get(fun_id) {
+                if let TerminatorKind::Call { func, .. } = &mut new_blocks[new_bid].terminator {
+                    *func = new_fid;
+                }
             }
         }
 
         self.mir.functions = new_functions;
         self.mir.blocks = new_blocks;
 
-
-        let concrete_adts = self.collect_concrete_adt_tys(
-            &self.mir.functions,
-            &self.mir.blocks,
-            &self.mir.statics,
-        );
+        let concrete_adts = self.collect_concrete_adt_tys(&self.mir.functions, &self.mir.blocks, &self.mir.statics);
         for (decl_id, subst) in &concrete_adts {
             if let Some(generic_def) = self.type_checker_result.generic_type_defs.get(decl_id).cloned() {
                 let mut subst_map = HashMap::new();
@@ -481,12 +525,9 @@ impl MirMonoApi for MirMono {
                     subst_map.insert(gp.def_id, ct);
                 }
                 let concrete_def = self.subst_type_def(&generic_def, &subst_map);
-                self.type_checker_result
-                    .concrete_type_defs
-                    .insert((*decl_id, subst.clone()), concrete_def);
+                self.type_checker_result.concrete_type_defs.insert((*decl_id, subst.clone()), concrete_def);
             }
         }
 
         Ok((self.mir, self.type_checker_result))
-    }
-}
+    }}

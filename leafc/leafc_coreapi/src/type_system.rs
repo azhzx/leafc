@@ -6,19 +6,12 @@ use crate::source::Span;
 
 pub type TyId = usize;
 
-/// 将声明 id 映射到其类型 id
 pub type HirDeclTypeMap = HashMap<HirDeclId, TypeScheme>;
-
-/// 将表达式 id 映射到其类型 id
 pub type HirExprTypeMap = HashMap<HirExprId, TyId>;
-
-/// sym => scheme
 pub type NameTypeSchemeMap = HashMap<SymId, TypeScheme>;
-
-/// id => type
 pub type LocalBindingTypeMap = HashMap<SymId, TyId>;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TypeNodeKind {
     Var,
     Builtin(BuiltinType),
@@ -65,10 +58,6 @@ pub fn get_type_root(type_pool: &[TypeNode], id: TyId) -> TyId {
     cur
 }
 
-// ===----------------------------
-// Type Definition
-// ===----------------------------
-
 #[derive(Debug, Clone)]
 pub struct GenericParamDef {
     pub name: String,
@@ -94,12 +83,8 @@ pub struct VariantDef {
 
 #[derive(Debug, Clone)]
 pub enum TypeDefKind {
-    Struct {
-        fields: Vec<FieldDef>,
-    },
-    Enum {
-        variants: Vec<VariantDef>,
-    },
+    Struct { fields: Vec<FieldDef> },
+    Enum { variants: Vec<VariantDef> },
 }
 
 #[derive(Debug, Clone)]
@@ -110,8 +95,6 @@ pub struct TypeDef {
     pub kind: TypeDefKind,
 }
 
-
-
 pub struct TypeCtx {
     pub decl_type_map: HirDeclTypeMap,
     pub expr_type_map: HirExprTypeMap,
@@ -121,4 +104,77 @@ pub struct TypeCtx {
     pub type_pool: Vec<TypeNode>,
     pub generic_type_defs: HashMap<HirDeclId, TypeDef>,
     pub concrete_type_defs: HashMap<(HirDeclId, Vec<TyId>), TypeDef>,
+    pub type_intern: HashMap<TypeNodeKind, TyId>,
+}
+
+impl TypeCtx {
+    pub fn push_raw(&mut self, kind: TypeNodeKind) -> TyId {
+        let id = self.type_pool.len();
+        self.type_pool.push(TypeNode {
+            kind,
+            parent: id,
+            level: 0,
+        });
+        id
+    }
+
+    pub fn intern_type(&mut self, kind: TypeNodeKind) -> TyId {
+        let mut has_var = false;
+        let canonical = self.canonicalize_kind(kind, &mut has_var);
+
+        if has_var {
+            return self.push_raw(canonical);
+        }
+
+        if let Some(&existing) = self.type_intern.get(&canonical) {
+            return existing;
+        }
+
+        let id = self.push_raw(canonical.clone());
+        self.type_intern.insert(canonical, id);
+        id
+    }
+
+    fn canonicalize_kind(&self, kind: TypeNodeKind, has_var: &mut bool) -> TypeNodeKind {
+        let mut rep = |ty: TyId| -> TyId {
+            let r = get_type_root(&self.type_pool, ty);
+            if matches!(self.type_pool[r].kind, TypeNodeKind::Var) {
+                *has_var = true;
+            }
+            r
+        };
+        match kind {
+            TypeNodeKind::Var => {
+                *has_var = true;
+                TypeNodeKind::Var
+            }
+            TypeNodeKind::Fun { param_tys, return_ty } => {
+                let new_params: Vec<TyId> = param_tys.iter().map(|&t| rep(t)).collect();
+                let new_ret = rep(return_ty);
+                TypeNodeKind::Fun { param_tys: new_params, return_ty: new_ret }
+            }
+            TypeNodeKind::Tuple(elems) => {
+                let new_elems: Vec<TyId> = elems.iter().map(|&t| rep(t)).collect();
+                TypeNodeKind::Tuple(new_elems)
+            }
+            TypeNodeKind::Struct { decl_id, subst, field_tys } => {
+                let new_subst: Vec<TyId> = subst.iter().map(|&s| rep(s)).collect();
+                let new_fields: Vec<TyId> = field_tys.iter().map(|&f| rep(f)).collect();
+                TypeNodeKind::Struct { decl_id, subst: new_subst, field_tys: new_fields }
+            }
+            TypeNodeKind::ADT { decl_id, subst, variants } => {
+                let new_subst: Vec<TyId> = subst.iter().map(|&s| rep(s)).collect();
+                let new_variants: Vec<Option<TyId>> = variants
+                    .iter()
+                    .map(|opt| opt.map(|t| rep(t)))
+                    .collect();
+                TypeNodeKind::ADT { decl_id, subst: new_subst, variants: new_variants }
+            }
+            TypeNodeKind::Ref(inner) => TypeNodeKind::Ref(rep(inner)),
+            TypeNodeKind::MutRef(inner) => TypeNodeKind::MutRef(rep(inner)),
+            TypeNodeKind::Share(inner) => TypeNodeKind::Share(rep(inner)),
+            TypeNodeKind::RawPtr(inner) => TypeNodeKind::RawPtr(rep(inner)),
+            other => other,
+        }
+    }
 }

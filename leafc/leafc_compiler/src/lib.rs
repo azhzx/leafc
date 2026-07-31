@@ -437,7 +437,7 @@ impl CompilerApi for NativeCompiler {
                 return self;
             }
         };
-        
+
         let codegen = CCodeGen::new(mono_mir, ty_map);
         let c_code = match codegen.emit() {
             Ok(c_code) => c_code,

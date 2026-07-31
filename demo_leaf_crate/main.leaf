@@ -10,11 +10,15 @@ type Int32;
 #lang("builtin_i64_type")
 type Int64;
 
+type Int = Int32
+
 #lang("builtin_never_type")
 type Never;
 
 #lang("builtin_f64_type")
 type Float64;
+
+type Float = Float64
 
 #lang("builtin_c_void_ptr_type")
 type CVoidPtr;
@@ -25,11 +29,8 @@ type RawPtr[T];
 #lang("builtin_c_char_type")
 type CChar;
 
-type Maybe [t]
-    | Just of t
-    | None
 
-external fun printf(fmt: RawPtr[CChar], ...) -> Int32;
+
 external fun puts(a: CVoidPtr) -> ()  = "leaf_rt__puts";
 external fun itoa(a: Int32) -> CVoidPtr = "leaf_rt__itoa";
 
@@ -37,9 +38,19 @@ external fun itoa(a: Int32) -> CVoidPtr = "leaf_rt__itoa";
 fun print_int(a)
     unsafe_call_external puts(unsafe_call_external itoa(a))
 
-const fun add(a: Int32, b: Int32) -> Int32
-    return a + b
+type Maybe [t]
+    | Just of t
+    | None
+
+type Expr [a]
+    | MakeInt of Int -> Expr[Int]
+    | MakeFloat of Float -> Expr[Float]
+
+fun eval[T] (a: Expr[T]) -> T
+    return when a
+        Expr.MakeInt(binding i) => i
+        Expr.MakeFloat(binding f) => f
 
 fun main()
-    let x = add(100, 99)
+    let x = eval( Expr.MakeInt(42) )
     print_int(x)

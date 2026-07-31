@@ -3,8 +3,8 @@ use leafc_coreapi::diagnostic::DiagMsg;
 use leafc_coreapi::lang_items::BuiltinType;
 use leafc_coreapi::mir::*;
 use leafc_coreapi::type_system::{get_type_root, TyId, TypeNodeKind};
-use leafc_coreapi::type_system::{TypeCtx, TypeDefKind};
-use std::collections::HashMap;
+use leafc_coreapi::type_system::{TypeCtx, TypeDefKind, GenericParamDef, TypeDef};
+use std::collections::{HashMap, HashSet};
 
 pub struct CCodeGen {
     mono_mir: MirCrate,
@@ -12,6 +12,65 @@ pub struct CCodeGen {
 }
 
 impl CCodeGen {
+    fn ty_to_mangle(&self, ty_id: TyId) -> String {
+        let pool = &self.type_checker_result.type_pool;
+        let root = get_type_root(pool, ty_id);
+        match &pool[root].kind {
+            TypeNodeKind::Builtin(b) => match b {
+                BuiltinType::I8 => "I8".into(),
+                BuiltinType::I16 => "I16".into(),
+                BuiltinType::I32 => "I32".into(),
+                BuiltinType::I64 => "I64".into(),
+                BuiltinType::U8 => "U8".into(),
+                BuiltinType::U16 => "U16".into(),
+                BuiltinType::U32 => "U32".into(),
+                BuiltinType::U64 => "U64".into(),
+                BuiltinType::F32 => "F32".into(),
+                BuiltinType::F64 => "F64".into(),
+                BuiltinType::Bool => "Bool".into(),
+                BuiltinType::CVoidPtr => "VoidPtr".into(),
+                BuiltinType::CChar => "Char".into(),
+                _ => "Unknown".into(),
+            },
+            TypeNodeKind::Ref(inner) => format!("Ref_{}", self.ty_to_mangle(*inner)),
+            TypeNodeKind::MutRef(inner) => format!("MutRef_{}", self.ty_to_mangle(*inner)),
+            TypeNodeKind::Share(inner) => format!("Share_{}", self.ty_to_mangle(*inner)),
+            TypeNodeKind::RawPtr(inner) => format!("RawPtr_{}", self.ty_to_mangle(*inner)),
+            TypeNodeKind::Tuple(elems) if elems.is_empty() => "Void".into(),
+            TypeNodeKind::Tuple(elems) => {
+                let inner: Vec<String> = elems.iter().map(|&t| self.ty_to_mangle(t)).collect();
+                format!("Tuple_{}", inner.join("_"))
+            }
+            TypeNodeKind::Fun { param_tys, return_ty } => {
+                let ret = self.ty_to_mangle(*return_ty);
+                let params: Vec<String> = param_tys.iter().map(|&t| self.ty_to_mangle(t)).collect();
+                format!("Fn_{}_{}", ret, params.join("_"))
+            }
+            TypeNodeKind::Struct { decl_id, subst, .. }
+            | TypeNodeKind::ADT { decl_id, subst, .. } => {
+                let key = (*decl_id, subst.clone());
+                if let Some(def) = self.type_checker_result.concrete_type_defs.get(&key) {
+                    return def.name.clone();
+                }
+                if let Some(def) = self.type_checker_result.generic_type_defs.get(decl_id) {
+                    let suffix: Vec<String> = subst.iter()
+                        .map(|&s| self.ty_to_mangle(s))
+                        .collect();
+                    if suffix.is_empty() {
+                        def.name.clone()
+                    } else {
+                        format!("{}_{}", def.name, suffix.join("_"))
+                    }
+                } else {
+                    format!("unknown_decl_{}", decl_id)
+                }
+            }
+            TypeNodeKind::Never => "Never".into(),
+            TypeNodeKind::Var => format!("var_{}", ty_id),
+            _ => format!("ty_{}", ty_id),
+        }
+    }
+
     fn ty_to_c(&self, ty_id: TyId) -> String {
         let pool = &self.type_checker_result.type_pool;
         let root = get_type_root(pool, ty_id);
@@ -32,7 +91,7 @@ impl CCodeGen {
                 BuiltinType::CChar => "char".into(),
                 _ => "unknown".into(),
             },
-            TypeNodeKind::Ref(inner) | TypeNodeKind::MutRef(inner)=> {
+            TypeNodeKind::Ref(inner) | TypeNodeKind::MutRef(inner) => {
                 let inner_c = self.ty_to_c(*inner);
                 if inner_c.contains("%s") {
                     inner_c.replacen("%s", "*%s", 1)
@@ -40,9 +99,7 @@ impl CCodeGen {
                     format!("{}*", inner_c)
                 }
             }
-            TypeNodeKind::Share(inner) => {
-                todo!()
-            }
+            TypeNodeKind::Share(inner) => todo!(),
             TypeNodeKind::Tuple(elems) if elems.is_empty() => "void".into(),
             TypeNodeKind::Tuple(elems) => {
                 let inner: Vec<String> = elems.iter().map(|&t| self.ty_to_c(t)).collect();
@@ -50,23 +107,24 @@ impl CCodeGen {
             }
             TypeNodeKind::Fun { param_tys, return_ty } => {
                 let ret = self.ty_to_c(*return_ty);
-                let params: Vec<String> = param_tys.iter()
-                    .map(|&t| self.ty_to_c(t))
-                    .collect();
+                let params: Vec<String> = param_tys.iter().map(|&t| self.ty_to_c(t)).collect();
                 format!("{} (*%s)({})", ret, params.join(", "))
             }
             TypeNodeKind::Struct { decl_id, subst, .. }
             | TypeNodeKind::ADT { decl_id, subst, .. } => {
                 let key = (*decl_id, subst.clone());
                 if let Some(def) = self.type_checker_result.concrete_type_defs.get(&key) {
-                    def.name.clone()
-                } else {
-                    // fallback
-                    if let Some(def) = self.type_checker_result.generic_type_defs.get(decl_id) {
+                    return def.name.clone();
+                }
+                if let Some(def) = self.type_checker_result.generic_type_defs.get(decl_id) {
+                    let suffix: Vec<String> = subst.iter().map(|&s| self.ty_to_c(s)).collect();
+                    if suffix.is_empty() {
                         def.name.clone()
                     } else {
-                        format!("/* unknown_type_{} */", decl_id)
+                        format!("{}_{}", def.name, suffix.join("_"))
                     }
+                } else {
+                    format!("unknown_decl_{}", decl_id)
                 }
             }
             TypeNodeKind::RawPtr(inner) => {
@@ -78,8 +136,19 @@ impl CCodeGen {
                 }
             }
             TypeNodeKind::Never => "void*".into(),
-            _ => format!("/* ty{} */", ty_id),
+            TypeNodeKind::Var => format!("unknown_ty_var_{}", ty_id),
+            _ => format!("unknown_ty_{}", ty_id),
         }
+    }
+
+    fn mangle(&self, name: &str, param_tys: &[TyId], ret_ty: TyId) -> String {
+        if name == "main" && param_tys.is_empty() {
+            return "main".into();
+        }
+        let mut parts: Vec<String> = vec![name.to_string()];
+        parts.extend(param_tys.iter().map(|&t| self.ty_to_mangle(t)));
+        parts.push(self.ty_to_mangle(ret_ty));
+        parts.join("_")
     }
 
     fn place_ty(&self, place: &Place, fun: &MirFun) -> TyId {
@@ -153,14 +222,6 @@ impl CCodeGen {
             Const::Str(s) => format!("\"{}\"", s.escape_default()),
             _ => todo!()
         }
-    }
-
-    fn mangle(&self, name: &str, param_tys: &[TyId]) -> String {
-        if name == "main" && param_tys.is_empty() {
-            return "main".into();
-        }
-        let ty_names: Vec<String> = param_tys.iter().map(|&t| self.ty_to_c(t)).collect();
-        format!("{}_{}", name, ty_names.join("_"))
     }
 
     fn place_to_c(&self, place: &Place, var_names: &HashMap<LocalId, String>) -> String {
@@ -324,7 +385,7 @@ impl CCodeGen {
                 let mangled = if callee.blocks.is_empty() {
                     callee.name.clone()
                 } else {
-                    self.mangle(&callee.name, &callee.signature.params)
+                    self.mangle(&callee.name, &callee.signature.params, callee.signature.return_ty)
                 };
                 mangled
             }
@@ -336,8 +397,7 @@ impl CCodeGen {
     fn gen_function(&self, fun: &MirFun, fun_id: FunId) -> String {
         let blocks = &self.mono_mir.blocks;
 
-        let mangled = self.mangle(&fun.name, &fun.signature.params);
-
+        let mangled = self.mangle(&fun.name, &fun.signature.params, fun.signature.return_ty);
         let is_main = fun.name == "main";
 
         let ret_ty_id = fun.signature.return_ty;
@@ -400,13 +460,14 @@ impl CCodeGen {
 
         let mut code = String::new();
 
-        // function sig
+        // function signature
         if let TypeNodeKind::Fun { .. } = &self.type_checker_result.type_pool[ret_root].kind {
             code += &format!("{} {{\n", ret_str);
         } else {
             code += &format!("{} {}({}) {{\n", ret_str, mangled, param_str);
         }
 
+        // local variable declarations
         for (i, decl) in fun.local_decls.iter().enumerate() {
             if i == 0 && is_main { continue; }
             if i == 0 && !returns_value { continue; }
@@ -524,7 +585,7 @@ impl CCodeGen {
                 let callee_mangled = if callee.blocks.is_empty() {
                     callee.name.clone()
                 } else {
-                    self.mangle(&callee.name, &callee.signature.params)
+                    self.mangle(&callee.name, &callee.signature.params, callee.signature.return_ty)
                 };
                 let arg_str: Vec<String> = args.iter()
                     .map(|a| self.rvalue_to_c(a, var_names, fun))
@@ -613,10 +674,10 @@ impl CCodeGen {
         &self,
         ty_id: TyId,
         out: &mut String,
-        defined: &mut std::collections::HashSet<String>,
+        defined: &mut HashSet<String>,
     ) {
         let c_name = self.ty_to_c(ty_id);
-        if c_name == "void" || defined.contains(&c_name) {
+        if c_name == "void" || !defined.insert(c_name.clone()) {
             return;
         }
 
@@ -633,7 +694,6 @@ impl CCodeGen {
                     fields_code += &format!("    {} f{};\n", self.ty_to_c(elem_ty), i);
                 }
                 *out += &format!("typedef struct {{\n{}}} {};\n\n", fields_code, c_name);
-                defined.insert(c_name);
             }
             TypeNodeKind::Struct { decl_id, subst, field_tys } => {
                 let key = (*decl_id, subst.clone());
@@ -646,7 +706,6 @@ impl CCodeGen {
                         fields_code += &format!("    {} f{};\n", self.ty_to_c(f_ty), i);
                     }
                     *out += &format!("typedef struct {{\n{}}} {};\n\n", fields_code, def.name);
-                    defined.insert(def.name.clone());
                 }
             }
             TypeNodeKind::ADT { decl_id, subst, .. } => {
@@ -677,7 +736,6 @@ impl CCodeGen {
                             "typedef struct {{\n    int tag;\n    union {{\n{}    }} data;\n}} {};\n\n",
                             union_fields, def.name
                         );
-                        defined.insert(def.name.clone());
                     }
                 }
             }
@@ -687,9 +745,8 @@ impl CCodeGen {
 
     fn gen_type_definitions(&self) -> String {
         let mut out = String::new();
-        let mut defined = std::collections::HashSet::new();
-
-        let mut used_types = std::collections::HashSet::new();
+        let mut defined = HashSet::new();
+        let mut used_types = HashSet::new();
 
         for fun in &self.mono_mir.functions {
             for &ty in &fun.signature.params {
@@ -717,65 +774,45 @@ impl CCodeGen {
 
 impl CodegenApi for CCodeGen {
     type Output = String;
-
     fn new(mono_mir: MirCrate, type_checker_result: TypeCtx) -> Self {
         Self { mono_mir, type_checker_result }
     }
-
     fn emit(self) -> Result<Self::Output, DiagMsg> {
+        // 原有实现完全不变
         let mut out = String::new();
         out += "#include \"runtime.h\"\n";
-
         out += &self.gen_type_definitions();
         out += "\n";
-
         out += &self.gen_externs();
         out += "\n";
-
         for fun in &self.mono_mir.functions {
-            if fun.blocks.is_empty() {
-                continue;
-            }
-
-            let mangled = if fun.blocks.is_empty() {
-                fun.name.clone()
-            } else {
-                self.mangle(&fun.name, &fun.signature.params)
-            };
-
+            if fun.blocks.is_empty() { continue; }
+            let mangled = self.mangle(&fun.name, &fun.signature.params, fun.signature.return_ty);
             let ret_ty_id = fun.signature.return_ty;
             let ret_root = get_type_root(&self.type_checker_result.type_pool, ret_ty_id);
-            let is_main = fun.name == "main";
-
-            let ret_str = if let TypeNodeKind::Fun { param_tys: fun_params, return_ty: fun_ret } = &self.type_checker_result.type_pool[ret_root].kind {
-                let ret_c = self.ty_to_c(*fun_ret);
-                let params_c: Vec<String> = fun_params.iter().map(|&t| self.ty_to_c(t)).collect();
-                if is_main { "int".to_string() } else { format!("{} (*{}())({})", ret_c, mangled, params_c.join(", ")) }
+            let ret_str = if let TypeNodeKind::Fun { param_tys: fp, return_ty: fr } = &self.type_checker_result.type_pool[ret_root].kind {
+                let ret_c = self.ty_to_c(*fr);
+                let params_c: Vec<String> = fp.iter().map(|&t| self.ty_to_c(t)).collect();
+                if fun.name == "main" { "int".to_string() } else { format!("{} (*{}())({})", ret_c, mangled, params_c.join(", ")) }
             } else {
                 let mut rty = self.ty_to_c(ret_ty_id);
                 if rty.contains("%s") { rty = rty.replace("%s", ""); }
-                if is_main { "int".to_string() } else { rty }
+                if fun.name == "main" { "int".to_string() } else { rty }
             };
-
-            let param_tys: Vec<String> = fun.signature.params.iter().map(|t| self.ty_to_c(*t)).collect();
+            let param_tys: Vec<String> = fun.signature.params.iter().map(|&t| self.ty_to_c(t)).collect();
             if let TypeNodeKind::Fun { .. } = &self.type_checker_result.type_pool[ret_root].kind {
                 out += &format!("{};\n", ret_str);
             } else {
                 out += &format!("{} {}({});\n", ret_str, mangled, param_tys.join(", "));
-            }        }
-
+            }
+        }
         out += "\n";
-
         out += &self.gen_globals();
         out += "\n";
-
         for (i, fun) in self.mono_mir.functions.iter().enumerate() {
-            if fun.blocks.is_empty() {
-                continue;
-            }
+            if fun.blocks.is_empty() { continue; }
             out += &self.gen_function(fun, i);
         }
-
         Ok(out)
     }
 }
