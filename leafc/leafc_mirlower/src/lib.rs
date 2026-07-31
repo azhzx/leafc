@@ -839,6 +839,7 @@ pub struct MirLower {
 
     control_map: HashMap<SymId, ControlId>,
     resume_target: Option<BasicBlockId>,
+    pub_fun_ids: Vec<FunId>,
 
     bool_ty: TyId,
     uint8_ty: TyId,
@@ -1032,6 +1033,7 @@ impl MirLower {
                         signature: FnSig { params: param_tys, return_ty },
                         local_decls: vec![],
                         blocks: vec![],
+                        is_consteval: false,
                         span: decl.span.clone(),
                     });
                 }
@@ -1053,11 +1055,14 @@ impl MirLower {
                         span: decl.span.clone(),
                     });
                 }
-                HirDeclKind::Fun { .. } => {
+                HirDeclKind::Fun { is_consteval, .. } => {
                     let fun_id = self.functions.len();
                     self.decl_to_fun.insert(decl_id, fun_id);
-                    let mir_fun = self.lower_function(decl_id)?;
+                    let mir_fun = self.lower_function(decl_id, *is_consteval)?;
                     self.functions.push(mir_fun);
+                    if decl.is_pub_external {
+                        self.pub_fun_ids.push(fun_id);
+                    }
                 }
                 HirDeclKind::Struct { fields, .. } => {
                     for (idx, f) in fields.iter().enumerate() {
@@ -1081,7 +1086,7 @@ impl MirLower {
         Ok(())
     }
 
-    fn lower_function(&mut self, decl_id: HirDeclId) -> Result<MirFun, DiagMsg> {
+    fn lower_function(&mut self, decl_id: HirDeclId, is_consteval: bool) -> Result<MirFun, DiagMsg> {
         let decl = self.hir.hir_decl_pool[decl_id].clone();
         let (params, return_type_ann, body) = match &decl.kind {
             HirDeclKind::Fun { params, return_type, body, .. } => {
@@ -1161,6 +1166,7 @@ impl MirLower {
             signature: fun.signature,
             local_decls: fun.local_decls,
             blocks: fun.blocks,
+            is_consteval,
             span: decl.span,
         })
     }
@@ -1931,6 +1937,7 @@ impl MirLowerApi for MirLower {
             decl_to_fun: HashMap::new(),
             control_map: HashMap::new(),
             resume_target: None,
+            pub_fun_ids: vec![],
             bool_ty,
             uint8_ty,
             unit_ty,
@@ -1943,6 +1950,7 @@ impl MirLowerApi for MirLower {
             name: self.hir.name,
             functions: self.functions,
             extern_decls: self.extern_decls,
+            pub_decl_ids: self.pub_fun_ids,
             statics: self.statics,
             blocks: self.blocks,
         }, self.type_checker_result))

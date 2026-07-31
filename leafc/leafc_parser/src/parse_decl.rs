@@ -869,10 +869,10 @@ impl<'a> Parser<'a> {
         &mut self,
         visibility: Visibility,
         annotations: Vec<(GreenAnnotation, Span)>,
+        decl_start_off: usize,     // 新增
+        is_consteval: bool,
     ) -> Result<DeclRedNode, DiagMsg> {
-        let first_ann_start = annotations.first().map(|(_, sp)| sp.start_off);
         let fun_token = self.current_token().clone();
-        let decl_start_off = first_ann_start.unwrap_or(fun_token.span.start_off);
         self.skip_token_only(TokenType::KwFun)?;
 
         let name_token = self.current_token().clone();
@@ -1016,6 +1016,7 @@ impl<'a> Parser<'a> {
                 generic_vars: generic_var_children,
                 block: block_children,
                 where_clause,
+                is_consteval,
             }
         };
 

@@ -16,6 +16,7 @@ pub struct MirCrate {
     pub name: String,
     pub functions: Vec<MirFun>,
     pub extern_decls: Vec<ExternDecl>,
+    pub pub_decl_ids: Vec<FunId>,
     pub statics: Vec<StaticDecl>,
     pub blocks: Vec<BasicBlock>,
 }
@@ -27,6 +28,7 @@ pub struct MirFun {
     pub signature: FnSig,
     pub local_decls: Vec<LocalDecl>,
     pub blocks: Vec<BasicBlockId>,
+    pub is_consteval: bool,
     pub span: Span
 }
 
@@ -215,6 +217,10 @@ pub enum Const {
     Char(u64),
     Str(String),
     Bool(bool),
+    Tuple(Vec<Const>),
+    Struct(Vec<Const>),
+    Enum(TagId, Box<Const>),
+    Unit,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

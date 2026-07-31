@@ -151,6 +151,7 @@ impl CCodeGen {
                 }
             }
             Const::Str(s) => format!("\"{}\"", s.escape_default()),
+            _ => todo!()
         }
     }
 

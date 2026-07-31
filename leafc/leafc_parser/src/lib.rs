@@ -500,7 +500,7 @@ impl<'a> Parser<'a> {
                     }
                 },
                 TokenType::KwFun => {
-                    let decl_red = self.parse_fun_decl(visibility, anns)?;
+                    let decl_red = self.parse_fun_decl(visibility, anns, decl_start_off, false)?;
                     let relative_start = (decl_red.span.start_off - file_start_off) ;
                     let text_len = decl_red.span.len() ;
                     top_decl_green_children.push(GreenChild {
@@ -550,12 +550,32 @@ impl<'a> Parser<'a> {
                     });
                 }
                 TokenType::KwConst => {
-                    let decl_red = self.parse_const_decl(visibility, anns, decl_start_off)?;
-                    let relative_start = (decl_red.span.start_off - file_start_off) ;
-                    top_decl_green_children.push(GreenChild {
-                        relative_start,
-                        node: Arc::clone(&decl_red.inner),
-                    });
+                    let mut peek = self.index + 1;
+                    while peek < self.tokens.data.len()
+                        && self.tokens.data[peek].kind == TokenType::NewLine
+                    {
+                        peek += 1;
+                    }
+                    if peek < self.tokens.data.len()
+                        && self.tokens.data[peek].kind == TokenType::KwFun
+                    {
+                        // const fun name(...) ...
+                        self.skip_token_only(TokenType::KwConst)?;
+                        let decl_red = self.parse_fun_decl(visibility, anns, decl_start_off, true)?;
+                        let relative_start = (decl_red.span.start_off - file_start_off);
+                        top_decl_green_children.push(GreenChild {
+                            relative_start,
+                            node: Arc::clone(&decl_red.inner),
+                        });
+                    } else {
+                        // const name = expr
+                        let decl_red = self.parse_const_decl(visibility, anns, decl_start_off)?;
+                        let relative_start = (decl_red.span.start_off - file_start_off);
+                        top_decl_green_children.push(GreenChild {
+                            relative_start,
+                            node: Arc::clone(&decl_red.inner),
+                        });
+                    }
                 }
                 TokenType::KwGlobal => {
                     let decl_red = self.parse_global_decl(visibility, anns, decl_start_off)?;
@@ -666,7 +686,7 @@ impl<'a> Parser<'a> {
                     }
                 }
                 TokenType::KwFun => {
-                    let decl_red = self.parse_fun_decl(visibility, anns)?;
+                    let decl_red = self.parse_fun_decl(visibility, anns, decl_start_off, false)?;
                     let relative_start = (decl_red.span.start_off - file_start_off) ;
                     top_decl_green_children.push(GreenChild {
                         relative_start,
@@ -706,12 +726,32 @@ impl<'a> Parser<'a> {
                     });
                 }
                 TokenType::KwConst => {
-                    let decl_red = self.parse_const_decl(visibility, anns, decl_start_off)?;
-                    let relative_start = (decl_red.span.start_off - file_start_off) ;
-                    top_decl_green_children.push(GreenChild {
-                        relative_start,
-                        node: Arc::clone(&decl_red.inner),
-                    });
+                    let mut peek = self.index + 1;
+                    while peek < self.tokens.data.len()
+                        && self.tokens.data[peek].kind == TokenType::NewLine
+                    {
+                        peek += 1;
+                    }
+                    if peek < self.tokens.data.len()
+                        && self.tokens.data[peek].kind == TokenType::KwFun
+                    {
+                        // const fun name(...) ...
+                        self.skip_token_only(TokenType::KwConst)?;
+                        let decl_red = self.parse_fun_decl(visibility, anns, decl_start_off, true)?;
+                        let relative_start = (decl_red.span.start_off - file_start_off);
+                        top_decl_green_children.push(GreenChild {
+                            relative_start,
+                            node: Arc::clone(&decl_red.inner),
+                        });
+                    } else {
+                        // const name = expr
+                        let decl_red = self.parse_const_decl(visibility, anns, decl_start_off)?;
+                        let relative_start = (decl_red.span.start_off - file_start_off);
+                        top_decl_green_children.push(GreenChild {
+                            relative_start,
+                            node: Arc::clone(&decl_red.inner),
+                        });
+                    }
                 }
                 TokenType::KwGlobal => {
                     let decl_red = self.parse_global_decl(visibility, anns, decl_start_off)?;

@@ -18,6 +18,7 @@ use leafc_coreapi::ast::{CrateAst, GreenDecl};
 use leafc_coreapi::codegen::CodegenApi;
 use leafc_coreapi::crate_meta::{CrateManifest, OperatorDef, OperatorKind};
 use leafc_coreapi::mir::MirCrate;
+use leafc_coreapi::mir_consteval::MirConstEvalApi;
 use leafc_coreapi::mir_lifetime_checker::MirLifetimeCheckerApi;
 use leafc_coreapi::mir_lower::MirLowerApi;
 use leafc_coreapi::mir_mono::MirMonoApi;
@@ -29,6 +30,8 @@ use leafc_mirlower::MirLower;
 use leafc_mirmono::MirMono;
 use leafc_typechecker::TypeChecker;
 use realworld_io_api::RealWorldIOApi;
+use serde::Serialize;
+use leafc_mir_consteval::MirConstEval;
 
 const COMPILER_VERSION: &'static str = env!("CARGO_PKG_VERSION");
 
@@ -39,6 +42,13 @@ const DIAG_COLORS: DiagTextColor = DiagTextColor {
     diag_source_name: "\x1b[35m",
     diag_reset: "\x1b[0m",
 };
+
+#[derive(Serialize)]
+struct ExportedSignature {
+    name: String,
+    params: Vec<String>,
+    return_type: String,
+}
 
 pub struct RealWorld {}
 impl RealWorldIOApi for RealWorld {
@@ -360,6 +370,38 @@ impl CompilerApi for NativeCompiler {
                 println!("=== mir ===");
                 println!("{:#?}", mir);
                 println!("=== === ===");
+                (mir, ty_map)
+            }
+            Err(e) => {
+                println!("{}", diag.report(e));
+                *out = None;
+                return self;
+            }
+        };
+        if !mir.pub_decl_ids.is_empty() {
+            let mut exports = Vec::new();
+            for &fun_id in &mir.pub_decl_ids {
+                if let Some(fun) = mir.functions.get(fun_id) {
+                    exports.push(ExportedSignature {
+                        name: fun.name.clone(),
+                        params: fun.signature.params.iter().map(|ty|
+                            format!("{:?}", ty_map.type_pool[*ty].kind)
+                        ).collect(),
+                        return_type: format!("{:?}", ty_map.type_pool[fun.signature.return_ty].kind)
+                    });
+                }
+            }
+
+            let meta_path = self.crate_path
+                .join("build")
+                .join("crate_exports.json");
+            let json = serde_json::to_string_pretty(&exports).expect("serialize failed");
+            fs::write(meta_path, json).expect("write failed");
+        }
+
+        let mir_consteval = MirConstEval::new(mir, ty_map);;
+        let (mir, ty_map) = match mir_consteval.eval() {
+            Ok((mir, ty_map)) => {
                 (mir, ty_map)
             }
             Err(e) => {

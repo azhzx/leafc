@@ -69,6 +69,7 @@ pub enum HirDeclKind {
         params: Vec<HirParam>,
         return_type: Option<HirTypeName>,
         body: Vec<HirExprId>,
+        is_consteval: bool,
     },
     Struct {
         generic_params: Vec<HirGenericParam>,

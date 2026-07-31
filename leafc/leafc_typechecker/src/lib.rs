@@ -1316,11 +1316,6 @@ impl TypeChecker {
 
             HirExprKind::TupleIndex { expr, index } => {
                 let expr_ty = self.infer_expr(*expr, None)?;
-                let elem_count = index + 1;
-                let elem_tys: Vec<TyId> = (0..elem_count).map(|_| self.new_type_var()).collect();
-                let tuple_ty = self.new_compound(TypeNodeKind::Tuple(elem_tys));
-                self.unify(expr_ty, tuple_ty, span.clone())?;
-
                 let root = self.representative(expr_ty);
                 match &self.type_pool[root].kind {
                     TypeNodeKind::Tuple(actual_elem_tys) => {
@@ -1333,12 +1328,19 @@ impl TypeChecker {
                         }
                         actual_elem_tys[*index]
                     }
+                    TypeNodeKind::Var => {
+                        return Err(DiagMsg {
+                            title: format!("{:?}", TypeCheckerError::TypeMismatch),
+                            msg: format!("cannot access tuple index on an unknown type; add a type annotation"),
+                            span: span.clone(),
+                        });
+                    }
                     _ => {
                         return Err(DiagMsg {
                             title: format!("{:?}", TypeCheckerError::TypeMismatch),
-                            msg: "expected tuple type".to_string(),
+                            msg: format!("expected a tuple type, found `{}`", self.ty_to_string(expr_ty)),
                             span: span.clone(),
-                        })
+                        });
                     }
                 }
             }
@@ -1921,7 +1923,13 @@ impl TypeChecker {
     fn check_decl(&mut self, decl_id: HirDeclId) -> Result<(), DiagMsg> {
         let decl = self.hir_crate.hir_decl_pool[decl_id].clone();
         match &decl.kind {
-            HirDeclKind::Fun { generic_params, params, return_type, body } => {
+            HirDeclKind::Fun {
+                generic_params,
+                params,
+                return_type,
+                body,
+                ..
+            } => {
                 self.check_fun(decl_id, generic_params, params, return_type.as_ref(), body)
             }
             HirDeclKind::Struct { generic_params, fields, .. } => {

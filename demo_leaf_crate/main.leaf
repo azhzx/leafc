@@ -25,7 +25,6 @@ type RawPtr[T];
 #lang("builtin_c_char_type")
 type CChar;
 
-
 type Maybe [t]
     | Just of t
     | None
@@ -34,9 +33,13 @@ external fun printf(fmt: RawPtr[CChar], ...) -> Int32;
 external fun puts(a: CVoidPtr) -> ()  = "leaf_rt__puts";
 external fun itoa(a: Int32) -> CVoidPtr = "leaf_rt__itoa";
 
+
 fun print_int(a)
     unsafe_call_external puts(unsafe_call_external itoa(a))
 
+const fun add(a: Int32, b: Int32) -> Int32
+    return a + b
 
 fun main()
-    print_int(100)
+    let x = add(100, 99)
+    print_int(x)

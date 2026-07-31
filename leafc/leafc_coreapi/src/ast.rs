@@ -561,6 +561,7 @@ pub enum GreenDeclKind {
         generic_vars: Vec<GreenChild<GreenGenericVar>>,
         block: Vec<GreenChild<GreenExpr>>,
         where_clause: Option<GreenChild<GreenWhereClause>>,
+        is_consteval: bool,
     },
     FunDecl {
         params: Vec<GreenChild<GreenParam>>,

@@ -1181,7 +1181,8 @@ impl<'a> HirLower<'a> {
                 return_type_str,
                 generic_vars,
                 block,
-                where_clause
+                where_clause,
+                is_consteval
             } => {
                 let generic_params = self.lower_generic_params(
                     generic_vars,
@@ -1207,6 +1208,7 @@ impl<'a> HirLower<'a> {
                     params: hir_params,
                     return_type,
                     body,
+                    is_consteval: *is_consteval,
                 }
             }
 
@@ -1236,6 +1238,7 @@ impl<'a> HirLower<'a> {
                     params: hir_params,
                     return_type,
                     body: vec![],
+                    is_consteval: false,
                 }
             }
 
