@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use crate::ast::{CrateAst, GreenCatchClause, GreenDecl, GreenExpr, GreenMatchArm};
+use crate::ast::{CrateAst, GreenCatchClause, GreenCtor, GreenDecl, GreenExpr, GreenMatchArm};
 use crate::diagnostic::DiagMsg;
 use crate::lang_items::LangItems;
 use crate::scope::{ScopeId, ScopePool};
@@ -31,6 +31,7 @@ pub struct NamePassResult {
     pub arm_scope_map: ArmScopeMap,
     pub catch_scope_map: CatchScopeMap,
     pub source_id_to_scope: HashMap<SourceId, ScopeId>,
+    pub ctor_scope_map: HashMap<Arc<GreenCtor>, ScopeId>,
     pub lang_items: LangItems
 }
 

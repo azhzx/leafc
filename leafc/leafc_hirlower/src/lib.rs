@@ -1329,7 +1329,7 @@ impl<'a> HirLower<'a> {
 
                 let hir_ctors = ctors
                     .iter()
-                    .map(|c| self.lower_ctor_def(c, decl_scope, &span))   // 使用 decl_scope
+                    .map(|c| self.lower_ctor_def(c, decl_scope, &span))
                     .collect::<Result<_, _>>()?;
 
                 HirDeclKind::ADT {

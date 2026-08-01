@@ -1,3 +1,6 @@
+#[cfg(test)]
+mod preprocessor_tests;
+
 use std::collections::{HashMap, HashSet};
 use leafc_coreapi::compiler::{CompilerApi, IncrementalCompiler};
 use leafc_coreapi::diagnostic::{DiagMsg, DiagTextColor, DiagnosticianApi};

@@ -1,4 +1,4 @@
-use leafc_coreapi::ast::{child_decl_red, child_expr_red, child_span, child_span_of, AtomExprNode, CrateAst, DeclRedNode, ExprRedNode, FileRedUnit, GreenCatchClause, GreenChild, GreenDecl, GreenDeclKind, GreenExpr, GreenExprKind, GreenMatchArm, GreenPattern, GreenPureStaticPath, HasTextLen, RequireRedNode, TypeName, Visibility};
+use leafc_coreapi::ast::{child_decl_red, child_expr_red, child_span, child_span_of, AtomExprNode, CrateAst, DeclRedNode, ExprRedNode, FileRedUnit, GreenCatchClause, GreenChild, GreenCtor, GreenDecl, GreenDeclKind, GreenExpr, GreenExprKind, GreenMatchArm, GreenPattern, GreenPureStaticPath, HasTextLen, RequireRedNode, TypeName, Visibility};
 use leafc_coreapi::diagnostic::DiagMsg;
 use leafc_coreapi::name_pass::{ArmScopeMap, CatchScopeMap, DoScopeMap, FunScopeMap, NamePassApi, NamePassError, NamePassResult};
 use leafc_coreapi::scope::{ScopeId, ScopeKind, ScopePool, SymbolKind};
@@ -28,6 +28,9 @@ pub struct NamePass<'a> {
 
     /// source_id => ScopeId
     source_id_to_scope: HashMap<SourceId, ScopeId>,
+
+    /// Ctor => ScopeId
+    ctor_scope_map: HashMap<Arc<GreenCtor>, ScopeId>,
 
     /// lang item
     lang_items: LangItems,
@@ -557,6 +560,7 @@ impl<'a> NamePassApi<'a> for NamePass<'a> {
             catch_scope_map: HashMap::new(),
             source_to_file_unit: HashMap::new(),
             source_id_to_scope: HashMap::new(),
+            ctor_scope_map: HashMap::new(),
             lang_items: LangItems::new(),
         }
     }
@@ -721,6 +725,25 @@ impl<'a> NamePassApi<'a> for NamePass<'a> {
                         for ctor_child in ctors {
                             let ctor_span = child_span(&decl_span, ctor_child.relative_start, ctor_child.node.text_len);
                             let ctor_name = ctor_child.node.name.node.as_ref().clone();
+
+                            let ctor_scope_id = self.scope_pool.push_scope(
+                                Some(adt_scope_id),
+                                ScopeKind::Constructor,
+                                Some(Arc::clone(&decl_red.inner)), // fixme: use ctor ast
+                                Some(ctor_span.clone()),
+                            );
+                            self.ctor_scope_map.insert(Arc::clone(&ctor_child.node), ctor_scope_id);
+
+                            for gv in &ctor_child.node.generic_vars {
+                                let gv_span = child_span(&ctor_span, gv.relative_start, gv.node.text_len);
+                                self.scope_pool.add_symbol(
+                                    ctor_scope_id,
+                                    gv.node.name.node.as_ref().name.clone(),
+                                    gv_span,
+                                    SymbolKind::Generic,
+                                );
+                            }
+
                             constructors.push(self.scope_pool.add_symbol_and_get_sym_id(
                                 file_scope_id,
                                 ctor_name.name,
@@ -999,6 +1022,7 @@ impl<'a> NamePassApi<'a> for NamePass<'a> {
             arm_scope_map: self.arm_scope_map,
             catch_scope_map: self.catch_scope_map,
             source_id_to_scope: self.source_id_to_scope,
+            ctor_scope_map: self.ctor_scope_map,
             lang_items: self.lang_items,
         })
     }

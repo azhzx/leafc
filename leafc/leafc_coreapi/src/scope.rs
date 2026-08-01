@@ -18,6 +18,7 @@ pub enum ScopeKind {
     Crate,
     Effect,
     TypeAlias,
+    Constructor,
 }
 
 pub type SymId = usize;

@@ -29,7 +29,7 @@ type RawPtr[T];
 #lang("builtin_c_char_type")
 type CChar;
 
-
+type Unit = ()
 
 external fun puts(a: CVoidPtr) -> ()  = "leaf_rt__puts";
 external fun itoa(a: Int32) -> CVoidPtr = "leaf_rt__itoa";
@@ -42,15 +42,13 @@ type Maybe [t]
     | Just of t
     | None
 
-type Expr [a]
-    | MakeInt of Int -> Expr[Int]
-    | MakeFloat of Float -> Expr[Float]
 
-fun eval[T] (a: Expr[T]) -> T
+type Packed
+    | Pack[a] of a -> Packed
+
+fun bad(a: Packed)
     return when a
-        Expr.MakeInt(binding i) => i
-        Expr.MakeFloat(binding f) => f
+        Packed.Pack(binding m) => m
 
 fun main()
-    let x = eval( Expr.MakeInt(42) )
-    print_int(x)
+    let _ = bad(Packed.Pack(100))

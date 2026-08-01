@@ -14,6 +14,7 @@ pub type LocalBindingTypeMap = HashMap<SymId, TyId>;
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TypeNodeKind {
     Var,
+    RigidVar,
     Builtin(BuiltinType),
     Ref(TyId),
     MutRef(TyId),

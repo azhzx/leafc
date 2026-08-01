@@ -28,6 +28,7 @@ impl MirMono {
         }
         let new_kind = match kind {
             TypeNodeKind::Var => unreachable!(),
+            TypeNodeKind::RigidVar => return root,
             TypeNodeKind::Builtin(_) | TypeNodeKind::Never => return ty,
             TypeNodeKind::Fun { param_tys, return_ty } => {
                 let new_params: Vec<TyId> = param_tys.iter()

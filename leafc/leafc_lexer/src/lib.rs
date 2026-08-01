@@ -1,3 +1,6 @@
+#[cfg(test)]
+mod test;
+
 use std::collections::{HashMap, HashSet};
 use leafc_coreapi::crate_meta::OperatorDef;
 use unicode_xid::UnicodeXID;

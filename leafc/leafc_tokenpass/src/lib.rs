@@ -647,7 +647,9 @@ impl<'a> Preprocessor<'a> {
                 else if current_token.kind == TokenType::Ident
                     && current_token.text == KEYWORD_DELETE_PREPROCESS {
                     index += 1;
-                    self.preprocessors.remove(&current_token.text);
+                    let target = self.token_at(&current_tokens, index)?.text.clone();
+                    self.preprocessors.remove(&target);
+                    index += 1;
                 }
 
                 else if current_token.kind == TokenType::Ident

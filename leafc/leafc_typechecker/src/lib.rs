@@ -131,6 +131,16 @@ impl TypeChecker {
         id
     }
 
+    fn new_rigid_var(&mut self) -> TyId {
+        let id = self.type_pool.len();
+        self.type_pool.push(TypeNode {
+            kind: TypeNodeKind::RigidVar,
+            parent: id,
+            level: 0,
+        });
+        id
+    }
+
     fn canonicalize_kind(&mut self, kind: TypeNodeKind, has_var: &mut bool) -> TypeNodeKind {
         let mut rep = |ty: TyId| -> TyId {
             let r = self.representative(ty);
@@ -144,6 +154,11 @@ impl TypeChecker {
                 *has_var = true;
                 TypeNodeKind::Var
             }
+            TypeNodeKind::RigidVar => {
+                *has_var = true;
+                TypeNodeKind::RigidVar
+            }
+
             TypeNodeKind::Builtin(_) | TypeNodeKind::Never => kind,
             TypeNodeKind::Fun { param_tys, return_ty } => {
                 let new_params: Vec<TyId> = param_tys.iter().map(|&t| rep(t)).collect();
@@ -324,6 +339,7 @@ impl TypeChecker {
                     Ok(root)
                 }
             }
+            TypeNodeKind::RigidVar => Ok(root),
             TypeNodeKind::Builtin(_) | TypeNodeKind::Never => Ok(root),
             TypeNodeKind::Fun { param_tys, return_ty } => {
                 let new_params: Result<Vec<_>, _> = param_tys.iter()
@@ -399,6 +415,34 @@ impl TypeChecker {
             (TypeNodeKind::Never, _) => {
                 // Never <: T
                 Ok(())
+            }
+            (TypeNodeKind::RigidVar, TypeNodeKind::RigidVar) => {
+                if r1 == r2 {
+                    Ok(())
+                } else {
+                    Err(DiagMsg {
+                        title: format!("{:?}", TypeCheckerError::TypeMismatch),
+                        msg: "cannot unify different existential types".into(),
+                        span,
+                    })
+                }
+            }
+            (TypeNodeKind::RigidVar, TypeNodeKind::Var) => {
+                self.check_occurs(r2, r1, span.clone())?;
+                self.type_pool[r2].parent = r1;
+                Ok(())
+            }
+            (TypeNodeKind::Var, TypeNodeKind::RigidVar) => {
+                self.check_occurs(r1, r2, span.clone())?;
+                self.type_pool[r1].parent = r2;
+                Ok(())
+            }
+            (TypeNodeKind::RigidVar, _) | (_, TypeNodeKind::RigidVar) => {
+                Err(DiagMsg {
+                    title: format!("{:?}", TypeCheckerError::TypeMismatch),
+                    msg: "existential type cannot be unified with a concrete type".into(),
+                    span,
+                })
             }
             (TypeNodeKind::Var, TypeNodeKind::Var) => {
                 let lv1 = self.type_pool[r1].level;
@@ -857,7 +901,25 @@ impl TypeChecker {
                         span: self.hir_name_span(ctor_name, pat_span.clone()),
                     })?;
 
-                let ctor_ty = self.instantiate(&scheme);
+                let adt_decl_id = self.get_adt_decl_id_for_constructor(ctor_name.sym_id)
+                    .unwrap();
+                let adt_gen_count = match &self.hir_crate.hir_decl_pool[adt_decl_id].kind {
+                    HirDeclKind::ADT { generic_params, .. } => generic_params.len(),
+                    _ => unreachable!(),
+                };
+
+                let mut subst = HashMap::new();
+                for (i, &qv) in scheme.quantified.iter().enumerate() {
+                    let new_id = if i < adt_gen_count {
+                        self.new_type_var()
+                    } else {
+                        self.new_rigid_var()
+                    };
+                    subst.insert(qv, new_id);
+                }
+
+                let ctor_ty = self.copy_type_with_subst(scheme.body, &subst)?;
+
                 let root = self.representative(ctor_ty);
 
                 let (param_tys, adt_ty) = match &self.type_pool[root].kind {
@@ -1193,6 +1255,15 @@ impl TypeChecker {
                     let new_var = self.new_type_var();
                     var_map.insert(root, new_var);
                     Ok(new_var)
+                }
+            }
+            TypeNodeKind::RigidVar => {
+                if let Some(&mapped) = var_map.get(&root) {
+                    Ok(mapped)
+                } else {
+                    let new_rigid = self.new_rigid_var();
+                    var_map.insert(root, new_rigid);
+                    Ok(new_rigid)
                 }
             }
             TypeNodeKind::Builtin(_) | TypeNodeKind::Never => Ok(root),
@@ -1827,8 +1898,6 @@ impl TypeChecker {
                     .map(|arm| arm.guard.is_some())
                     .collect();
 
-                let pool_len_before = self.type_pool.len();
-
                 for arm in arms {
                     let saved_level = self.current_level;
                     self.current_level += 1;
@@ -1865,8 +1934,6 @@ impl TypeChecker {
                         self.name_type_map.remove(&sym_id);
                     }
 
-                    // 回滚 type_pool
-                    self.type_pool.truncate(pool_len_before);
                     self.current_level = saved_level;
                 }
 
@@ -2253,20 +2320,8 @@ impl TypeChecker {
         self.decl_type_map.insert(decl_id, adt_scheme.clone());
 
         let mut variants_payloads: Vec<Option<TyId>> = Vec::new();
+
         for ctor in ctors {
-            let payload = if let Some(from_type) = &ctor.from_type {
-                Some(self.resolve_type_name(from_type, ctor.span.clone())?)
-            } else {
-                None
-            };
-            variants_payloads.push(payload);
-        }
-
-        if let TypeNodeKind::ADT { variants, .. } = &mut self.type_pool[adt_ty_id].kind {
-            *variants = variants_payloads.clone();
-        }
-
-        for (ctor, &payload_opt) in ctors.iter().zip(&variants_payloads) {
             let local_vars: Vec<TyId> = ctor.generic_params.iter()
                 .map(|_| self.new_type_var())
                 .collect();
@@ -2277,6 +2332,13 @@ impl TypeChecker {
                     TypeScheme { quantified: vec![], body: *lv },
                 );
             }
+
+            let payload_opt = if let Some(from_type) = &ctor.from_type {
+                Some(self.resolve_type_name(from_type, ctor.span.clone())?)
+            } else {
+                None
+            };
+            variants_payloads.push(payload_opt);
 
             let return_ty = if let Some(ret_ann) = &ctor.return_type {
                 self.resolve_type_name(ret_ann, ctor.span.clone())?
@@ -2304,6 +2366,10 @@ impl TypeChecker {
                 body: ctor_ty,
             };
             self.name_type_map.insert(ctor.name.sym_id, ctor_scheme);
+        }
+
+        if let TypeNodeKind::ADT { variants, .. } = &mut self.type_pool[adt_ty_id].kind {
+            *variants = variants_payloads.clone();
         }
 
         for gp in generic_params {
@@ -2636,7 +2702,9 @@ impl TypeChecker {
                     format!("[{}]", subst_str.join(", "))
                 })
             },
-            TypeNodeKind::RawPtr(inner) => format!("RawPtr[{}]", self.ty_to_string(*inner)),        }
+            TypeNodeKind::RawPtr(inner) => format!("RawPtr[{}]", self.ty_to_string(*inner)),
+            TypeNodeKind::RigidVar => "$_".to_string(),
+        }
     }
 
     fn get_root(&self, mut id: TyId) -> TyId {
