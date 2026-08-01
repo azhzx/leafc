@@ -1,4 +1,4 @@
-use leafc_coreapi::ast::{child_decl_red, child_expr_red, child_span, child_span_of, AtomExprNode, CrateAst, DeclRedNode, ExprRedNode, FileRedUnit, GreenCatchClause, GreenChild, GreenCtor, GreenDecl, GreenDeclKind, GreenExpr, GreenExprKind, GreenMatchArm, GreenPattern, GreenPureStaticPath, HasTextLen, RequireRedNode, TypeName, Visibility};
+use leafc_coreapi::ast::{child_decl_red, child_expr_red, child_span, child_span_of, AtomExprNode, CrateAst, DeclRedNode, ExprRedNode, FileRedUnit, GreenCatchClause, GreenCatchParam, GreenChild, GreenCtor, GreenDecl, GreenDeclKind, GreenExpr, GreenExprKind, GreenMatchArm, GreenPattern, GreenPureStaticPath, HasTextLen, RequireRedNode, TypeName, Visibility};
 use leafc_coreapi::diagnostic::DiagMsg;
 use leafc_coreapi::name_pass::{ArmScopeMap, CatchScopeMap, DoScopeMap, FunScopeMap, NamePassApi, NamePassError, NamePassResult};
 use leafc_coreapi::scope::{ScopeId, ScopeKind, ScopePool, SymbolKind};
@@ -354,11 +354,17 @@ impl<'a> NamePass<'a> {
                     self.catch_scope_map.insert(clause.clone(), catch_scope);
 
                     for param_child in &clause.params {
-                        let mut bindings = Vec::new();
-                        Self::collect_pattern_bindings(param_child, &clause_span, &mut bindings);
-                        let param_abs_span = child_span(&clause_span, param_child.relative_start, param_child.node.text_len());
-                        for (name, span) in bindings {
-                            self.scope_pool.add_symbol(catch_scope, name, span, SymbolKind::Local);
+                        match &*param_child.node {
+                            GreenCatchParam::Binding { name } => {
+                                let param_span = child_span(&clause_span, param_child.relative_start, param_child.node.text_len());
+                                self.scope_pool.add_symbol(
+                                    catch_scope,
+                                    name.name.clone(),
+                                    param_span,
+                                    SymbolKind::Local,
+                                );
+                            }
+                            GreenCatchParam::Rest => {}
                         }
                     }
 
@@ -513,13 +519,7 @@ impl<'a> NamePass<'a> {
                     let control_path_child = &clause.control_static_path;
                     let path_span = child_span(&clause_span, control_path_child.relative_start, control_path_child.node.text_len);
                     self.resolve_static_path_with_span(&control_path_child.node, &path_span, *catch_scope)?;
-
-                    // pattern
-                    for param_child in &clause.params {
-                        let param_abs_span = child_span(&clause_span, param_child.relative_start, param_child.node.text_len());
-                        self.resolve_pattern(param_child, &param_abs_span, *catch_scope)?;
-                    }
-
+                    
                     // body
                     self.resolve_expr(&child_expr_red(&clause_span, &clause.body), *catch_scope)?;
                 }

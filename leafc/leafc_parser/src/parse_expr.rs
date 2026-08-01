@@ -1,5 +1,5 @@
 use crate::Parser;
-use leafc_coreapi::ast::{AtomExprNode, ExprRedNode, GreenCallArg, GreenCatchClause, GreenChild, GreenElseIf, GreenExpr, GreenExprKind, GreenMatchArm, GreenPattern, GreenPureStaticPath, GreenStructFieldInit, GreenStructPatternField, HasTextLen, IdentName, TypeName};
+use leafc_coreapi::ast::{AtomExprNode, ExprRedNode, GreenCallArg, GreenCatchClause, GreenCatchParam, GreenChild, GreenElseIf, GreenExpr, GreenExprKind, GreenMatchArm, GreenPattern, GreenPureStaticPath, GreenStructFieldInit, GreenStructPatternField, HasTextLen, IdentName, TypeName};
 use leafc_coreapi::crate_meta::OperatorKind;
 use leafc_coreapi::diagnostic::DiagMsg;
 use leafc_coreapi::token::TokenType;
@@ -528,14 +528,44 @@ impl<'a> Parser<'a> {
             };
 
             self.skip_token_only(TokenType::Lparen)?;
-            let mut params = vec![];
+            let mut params: Vec<GreenChild<GreenCatchParam>> = vec![];
+            let mut has_rest = false;
+
             while self.current_token().kind != TokenType::Rparen {
-                let pat_start = self.current_token().span.start_off;
-                let pat = self.parse_pattern()?;
-                params.push(GreenChild {
-                    relative_start: (pat_start - catch_start),
-                    node: Arc::new(pat),
-                });
+                let param_start = self.current_token().span.start_off;
+
+                if self.current_token().kind == TokenType::DotDot {
+                    if has_rest {
+                        return Err(DiagMsg {
+                            title: format!("{:?}", ParserError::InvalidPattern),
+                            msg: "multiple `..` in catch parameters".to_string(),
+                            span: self.current_token().span.clone(),
+                        });
+                    }
+                    self.skip_token(); // '..'
+                    params.push(GreenChild {
+                        relative_start: param_start - catch_start,
+                        node: Arc::new(GreenCatchParam::Rest),
+                    });
+                    has_rest = true;
+                } else if self.current_token().kind == TokenType::KwBinding {
+                    self.skip_token(); // 'binding'
+                    let name_token = self.current_token().clone();
+                    self.skip_token_only(TokenType::Ident)?;
+                    let name = IdentName { name: name_token.text.clone() };
+
+                    params.push(GreenChild {
+                        relative_start: param_start - catch_start,
+                        node: Arc::new(GreenCatchParam::Binding { name }),
+                    });
+                } else {
+                    return Err(DiagMsg {
+                        title: format!("{:?}", ParserError::InvalidPattern),
+                        msg: "catch parameter must be `binding <name>` or `..`".to_string(),
+                        span: self.current_token().span.clone(),
+                    });
+                }
+
                 if self.current_token().kind == TokenType::Comma {
                     self.skip_token();
                 } else if self.current_token().kind == TokenType::Rparen {
@@ -543,7 +573,7 @@ impl<'a> Parser<'a> {
                 } else {
                     return Err(DiagMsg {
                         title: format!("{:?}", ParserError::InvalidPattern),
-                        msg: "invalid catch parameter pattern".to_string(),
+                        msg: "expected `,` or `)` in catch parameters".to_string(),
                         span: self.current_token().span.clone(),
                     });
                 }

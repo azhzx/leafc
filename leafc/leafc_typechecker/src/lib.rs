@@ -1,5 +1,5 @@
 use leafc_coreapi::diagnostic::DiagMsg;
-use leafc_coreapi::hir::{HirBinOp, HirCrate, HirCtorDef, HirDeclId, HirDeclKind, HirExprId, HirExprKind, HirFieldDef, HirGenericParam, HirLit, HirName, HirParam, HirPattern, HirTypeName, HirUnaryOp};
+use leafc_coreapi::hir::{HirBinOp, HirCatchParam, HirCrate, HirCtorDef, HirDeclId, HirDeclKind, HirExprId, HirExprKind, HirFieldDef, HirGenericParam, HirLit, HirName, HirParam, HirPattern, HirTypeName, HirUnaryOp};
 use leafc_coreapi::lang_items::BuiltinType;
 use leafc_coreapi::name_pass::NamePassResult;
 use leafc_coreapi::scope::SymId;
@@ -25,6 +25,7 @@ pub struct BuiltinTypes {
     pub unit: TyId,
     pub never: TyId,
     pub raw_ptr: TyId,
+    pub mut_raw_ptr: TyId,
     pub c_char: TyId,
 }
 
@@ -73,15 +74,15 @@ impl TypeChecker {
         let bool_ty = push(TypeNodeKind::Builtin(BuiltinType::Bool));
         let never = push(TypeNodeKind::Never);
         let unit = push(TypeNodeKind::Tuple(vec![]));
-        let ptr = push(TypeNodeKind::Builtin(BuiltinType::CVoidPtr));
+        let void_ptr = push(TypeNodeKind::Builtin(BuiltinType::CVoidPtr));
         let raw_ptr = push(TypeNodeKind::Builtin(BuiltinType::RawPtr));
+        let mut_raw_ptr = push(TypeNodeKind::Builtin(BuiltinType::MutRawPtr));
         let c_char = push(TypeNodeKind::Builtin(BuiltinType::CChar));
         BuiltinTypes {
             int8, int16, int32, int64, uint8, uint16, uint32, uint64,
-            float32, float64, bool_ty, ptr,
-            unit, never,
-            raw_ptr,
-            c_char,
+            float32, float64, bool_ty,
+            ptr: void_ptr, unit, never,
+            raw_ptr, mut_raw_ptr, c_char,
         }
     }
 
@@ -136,7 +137,7 @@ impl TypeChecker {
         self.type_pool.push(TypeNode {
             kind: TypeNodeKind::RigidVar,
             parent: id,
-            level: 0,
+            level: self.current_level,
         });
         id
     }
@@ -189,6 +190,8 @@ impl TypeChecker {
             TypeNodeKind::MutRef(inner) => TypeNodeKind::MutRef(rep(inner)),
             TypeNodeKind::Share(inner) => TypeNodeKind::Share(rep(inner)),
             TypeNodeKind::RawPtr(inner) => TypeNodeKind::RawPtr(rep(inner)),
+            TypeNodeKind::MutRawPtr(inner) => TypeNodeKind::MutRawPtr(rep(inner)),
+
         }
     }
     fn push_type_node(&mut self, kind: TypeNodeKind) -> TyId {
@@ -228,6 +231,17 @@ impl TypeChecker {
                             let inner_ty = self.resolve_type_name(&generics[0], span.clone())?;
                             return Ok(self.intern_type(TypeNodeKind::RawPtr(inner_ty)));
                         }
+                        BuiltinType::MutRawPtr => {
+                            if generics.len() != 1 {
+                                return Err(DiagMsg {
+                                    title: format!("{:?}", TypeCheckerError::GenericArityMismatch),
+                                    msg: format!("RawPtr expects exactly 1 type argument, got {}", generics.len()),
+                                    span,
+                                });
+                            }
+                            let inner_ty = self.resolve_type_name(&generics[0], span.clone())?;
+                            return Ok(self.intern_type(TypeNodeKind::MutRawPtr(inner_ty)));
+                        }
                         _ => {
                             if !generics.is_empty() {
                                 return Err(DiagMsg {
@@ -251,7 +265,8 @@ impl TypeChecker {
                                 BuiltinType::Never => self.builtin.never,
                                 BuiltinType::CVoidPtr => self.builtin.ptr,
                                 BuiltinType::RawPtr => self.builtin.raw_ptr,
-                                BuiltinType::CChar => self.builtin.c_char
+                                BuiltinType::CChar => self.builtin.c_char,
+                                BuiltinType::MutRawPtr => self.builtin.mut_raw_ptr,
                             };
                             Ok(ty_id)
                         }
@@ -402,6 +417,53 @@ impl TypeChecker {
                 let new_inner = self.copy_type_with_subst(inner, subst)?;
                 Ok(self.intern_type(TypeNodeKind::RawPtr(new_inner)))
             }
+            TypeNodeKind::MutRawPtr(inner) => {
+                let new_inner = self.copy_type_with_subst(inner, subst)?;
+                Ok(self.intern_type(TypeNodeKind::MutRawPtr(new_inner)))
+            }
+        }
+    }
+
+    fn check_rigid_escape(&self, ty: TyId, level: u32, span: &Span) -> Result<(), DiagMsg> {
+        let root = self.get_root(ty);
+        let kind = &self.type_pool[root].kind;
+        match kind {
+            TypeNodeKind::RigidVar => {
+                if self.type_pool[root].level > level {
+                    return Err(DiagMsg {
+                        title: format!("{:?}", TypeCheckerError::TypeMismatch),
+                        msg: "existential type variable escapes its scope".into(),
+                        span: span.clone(),
+                    });
+                }
+                Ok(())
+            }
+            TypeNodeKind::Fun { param_tys, return_ty } => {
+                for &p in param_tys {
+                    self.check_rigid_escape(p, level, span)?;
+                }
+                self.check_rigid_escape(*return_ty, level, span)
+            }
+            TypeNodeKind::Tuple(elems) => {
+                for &e in elems {
+                    self.check_rigid_escape(e, level, span)?;
+                }
+                Ok(())
+            }
+            TypeNodeKind::Struct { subst, .. } | TypeNodeKind::ADT { subst, .. } => {
+                for &s in subst {
+                    self.check_rigid_escape(s, level, span)?;
+                }
+                Ok(())
+            }
+            TypeNodeKind::Ref(inner)
+            | TypeNodeKind::MutRef(inner)
+            | TypeNodeKind::Share(inner)
+            | TypeNodeKind::RawPtr(inner)
+            | TypeNodeKind::MutRawPtr(inner) => {
+                self.check_rigid_escape(*inner, level, span)
+            }
+            _ => Ok(()),
         }
     }
 
@@ -429,11 +491,29 @@ impl TypeChecker {
             }
             (TypeNodeKind::RigidVar, TypeNodeKind::Var) => {
                 self.check_occurs(r2, r1, span.clone())?;
+                let var_level = self.type_pool[r2].level;
+                let rigid_level = self.type_pool[r1].level;
+                if var_level <= rigid_level {
+                    return Err(DiagMsg {
+                        title: format!("{:?}", TypeCheckerError::TypeMismatch),
+                        msg: "existential type variable escapes its scope".into(),
+                        span,
+                    });
+                }
                 self.type_pool[r2].parent = r1;
                 Ok(())
             }
             (TypeNodeKind::Var, TypeNodeKind::RigidVar) => {
                 self.check_occurs(r1, r2, span.clone())?;
+                let var_level = self.type_pool[r1].level;
+                let rigid_level = self.type_pool[r2].level;
+                if var_level <= rigid_level {
+                    return Err(DiagMsg {
+                        title: format!("{:?}", TypeCheckerError::TypeMismatch),
+                        msg: "existential type variable escapes its scope".into(),
+                        span,
+                    });
+                }
                 self.type_pool[r1].parent = r2;
                 Ok(())
             }
@@ -546,6 +626,7 @@ impl TypeChecker {
                 self.unify(*a, *b, span)
             }
             (TypeNodeKind::RawPtr(a), TypeNodeKind::RawPtr(b)) => self.unify(*a, *b, span),
+            (TypeNodeKind::MutRawPtr(a), TypeNodeKind::MutRawPtr(b)) => self.unify(*a, *b, span),
             _ => Err(DiagMsg {
                 title: format!("{:?}", TypeCheckerError::TypeMismatch),
                 msg: format!(
@@ -592,6 +673,7 @@ impl TypeChecker {
                 self.check_occurs(var, inner, span)
             }
             TypeNodeKind::RawPtr(inner) => self.check_occurs(var, inner, span),
+            TypeNodeKind::MutRawPtr(inner) => self.check_occurs(var, inner, span),
             _ => Ok(()),
         }
     }
@@ -762,6 +844,7 @@ impl TypeChecker {
                 self.collect_free_vars(inner, out);
             }
             TypeNodeKind::RawPtr(inner) => self.collect_free_vars(inner, out),
+            TypeNodeKind::MutRawPtr(inner) => self.collect_free_vars(inner, out),
             _ => {}
         }
     }
@@ -1334,6 +1417,10 @@ impl TypeChecker {
                 let new_inner = self.clone_type_internal(inner, var_map)?;
                 Ok(self.intern_type(TypeNodeKind::RawPtr(new_inner)))
             }
+            TypeNodeKind::MutRawPtr(inner) => {
+                let new_inner = self.clone_type_internal(inner, var_map)?;
+                Ok(self.intern_type(TypeNodeKind::MutRawPtr(new_inner)))
+            }
         }
     }
 
@@ -1775,6 +1862,14 @@ impl TypeChecker {
                             span: span.clone(),
                         })?;
 
+                    if *called {
+                        return Err(DiagMsg {
+                            title: format!("{:?}", TypeCheckerError::MultipleResume),
+                            msg: "`resume` can only be called once inside a handler".into(),
+                            span: span.clone(),
+                        });
+                    }
+
                     *called = true;
                     *ty
                 };
@@ -1820,29 +1915,58 @@ impl TypeChecker {
                             });
                         };
 
-                    if clause.params.len() != ctrl_param_tys.len() {
-                        return Err(DiagMsg {
-                            title: format!("{:?}", TypeCheckerError::ArityMismatch),
-                            msg: format!(
-                                "control `{}` expects {} arguments, got {}",
-                                clause.control_path.name,
-                                ctrl_param_tys.len(),
-                                clause.params.len()
-                            ),
-                            span: clause.span.clone(),
-                        });
+                    let param_count = clause.params.len();
+                    let has_rest = clause.params.last().map_or(false, |p| matches!(p, HirCatchParam::Rest));
+
+                    if has_rest {
+                        if param_count > 0 && param_count - 1 > ctrl_param_tys.len() {
+                            return Err(DiagMsg {
+                                title: format!("{:?}", TypeCheckerError::ArityMismatch),
+                                msg: format!(
+                                    "control `{}` expects {} arguments, but {} bindings provided (plus `..`)",
+                                    clause.control_path.name,
+                                    ctrl_param_tys.len(),
+                                    param_count - 1,
+                                ),
+                                span: clause.span.clone(),
+                            });
+                        }
+                    } else {
+                        if param_count != ctrl_param_tys.len() {
+                            return Err(DiagMsg {
+                                title: format!("{:?}", TypeCheckerError::ArityMismatch),
+                                msg: format!(
+                                    "control `{}` expects {} arguments, got {}",
+                                    clause.control_path.name,
+                                    ctrl_param_tys.len(),
+                                    param_count,
+                                ),
+                                span: clause.span.clone(),
+                            });
+                        }
                     }
 
-                    // 新作用域
                     let saved_level = self.current_level;
                     self.current_level += 1;
 
                     let mut bound_symbols = Vec::new();
-                    for (pat, &pty) in clause.params.iter().zip(&ctrl_param_tys) {
-                        if let HirPattern::Binding(name) = pat {
-                            self.local_binding_map.insert(name.sym_id, pty);
+                    for (i, param) in clause.params.iter().enumerate() {
+                        match param {
+                            HirCatchParam::Binding(name) => {
+                                if i < ctrl_param_tys.len() {
+                                    let pty = ctrl_param_tys[i];
+                                    self.local_binding_map.insert(name.sym_id, pty);
+                                    self.name_type_map.insert(
+                                        name.sym_id,
+                                        TypeScheme { quantified: vec![], body: pty },
+                                    );
+                                    bound_symbols.push(name.sym_id);
+                                } else {
+                                    unreachable!();
+                                }
+                            }
+                            HirCatchParam::Rest => {}
                         }
-                        self.bind_pattern(pat, pty, &mut bound_symbols)?;
                     }
 
                     let resume_fun_ty = self.intern_type(TypeNodeKind::Fun {
@@ -1929,6 +2053,8 @@ impl TypeChecker {
 
                     let body_ty = self.infer_expr(arm.body, Some(arm_expected_ty))?;
                     self.unify(body_ty, arm_expected_ty, arm.span.clone())?;
+
+                    self.check_rigid_escape(body_ty, saved_level, &arm.span)?;
 
                     for sym_id in bound_symbols {
                         self.name_type_map.remove(&sym_id);
@@ -2703,6 +2829,7 @@ impl TypeChecker {
                 })
             },
             TypeNodeKind::RawPtr(inner) => format!("RawPtr[{}]", self.ty_to_string(*inner)),
+            TypeNodeKind::MutRawPtr(inner) => format!("MutRawPtr[{}]", self.ty_to_string(*inner)),
             TypeNodeKind::RigidVar => "$_".to_string(),
         }
     }

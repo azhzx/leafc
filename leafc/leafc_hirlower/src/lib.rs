@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
-use leafc_coreapi::ast::{child_decl_red, child_expr_red, child_span_of, AtomExprNode, CrateAst, DeclRedNode, ExprRedNode, GreenCatchClause, GreenChild, GreenCtor, GreenDecl, GreenDeclKind, GreenExpr, GreenExprKind, GreenField, GreenGenericVar, GreenMatchArm, GreenMethodDecl, GreenParam, GreenPattern, GreenPureStaticPath, GreenWhereClause, HasTextLen, TypeName, Visibility};
+use leafc_coreapi::ast::{child_decl_red, child_expr_red, child_span_of, AtomExprNode, CrateAst, DeclRedNode, ExprRedNode, GreenCatchClause, GreenCatchParam, GreenChild, GreenCtor, GreenDecl, GreenDeclKind, GreenExpr, GreenExprKind, GreenField, GreenGenericVar, GreenMatchArm, GreenMethodDecl, GreenParam, GreenPattern, GreenPureStaticPath, GreenWhereClause, HasTextLen, TypeName, Visibility};
 use leafc_coreapi::diagnostic::DiagMsg;
-use leafc_coreapi::hir::{HirBinOp, HirCatchClause, HirCrate, HirCtorDef, HirDecl, HirDeclId, HirDeclKind, HirExpr, HirExprId, HirExprKind, HirFieldDef, HirGenericParam, HirLit, HirMatchArm, HirMethodDecl, HirName, HirParam, HirPattern, HirStructPatternField, HirTypeName, HirUnaryOp};
+use leafc_coreapi::hir::{HirBinOp, HirCatchClause, HirCatchParam, HirCrate, HirCtorDef, HirDecl, HirDeclId, HirDeclKind, HirExpr, HirExprId, HirExprKind, HirFieldDef, HirGenericParam, HirLit, HirMatchArm, HirMethodDecl, HirName, HirParam, HirPattern, HirStructPatternField, HirTypeName, HirUnaryOp};
 use leafc_coreapi::hir_lower::{HirLowerApi, HirLowerError};
 use leafc_coreapi::name_pass::NamePassResult;
 use leafc_coreapi::operators::Operator;
@@ -594,13 +594,28 @@ impl<'a> HirLower<'a> {
     ) -> Result<HirCatchClause, DiagMsg> {
         let path_span = child_span_of(parent_span, &clause.control_static_path);
         let control_name = self.resolve_static_path(&clause.control_static_path.node, catch_scope, &path_span)?;
-        let params = clause.params
+        let params: Vec<HirCatchParam> = clause.params
             .iter()
             .map(|p| {
                 let p_span = child_span_of(parent_span, p);
-                self.lower_pattern(&p.node, catch_scope, &p_span)
+                match &*p.node {
+                    GreenCatchParam::Binding { name } => {
+                        let sym = self.lookup_symbol(catch_scope, &name.name)
+                            .ok_or_else(|| DiagMsg {
+                                title: format!("{:?}", HirLowerError::BindingNotFound),
+                                msg: format!("binding `{}` not found", name.name),
+                                span: p_span.clone(),
+                            })?;
+                        Ok(HirCatchParam::Binding(HirName {
+                            name: sym.name.clone(),
+                            sym_id: sym.sym_id,
+                        }))
+                    }
+                    GreenCatchParam::Rest => Ok(HirCatchParam::Rest),
+                }
             })
             .collect::<Result<_, _>>()?;
+
         let body_red = child_expr_red(parent_span, &clause.body);
         let body = self.lower_expr(&body_red, catch_scope)?;
         let clause_span = Span {

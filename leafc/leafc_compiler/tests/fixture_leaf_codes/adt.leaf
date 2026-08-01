@@ -26,36 +26,14 @@ type CVoidPtr;
 #lang("builtin_raw_ptr_type")
 type RawPtr[T];
 
-#lang("builtin_mut_raw_ptr_type")
-type MutRawPtr[T];
-
 #lang("builtin_c_char_type")
 type CChar;
 
 type Unit = ()
 
-external fun printf(fmt: RawPtr[CChar], ...) -> Int;
 external fun puts(a: CVoidPtr) -> ()  = "leaf_rt__puts";
 external fun itoa(a: Int32) -> CVoidPtr = "leaf_rt__itoa";
 
 
 fun print_int(a)
     unsafe_call_external puts(unsafe_call_external itoa(a))
-
-type Maybe [t]
-    | Just of t
-    | None
-
-
-effect Effect
-    | control(x: Int) -> Int
-
-fun foo()
-    print_int(raise Effect.control(100))
-    return 666
-
-fun main()
-    let x = with foo()
-    catch Effect.control(binding x)
-        resume x * 2
-    print_int(x)

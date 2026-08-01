@@ -135,6 +135,14 @@ impl CCodeGen {
                     format!("const {}*", inner_c)
                 }
             }
+            TypeNodeKind::MutRawPtr(inner) => {
+                let inner_c = self.ty_to_c(*inner);
+                if inner_c.contains("%s") {
+                    inner_c.replacen("%s", "*%s", 1)
+                } else {
+                    format!("{}*", inner_c)
+                }
+            }
             TypeNodeKind::Never => "void*".into(),
             TypeNodeKind::Var => format!("unknown_ty_var_{}", ty_id),
             _ => format!("unknown_ty_{}", ty_id),
@@ -293,7 +301,7 @@ impl CCodeGen {
                     format!("(({}){})", ty, p)
                 }
             }
-            Rvalue::TempRef(place) | Rvalue::TempRefMut(place) => {
+            Rvalue::Ref(place) | Rvalue::RefMut(place) => {
                 format!("&({})", self.place_to_c(place, var_names))
             }
 
@@ -377,7 +385,7 @@ impl CCodeGen {
                     format!("({}){{ {} }}", type_name, fields_str)
                 }
             }
-            Rvalue::TempRef(place) | Rvalue::TempRefMut(place) => {
+            Rvalue::Ref(place) | Rvalue::RefMut(place) => {
                 format!("&({})", self.place_to_c(place, var_names))
             }
             Rvalue::GetFunPtr(fun_id) => {
@@ -407,22 +415,13 @@ impl CCodeGen {
             if let TypeNodeKind::Fun { param_tys, return_ty } = &self.type_checker_result.type_pool[ret_root].kind {
                 let ret_c = self.ty_to_c(*return_ty);
                 let params_c: Vec<String> = param_tys.iter().map(|&t| self.ty_to_c(t)).collect();
-                let ret = if is_main {
-                    "int".to_string()
-                } else {
-                    format!("{} (*{}())({})", ret_c, mangled, params_c.join(", "))
-                };
+                let ret = if is_main { "int".to_string() }
+                else { format!("{} (*{}())({})", ret_c, mangled, params_c.join(", ")) };
                 (ret, Some(params_c), Some(*return_ty))
             } else {
                 let mut rty = self.ty_to_c(ret_ty_id);
-                if rty.contains("%s") {
-                    rty = rty.replace("%s", "");
-                }
-                let ret = if is_main {
-                    "int".to_string()
-                } else {
-                    rty
-                };
+                if rty.contains("%s") { rty = rty.replace("%s", ""); }
+                let ret = if is_main { "int".to_string() } else { rty };
                 (ret, None, None)
             };
 
@@ -435,12 +434,47 @@ impl CCodeGen {
         for (i, decl) in fun.local_decls.iter().enumerate() {
             if i == 0 { continue; }
             let mut name = decl.name.clone().unwrap_or_else(|| format!("v{}", i));
-            if name == "return" {
-                name = "_ret".to_string();
-            }
+            if name == "return" { name = "_ret".to_string(); }
             let unique = format!("{}_{}", name, var_counter);
             var_counter += 1;
             var_names.insert(i, unique);
+        }
+
+        let mut body_functions = String::new();
+        let mut body_info: HashMap<BasicBlockId, (String, BasicBlockId, BasicBlockId, ControlId, Vec<LocalId>)> = HashMap::new();
+        let mut body_fun_count = 0;
+        let mut skip_blocks: HashSet<BasicBlockId> = HashSet::new();
+
+        for &bid in &fun.blocks {
+            if let TerminatorKind::InstallHandler { handler_block, next, args_dest, control_id } = &blocks[bid].terminator {
+                let merge_block = match &blocks[*handler_block].terminator {
+                    TerminatorKind::Goto { target, .. } => *target,
+                    TerminatorKind::Resume { target, .. } => *target,
+                    _ => panic!("handler block must end with Goto or Resume"),
+                };
+                let body_fun_name = format!("{}_with_body_{}", mangled, body_fun_count);
+                body_info.insert(bid, (body_fun_name.clone(), merge_block, *next, *control_id, args_dest.clone()));
+
+                body_functions += &self.extract_with_body(
+                    fun, blocks, bid, *next, merge_block, 0, *control_id, args_dest, &body_fun_name
+                );
+
+                let mut body_set = HashSet::new();
+                let mut stack = vec![*next];
+                while let Some(bid2) = stack.pop() {
+                    if bid2 == merge_block || bid2 == 0 || !body_set.insert(bid2) { continue; }
+                    match &blocks[bid2].terminator {
+                        TerminatorKind::Goto { target, .. } => stack.push(*target),
+                        TerminatorKind::Call { target, .. } | TerminatorKind::CallByPtr { target, .. } => {
+                            if let Some(t) = target { stack.push(*t); }
+                        }
+                        TerminatorKind::Resume { target, .. } => stack.push(*target),
+                        _ => {}
+                    }
+                }
+                skip_blocks.extend(body_set);
+                body_fun_count += 1;
+            }
         }
 
         let param_count = fun.signature.params.len();
@@ -449,11 +483,7 @@ impl CCodeGen {
                 let local_id = 1 + i;
                 let ty = self.ty_to_c(fun.local_decls[local_id].ty);
                 let name = var_names[&local_id].clone();
-                if ty.contains("%s") {
-                    ty.replace("%s", &name)
-                } else {
-                    format!("{} {}", ty, name)
-                }
+                if ty.contains("%s") { ty.replace("%s", &name) } else { format!("{} {}", ty, name) }
             })
             .collect();
         let param_str = params.join(", ");
@@ -476,12 +506,14 @@ impl CCodeGen {
             let ty = self.ty_to_c(decl.ty);
             if ty == "void" { continue; }
             let name = &var_names[&i];
-            let decl_str = if ty.contains("%s") {
-                ty.replace("%s", name)
-            } else {
-                format!("{} {}", ty, name)
-            };
+            let decl_str = if ty.contains("%s") { ty.replace("%s", name) } else { format!("{} {}", ty, name) };
             code += &format!("    {};\n", decl_str);
+        }
+
+        code += "    leaf_fiber_t _main_fiber;\n";
+        code += "    leaf_fiber_t _body_fiber = NULL;\n";
+        if is_main {
+            code += "    main_fiber = leaf_convert_thread_to_fiber(NULL);\n";
         }
 
         if returns_value && !is_main {
@@ -491,18 +523,54 @@ impl CCodeGen {
                 format!("{} (*_ret)({})", ret_c, params_c)
             } else {
                 let mut rty = self.ty_to_c(ret_ty_id);
-                if rty.contains("%s") {
-                    rty.replace("%s", "_ret")
-                } else {
-                    format!("{} _ret", rty)
-                }
+                if rty.contains("%s") { rty.replace("%s", "_ret") } else { format!("{} _ret", rty) }
             };
             code += &format!("    {};\n", decl_str);
         }
 
         for &bid in &fun.blocks {
+            if skip_blocks.contains(&bid) { continue; }
             let block = &blocks[bid];
             code += &format!("  block_{}:\n", bid);
+
+            if let Some((body_fun_name, merge_block, _next, control_id, args_dest)) = body_info.get(&bid) {
+                let handler_block = match &block.terminator {
+                    TerminatorKind::InstallHandler { handler_block, .. } => *handler_block,
+                    _ => unreachable!(),
+                };
+                let args_dest_array = if !args_dest.is_empty() {
+                    let names: Vec<String> = args_dest.iter().map(|id| format!("&{}", var_names[id])).collect();
+                    format!("(void*[]){{{}}}", names.join(", "))
+                } else {
+                    "(void*[]){0}".to_string()
+                };
+                let result_param = &blocks[*merge_block].block_params[0]; // with 的结果参数
+                let result_local = *result_param;
+                let result_ty = fun.local_decls[result_local].ty;
+                let result_c_ty = self.ty_to_c(result_ty);
+                let result_name = &var_names[&result_local];
+
+                code += &format!(
+                    "    _body_fiber = leaf_create_fiber({}, NULL);\n",
+                    body_fun_name
+                );
+                code += &format!(
+                    "    leafc_push_handler({}, {}, {}, _body_fiber);\n",
+                    control_id, args_dest_array, args_dest.len()
+                );
+                code += "    leaf_switch_to_fiber(_body_fiber);\n";
+                code += "    if (_effect_raised) {\n";
+                code += "        _effect_raised = 0;\n";
+                code += &format!("        goto block_{};\n", handler_block);
+                code += "    } else {\n";
+                code += &format!(
+                    "        {} = ({})_raise_resume_val;\n",
+                    result_name, result_c_ty
+                );
+                code += &format!("        goto block_{};\n", merge_block);
+                code += "    }\n";
+                continue;
+            }
 
             for stmt in &block.statements {
                 match &stmt.kind {
@@ -511,15 +579,19 @@ impl CCodeGen {
                         if self.ty_to_c(ty) == "void" { continue; }
                         if is_main && *local == 0 { continue; }
                         let lhs = var_names[local].clone();
-                        let rhs = self.rvalue_to_c_with_ty(rvalue, ty, &var_names, fun);
+                        let rhs = match rvalue {
+                            Rvalue::HandlerArg(idx) => {
+                                let param_local = block.block_params[*idx];
+                                var_names[&param_local].clone()
+                            }
+                            _ => self.rvalue_to_c_with_ty(rvalue, ty, &var_names, fun),
+                        };
                         code += &format!("    {} = {};\n", lhs, rhs);
                     }
                     MirStmtKind::Store { place, rvalue } => {
                         let ty = self.place_ty(place, fun);
                         if self.ty_to_c(ty) == "void" { continue; }
-                        if is_main && matches!(place, Place::Local(id) if *id == 0) {
-                            continue;
-                        }
+                        if is_main && matches!(place, Place::Local(id) if *id == 0) { continue; }
                         let lhs = self.place_to_c(place, &var_names);
                         let rhs = self.rvalue_to_c_with_ty(rvalue, ty, &var_names, fun);
                         code += &format!("    {} = {};\n", lhs, rhs);
@@ -534,7 +606,8 @@ impl CCodeGen {
         }
 
         code += "}\n\n";
-        code
+
+        body_functions + &code
     }
 
     fn gen_terminator(
@@ -591,14 +664,12 @@ impl CCodeGen {
                     .map(|a| self.rvalue_to_c(a, var_names, fun))
                     .collect();
                 let call_expr = format!("{}({})", callee_mangled, arg_str.join(", "));
-
                 if self.ty_to_c(callee.signature.return_ty) != "void" {
                     let lhs = self.place_to_c(dest, var_names);
                     code += &format!("    {} = {};\n", lhs, call_expr);
                 } else {
                     code += &format!("    {};\n", call_expr);
                 }
-
                 if let Some(t) = target {
                     code += &format!("    goto block_{};\n", t);
                 }
@@ -632,13 +703,252 @@ impl CCodeGen {
             TerminatorKind::Unreachable => {
                 code += "    /* unreachable */ __builtin_unreachable();\n";
             }
+
+            TerminatorKind::Raise { control_name, args, dest } => {
+                let arg_strs: Vec<String> = args.iter()
+                    .map(|a| format!("(intptr_t)({})", self.rvalue_to_c(a, var_names, fun)))
+                    .collect();
+                let arg_list = arg_strs.join(", ");
+                code += &format!("    leafc_raise({}, {});\n", control_name, arg_list);
+                let dest_str = self.place_to_c(dest, var_names);
+                code += &format!("    {} = _raise_resume_val;\n", dest_str);
+                let resume_block = block_id + 1;
+                code += &format!("    goto block_{};\n", resume_block);
+            }
+            TerminatorKind::Resume { place, target } => {
+                let val = self.place_to_c(place, var_names);
+                code += &format!("    leafc_resume((intptr_t){});\n", val);
+                code += "    __builtin_unreachable();\n";
+            }
+            TerminatorKind::InstallHandler { .. } => {
+                unreachable!("InstallHandler should be handled in gen_function directly");
+            }
             _ => {
-                code += &format!("    /* terminator {:?} */;\n", block.terminator);
+                code += &format!("    /* unsupported terminator: {:?} */\n", block.terminator);
             }
         }
         code
     }
 
+    fn extract_with_body(
+        &self,
+        fun: &MirFun,
+        blocks: &[BasicBlock],
+        install_block: BasicBlockId,
+        next_block: BasicBlockId,
+        merge_block: BasicBlockId,
+        handler_block: BasicBlockId,
+        control_id: ControlId,
+        args_dest: &[LocalId],
+        body_fun_name: &str,
+    ) -> String {
+        let mut body_blocks = Vec::new();
+        let mut stack = vec![next_block];
+        let mut visited = HashSet::new();
+        while let Some(bid) = stack.pop() {
+            if bid == merge_block || bid == handler_block || !visited.insert(bid) {
+                continue;
+            }
+            body_blocks.push(bid);
+            match &blocks[bid].terminator {
+                TerminatorKind::Goto { target, .. } => stack.push(*target),
+                TerminatorKind::Call { target, .. } | TerminatorKind::CallByPtr { target, .. } => {
+                    if let Some(t) = target { stack.push(*t); }
+                }
+                TerminatorKind::Resume { target, .. } => stack.push(*target),
+                _ => {}
+            }
+        }
+        let mut code = format!("void {}() {{\n", body_fun_name);
+        let mut var_names = HashMap::new();
+        var_names.insert(0, "_ret".into());
+        let mut var_counter = 0u32;
+        for (i, decl) in fun.local_decls.iter().enumerate() {
+            if i == 0 { continue; }
+            let mut name = decl.name.clone().unwrap_or_else(|| format!("v{}", i));
+            if name == "return" { name = "_ret".to_string(); }
+            let unique = format!("{}_{}", name, var_counter);
+            var_counter += 1;
+            var_names.insert(i, unique);
+        }
+        for (i, decl) in fun.local_decls.iter().enumerate() {
+            if i == 0 || (i >= 1 && i <= fun.signature.params.len()) { continue; }
+            let ty = self.ty_to_c(decl.ty);
+            if ty == "void" { continue; }
+            let name = &var_names[&i];
+            code += &format!("    {} {};\n", ty, name);
+        }
+        for &bid in &body_blocks {
+            let block = &blocks[bid];
+            code += &format!("  block_{}:\n", bid);
+            for stmt in &block.statements {
+                match &stmt.kind {
+                    MirStmtKind::Let { local, rvalue } => {
+                        let ty = fun.local_decls[*local].ty;
+                        if self.ty_to_c(ty) == "void" { continue; }
+                        let lhs = var_names[local].clone();
+                        let rhs = match rvalue {
+                            Rvalue::HandlerArg(idx) => {
+                                let param_local = block.block_params[*idx];
+                                var_names[&param_local].clone()
+                            }
+                            _ => self.rvalue_to_c_with_ty(rvalue, ty, &var_names, fun),
+                        };
+                        code += &format!("    {} = {};\n", lhs, rhs);
+                    }
+                    MirStmtKind::Store { place, rvalue } => {
+                        let ty = self.place_ty(place, fun);
+                        if self.ty_to_c(ty) == "void" { continue; }
+                        let lhs = self.place_to_c(place, &var_names);
+                        let rhs = self.rvalue_to_c_with_ty(rvalue, ty, &var_names, fun);
+                        code += &format!("    {} = {};\n", lhs, rhs);
+                    }
+                    MirStmtKind::Nop => { code += "    ;\n"; }
+                }
+            }
+            code += &self.gen_terminator_for_body(block, bid, fun, &var_names, blocks, merge_block);
+        }
+        code += "}\n\n";
+        code
+    }
+
+    fn gen_terminator_for_body(
+        &self,
+        block: &BasicBlock,
+        block_id: BasicBlockId,
+        fun: &MirFun,
+        var_names: &HashMap<LocalId, String>,
+        blocks: &[BasicBlock],
+        merge_block: BasicBlockId,
+    ) -> String {
+        let mut code = String::new();
+        match &block.terminator {
+            TerminatorKind::Goto { target, block_args } => {
+                if *target == merge_block {
+                    let resume_val = if block_args.len() == 1 {
+                        let arg = &block_args[0];
+                        match arg {
+                            Rvalue::Move(Place::Local(id)) | Rvalue::Copy(Place::Local(id)) => {
+                                let ty = fun.local_decls[*id].ty;
+                                if self.ty_to_c(ty) == "void" {
+                                    "0".to_string()
+                                } else {
+                                    self.rvalue_to_c(arg, var_names, fun)
+                                }
+                            }
+                            Rvalue::Tuple(elems) if elems.is_empty() => "0".to_string(),
+                            _ => self.rvalue_to_c(arg, var_names, fun),
+                        }
+                    } else if block_args.is_empty() {
+                        "0".to_string()
+                    } else {
+                        unreachable!("multiple return values in with body not supported")
+                    };
+                    code += "    _effect_raised = 0;\n";
+                    code += &format!("    _raise_resume_val = (intptr_t){};\n", resume_val);
+                    code += "    leaf_switch_to_fiber(main_fiber);\n";
+                    code += "    __builtin_unreachable();\n";
+                } else {
+                    let target_params = &blocks[*target].block_params;
+                    for (param_id, arg) in target_params.iter().zip(block_args.iter()) {
+                        let param_ty = fun.local_decls[*param_id].ty;
+                        if self.ty_to_c(param_ty) == "void" { continue; }
+                        let lhs = var_names[param_id].clone();
+                        let rhs = self.rvalue_to_c(arg, var_names, fun);
+                        code += &format!("    {} = {};\n", lhs, rhs);
+                    }
+                    code += &format!("    goto block_{};\n", target);
+                }
+            }
+            TerminatorKind::SwitchInt { discriminant, targets, default } => {
+                let disc_str = match discriminant {
+                    Rvalue::Copy(place) | Rvalue::Move(place) => {
+                        let place_ty = self.place_ty(place, fun);
+                        if self.is_adt_type(place_ty) {
+                            format!("{}.tag", self.place_to_c(place, var_names))
+                        } else {
+                            self.rvalue_to_c(discriminant, var_names, fun)
+                        }
+                    }
+                    _ => self.rvalue_to_c(discriminant, var_names, fun),
+                };
+                code += &format!("    switch ({}) {{\n", disc_str);
+                for (val, target) in targets {
+                    let case_val = Self::const_to_c(val);
+                    code += &format!("        case {}: goto block_{};\n", case_val, target);
+                }
+                code += &format!("        default: goto block_{};\n", default);
+                code += "    }\n";
+            }
+            TerminatorKind::Call { func, args, dest, target } => {
+                let callee = &self.mono_mir.functions[*func];
+                let callee_mangled = if callee.blocks.is_empty() {
+                    callee.name.clone()
+                } else {
+                    self.mangle(&callee.name, &callee.signature.params, callee.signature.return_ty)
+                };
+                let arg_str: Vec<String> = args.iter()
+                    .map(|a| self.rvalue_to_c(a, var_names, fun))
+                    .collect();
+                let call_expr = format!("{}({})", callee_mangled, arg_str.join(", "));
+                if self.ty_to_c(callee.signature.return_ty) != "void" {
+                    let lhs = self.place_to_c(dest, var_names);
+                    code += &format!("    {} = {};\n", lhs, call_expr);
+                } else {
+                    code += &format!("    {};\n", call_expr);
+                }
+                if let Some(t) = target {
+                    code += &format!("    goto block_{};\n", t);
+                }
+            }
+            TerminatorKind::CallByPtr { func, args, dest, target } => {
+                let func_expr = self.rvalue_to_c(func, var_names, fun);
+                let arg_str: Vec<String> = args.iter()
+                    .map(|a| self.rvalue_to_c(a, var_names, fun))
+                    .collect();
+                let call_expr = format!("{}({})", func_expr, arg_str.join(", "));
+                let dest_ty = self.place_ty(dest, fun);
+                if self.ty_to_c(dest_ty) != "void" {
+                    let lhs = self.place_to_c(dest, var_names);
+                    code += &format!("    {} = {};\n", lhs, call_expr);
+                } else {
+                    code += &format!("    {};\n", call_expr);
+                }
+                if let Some(t) = target {
+                    code += &format!("    goto block_{};\n", t);
+                }
+            }
+            TerminatorKind::Raise { control_name, args, dest } => {
+                let arg_strs: Vec<String> = args.iter()
+                    .map(|a| format!("(intptr_t)({})", self.rvalue_to_c(a, var_names, fun)))
+                    .collect();
+                let arg_list = arg_strs.join(", ");
+                code += &format!("    leafc_raise({}, {});\n", control_name, arg_list);
+                let dest_str = self.place_to_c(dest, var_names);
+                code += &format!("    {} = _raise_resume_val;\n", dest_str);
+                let resume_block = block_id + 1;
+                code += &format!("    goto block_{};\n", resume_block);
+            }
+            TerminatorKind::Resume { place, target: _ } => {
+                let val = self.place_to_c(place, var_names);
+                code += &format!("    leafc_resume((intptr_t){});\n", val);
+                code += "    __builtin_unreachable();\n";
+            }
+            TerminatorKind::Return => {
+                code += "    _effect_raised = 0;\n";
+                code += "    _raise_resume_val = 0;\n";
+                code += "    leaf_switch_to_fiber(main_fiber);\n";
+                code += "    __builtin_unreachable();\n";
+            }
+            TerminatorKind::Unreachable => {
+                code += "    __builtin_unreachable();\n";
+            }
+            _ => {
+                unreachable!()
+            }
+        }
+        code
+    }
     fn gen_globals(&self) -> String {
         let mut code = String::new();
         for stat in &self.mono_mir.statics {

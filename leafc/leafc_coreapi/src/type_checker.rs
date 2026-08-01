@@ -21,6 +21,7 @@ pub enum TypeCheckerError {
     InvalidControlType,
     UnreachablePattern,
     NonExhaustiveMatch,
+    MultipleResume,
 }
 
 pub trait TypeCheckerApi {

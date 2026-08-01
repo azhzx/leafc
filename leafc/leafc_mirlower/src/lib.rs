@@ -1,5 +1,5 @@
 use leafc_coreapi::diagnostic::DiagMsg;
-use leafc_coreapi::hir::{HirBinOp, HirCrate, HirDeclId, HirDeclKind, HirExprId, HirExprKind, HirLit, HirMatchArm, HirPattern, HirTypeName, HirUnaryOp};
+use leafc_coreapi::hir::{HirBinOp, HirCatchParam, HirCrate, HirDeclId, HirDeclKind, HirExprId, HirExprKind, HirLit, HirMatchArm, HirName, HirPattern, HirTypeName, HirUnaryOp};
 use leafc_coreapi::mir::{BasicBlock, BasicBlockId, Const, ControlId, ExternDecl, FnSig, FunId, LocalDecl, LocalId, MirBinOp, MirCrate, MirFun, MirStmt, MirStmtKind, MirUnOp, Place, Rvalue, StaticDecl, StaticId, TagId, TerminatorKind};
 use leafc_coreapi::mir_lower::{MirLowerApi, MirLowerError};
 use leafc_coreapi::scope::SymId;
@@ -1493,7 +1493,7 @@ impl MirLower {
                 self.push_stmt(
                     MirStmtKind::Let {
                         local: temp,
-                        rvalue: Rvalue::TempRef(place),
+                        rvalue: Rvalue::Ref(place),
                     },
                     span,
                 );
@@ -1511,7 +1511,7 @@ impl MirLower {
                 self.push_stmt(
                     MirStmtKind::Let {
                         local: temp,
-                        rvalue: Rvalue::TempRefMut(place),
+                        rvalue: Rvalue::RefMut(place),
                     },
                     span,
                 );
@@ -1855,8 +1855,103 @@ impl MirLower {
                 Ok(Some(Place::Local(result_local)))
             }
 
-            HirExprKind::With { handler: _, clauses } => {
-                todo!("Lowering with expressions for Algebraic Effects")
+            HirExprKind::With { handler, clauses } => {
+                let result_ty = self.expr_ty(expr_id)?;
+
+                let merge_block = self.new_block(span.clone());
+                let result_local = self.new_local(result_ty, true, Some("with_res".to_string()), span.clone());
+                self.blocks[merge_block].block_params = vec![result_local];
+
+                let entry_block = self.current_block;
+
+                let body_block = self.new_block(span.clone());
+                self.start_block(body_block);
+                let body_place = self.compile_expr(*handler)?;
+                let body_value = match body_place {
+                    Some(p) => Rvalue::Move(p),
+                    None => Rvalue::Tuple(vec![]),
+                };
+                self.set_terminator(TerminatorKind::Goto {
+                    target: merge_block,
+                    block_args: vec![body_value],
+                });
+
+                let mut next_block = body_block;
+                // deepest handler
+                for clause in clauses.iter().rev() {
+                    let handler_block = self.new_block(span.clone());
+
+                    let mut param_locals = Vec::new();
+                    let mut bound_syms = Vec::new();
+                    for param in &clause.params {
+                        match param {
+                            HirCatchParam::Binding(name) => {
+                                let pty = self.get_control_param_ty(&clause.control_path, param_locals.len(), span.clone())?;
+                                let local = self.new_local(pty, false, Some(name.name.clone()), span.clone());
+                                param_locals.push(local);
+                                bound_syms.push((name.sym_id, local));
+                            }
+                            HirCatchParam::Rest => {}
+                        }
+                    }
+
+                    self.blocks[handler_block].block_params = param_locals.clone();
+
+                    self.start_block(handler_block);
+                    for (i, &(sym_id, local)) in bound_syms.iter().enumerate() {
+                        self.bind_local(sym_id, local);
+                        self.push_stmt(
+                            MirStmtKind::Let {
+                                local,
+                                rvalue: Rvalue::HandlerArg(i),
+                            },
+                            span.clone(),
+                        );
+                    }
+
+                    let old_resume_target = self.resume_target;
+                    self.resume_target = Some(merge_block);
+
+                    let _body_place = self.compile_expr(clause.body)?;
+                    let need_terminator = matches!(
+                        self.blocks[self.current_block].terminator,
+                        TerminatorKind::Unreachable
+                    );
+                    if need_terminator {
+                        self.set_terminator(TerminatorKind::Goto {
+                            target: merge_block,
+                            block_args: vec![Rvalue::Tuple(vec![])],
+                        });
+                    }
+
+                    self.resume_target = old_resume_target;
+
+                    let control_id = *self.control_map.get(&clause.control_path.sym_id)
+                        .ok_or_else(|| DiagMsg {
+                            title: "internal error".into(),
+                            msg: format!("control `{}` not found in map", clause.control_path.name),
+                            span: span.clone(),
+                        })?;
+
+                    let install_block = self.new_block(span.clone());
+                    self.start_block(install_block);
+                    self.set_terminator(TerminatorKind::InstallHandler {
+                        handler_block,
+                        next: next_block,
+                        args_dest: param_locals,
+                        control_id,
+                    });
+                    next_block = install_block;
+                }
+
+                self.start_block(entry_block);
+                self.set_terminator(TerminatorKind::Goto {
+                    target: next_block,
+                    block_args: vec![],
+                });
+
+                self.start_block(merge_block);
+                Ok(Some(Place::Local(result_local)))
             }
 
             HirExprKind::Raise { control_name, args } => {
@@ -1872,13 +1967,16 @@ impl MirLower {
                         mir_args.push(Rvalue::Move(place));
                     }
                 }
+                let ty = self.expr_ty(expr_id)?;
+                let dest_temp = self.new_mutable_temp(ty, span.clone());
                 self.set_terminator(TerminatorKind::Raise {
                     control_name: control_id,
                     args: mir_args,
+                    dest: Place::Local(dest_temp),
                 });
                 let block = self.new_block(span);
                 self.start_block(block);
-                Ok(None)
+                Ok(Some(Place::Local(dest_temp)))
             }
 
             HirExprKind::Resume { expr } => {
@@ -1889,21 +1987,65 @@ impl MirLower {
                         span: span.clone(),
                     })?;
                 let place = self.compile_expr(*expr)?;
-                let resume_value = match place {
-                    Some(p) => Rvalue::Move(p),
-                    None => Rvalue::Tuple(vec![]),
-                };
                 let expr_ty = self.expr_ty(*expr)?;
                 let temp = self.new_mutable_temp(expr_ty, span.clone());
+
+                if let Some(p) = place {
+                    self.push_stmt(
+                        MirStmtKind::Let {
+                            local: temp,
+                            rvalue: Rvalue::Move(p),
+                        },
+                        span.clone(),
+                    );
+                } else {
+                    self.push_stmt(
+                        MirStmtKind::Let {
+                            local: temp,
+                            rvalue: Rvalue::Tuple(vec![]),
+                        },
+                        span.clone(),
+                    );
+                }
+
                 self.set_terminator(TerminatorKind::Resume {
                     place: Place::Local(temp),
                     target,
                 });
-                let block = self.new_block(span);
-                self.start_block(block);
                 Ok(None)
             }
             HirExprKind::Ellipsis => todo!()
+        }
+    }
+
+    fn get_control_param_ty(
+        &self,
+        control_name: &HirName,
+        index: usize,
+        span: Span,
+    ) -> Result<TyId, DiagMsg> {
+        let scheme = self.type_checker_result.name_type_map
+            .get(&control_name.sym_id)
+            .ok_or_else(|| DiagMsg {
+                title: "internal error".into(),
+                msg: format!("control type not found: {}", control_name.name),
+                span: span.clone(),
+            })?;
+        let ty = scheme.body;
+        let root = get_type_root(&self.type_checker_result.type_pool, ty);
+        match &self.type_checker_result.type_pool[root].kind {
+            TypeNodeKind::Fun { param_tys, .. } => {
+                param_tys.get(index).copied().ok_or_else(|| DiagMsg {
+                    title: "internal error".into(),
+                    msg: format!("control {} has fewer than {} params", control_name.name, index+1),
+                    span,
+                })
+            }
+            _ => Err(DiagMsg {
+                title: "internal error".into(),
+                msg: format!("control {} is not a function type", control_name.name),
+                span,
+            }),
         }
     }
 }

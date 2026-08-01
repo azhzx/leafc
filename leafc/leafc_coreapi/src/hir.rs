@@ -195,9 +195,15 @@ pub struct HirMatchArm {
 }
 
 #[derive(Debug, Clone)]
+pub enum HirCatchParam {
+    Binding(HirName),
+    Rest,
+}
+
+#[derive(Debug, Clone)]
 pub struct HirCatchClause {
     pub control_path: HirName,
-    pub params: Vec<HirPattern>,
+    pub params: Vec<HirCatchParam>,
     pub body: HirExprId,
     pub span: Span,
 }
