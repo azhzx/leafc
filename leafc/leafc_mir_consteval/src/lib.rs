@@ -153,7 +153,7 @@ impl MirConstEval {
                 let v = self.eval_rvalue(inner, frame, span.clone())?;
                 Ok(Value::Enum(*tag, Box::new(v)))
             }
-            Rvalue::TempRef(_) | Rvalue::TempRefMut(_) | Rvalue::GcNewObject(_) | Rvalue::GcObjectRef(_) => {
+            Rvalue::Ref(_) | Rvalue::RefMut(_) | Rvalue::GcNewObject(_) | Rvalue::GcObjectRef(_) => {
                 Err(DiagMsg {
                     title: "const eval error".into(),
                     msg: "reference or GC operations not allowed in const context".into(),
@@ -213,6 +213,7 @@ impl MirConstEval {
                 let val = self.eval_place_to_value(place, frame, span.clone())?;
                 self.cast_value(val, *target_ty, span)
             }
+            Rvalue::HandlerArg(_) => todo!()
         }
     }
 

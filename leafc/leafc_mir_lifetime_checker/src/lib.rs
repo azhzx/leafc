@@ -185,7 +185,7 @@ impl MirLifetimeChecker {
 
     fn check_rvalue_escape(&self, rv: &Rvalue, fun: &MirFun, span: &Span) -> Result<(), DiagMsg> {
         match rv {
-            Rvalue::TempRef(_) | Rvalue::TempRefMut(_) => {
+            Rvalue::Ref(_) | Rvalue::RefMut(_) => {
                 Err(DiagMsg {
                     title: "lifetime error".into(),
                     msg: "reference may escape".into(),

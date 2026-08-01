@@ -18,10 +18,11 @@ pub enum BuiltinType {
     Never,
     CVoidPtr,
     RawPtr,
+    MutRawPtr,
     CChar
 }
 
-const BUILTIN_COUNT: usize = 15;
+const BUILTIN_COUNT: usize = 16;
 
 pub static STR_TO_BUILTIN: phf::Map<&'static str, BuiltinType> = phf_map! {
     "builtin_i8_type"    => BuiltinType::I8,
@@ -38,6 +39,7 @@ pub static STR_TO_BUILTIN: phf::Map<&'static str, BuiltinType> = phf_map! {
     "builtin_never_type" => BuiltinType::Never,
     "builtin_c_void_ptr_type"   => BuiltinType::CVoidPtr,
     "builtin_raw_ptr_type" => BuiltinType::RawPtr,
+    "builtin_mut_raw_ptr_type" => BuiltinType::MutRawPtr,
     "builtin_c_char_type" => BuiltinType::CChar,
 };
 

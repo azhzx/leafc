@@ -36,6 +36,7 @@ pub enum TypeNodeKind {
     },
     Never,
     RawPtr(TyId),
+    MutRawPtr(TyId),
 }
 
 #[derive(Debug, Clone)]

@@ -129,8 +129,8 @@ pub enum Rvalue {
         place: Box<Place>,
         item_index: usize
     },
-    TempRef(Place),
-    TempRefMut(Place),
+    Ref(Place),
+    RefMut(Place),
     GetFunPtr(FunId),
     BuildStruct(Vec<Rvalue>),
     Tuple(Vec<Rvalue>),
@@ -141,6 +141,7 @@ pub enum Rvalue {
     Move(Place),
     Constant(Const),
     Cast(Place, TyId),
+    HandlerArg(usize),
 
     // share
     GcNewObject(Box<Rvalue>),
@@ -174,10 +175,13 @@ pub enum TerminatorKind {
     Raise {
         control_name: ControlId,
         args: Vec<Rvalue>,
+        dest: Place,
     },
     InstallHandler {
         handler_block: BasicBlockId,
         next: BasicBlockId,
+        args_dest: Vec<LocalId>,
+        control_id: ControlId,
     },
     Resume {
         place: Place,

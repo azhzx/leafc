@@ -65,6 +65,7 @@ impl MirMono {
             TypeNodeKind::MutRef(inner) => TypeNodeKind::MutRef(self.subst_ty(*inner, mapping)),
             TypeNodeKind::Share(inner) => TypeNodeKind::Share(self.subst_ty(*inner, mapping)),
             TypeNodeKind::RawPtr(inner) => TypeNodeKind::RawPtr(self.subst_ty(*inner, mapping)),
+            TypeNodeKind::MutRawPtr(inner) => TypeNodeKind::MutRawPtr(self.subst_ty(*inner, mapping)),
         };
 
         self.intern_type(new_kind)
@@ -119,7 +120,7 @@ impl MirMono {
                 self.map_rvalue_ty(right, mapping);
             }
             Rvalue::Index { .. } | Rvalue::Field { .. } => {}
-            Rvalue::TempRef(_) | Rvalue::TempRefMut(_) => {}
+            Rvalue::Ref(_) | Rvalue::RefMut(_) => {}
             Rvalue::GetFunPtr(_) => {}
             Rvalue::BuildStruct(fields) => {
                 for field in fields {
@@ -134,6 +135,7 @@ impl MirMono {
             Rvalue::Variant(_, inner) => {
                 self.map_rvalue_ty(inner, mapping);
             }
+            Rvalue::HandlerArg(_) => {}
             Rvalue::Len(_) | Rvalue::Tag(_) => {}
             Rvalue::Copy(_) | Rvalue::Move(_) => {}
             Rvalue::Constant(_) => {}

@@ -263,9 +263,17 @@ pub struct GreenEffectControl {
 // Catch clause (for 'with expression')
 // ===----------------------------
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub enum GreenCatchParam {
+    Binding {
+        name: IdentName,
+    },
+    Rest,
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct GreenCatchClause {
     pub control_static_path: GreenChild<GreenPureStaticPath>,
-    pub params: Vec<GreenChild<GreenPattern>>,
+    pub params: Vec<GreenChild<GreenCatchParam>>,
     pub body: GreenChild<GreenExpr>,
     pub text_len: TextLen,
 }
@@ -663,6 +671,15 @@ impl HasTextLen for GreenPattern {
 
 impl HasTextLen for GreenStructPatternField {
     fn text_len(&self) -> TextLen { self.text_len }
+}
+
+impl HasTextLen for GreenCatchParam {
+    fn text_len(&self) -> TextLen {
+        match self {
+            GreenCatchParam::Binding { name } => name.text_len() + "binding ".len(),
+            GreenCatchParam::Rest => 2, // ".."
+        }
+    }
 }
 
 impl HasTextLen for AtomExprNode {

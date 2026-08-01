@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    
+
     use std::collections::HashMap;
     use std::path::PathBuf;
 
@@ -134,7 +134,6 @@ mod tests {
     fn mutually_recursive_macros() {
         let src = "__define A B\n__define B A\nA";
         let out = preprocess(src).unwrap();
-        // 一次展开 A → B，再展开 B 时检测到递归，停止
         let texts = token_texts(&out);
         assert!(texts.contains(&"B"));
     }
@@ -185,7 +184,7 @@ mod tests {
 
     #[test]
     fn conditional_nested() {
-        let src = "__if 1\n  __if 0\n  no\n  __else\n  inner\n  __endif\n__else\n  no2\n__endif";
+        let src = "__if 1\n__if 0\nno\n__else\ninner\n__endif\n__else\nno2\n__endif";
         let out = preprocess(src).unwrap();
         let texts = token_texts(&out);
         assert!(texts.contains(&"inner"));
