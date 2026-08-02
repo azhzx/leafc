@@ -338,6 +338,13 @@ impl TypeChecker {
                 let ret_ty = self.resolve_type_name(return_type, span.clone())?;
                 Ok(self.intern_type(TypeNodeKind::Fun { param_tys, return_ty: ret_ty }))
             }
+            HirTypeName::Wildcard => {
+                Ok(self.new_type_var())
+            }
+            HirTypeName::Typeof(expr) => {
+                let ty = self.infer_expr(*expr, None)?;
+                Ok(ty)
+            }
             HirTypeName::Impl(inner) => {
                 todo!()
             }
@@ -2773,6 +2780,8 @@ impl TypeChecker {
                 params.iter().any(|p| Self::contains_self_ref(p, target_sym)) ||
                     Self::contains_self_ref(return_type, target_sym)
             }
+            HirTypeName::Wildcard => false,
+            HirTypeName::Typeof(_) => false,
             HirTypeName::Impl(inner) => Self::contains_self_ref(inner, target_sym),
         }
     }

@@ -56,6 +56,7 @@ impl<'a> Lexer<'a> {
     fn keyword_map(&self, s: &String) -> TokenType {
         match s.as_str() {
             "is" => TokenType::KwIs,
+            "typeof" => TokenType::KwTypeOf,
             "use" => TokenType::KwUse,
             "of" => TokenType::KwOf,
             "ref" => TokenType::KwRef,

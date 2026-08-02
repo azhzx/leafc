@@ -46,6 +46,7 @@ pub enum TokenType {
     KwRef,
     KwSubType,
     KwBaseType,
+    KwTypeOf,
 
     Ident,
     Int,

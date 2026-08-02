@@ -64,6 +64,19 @@ impl<'a> Parser<'a> {
         self.skip_token();
         self.current_token()
     }
+
+    fn skip_layout_tokens(&mut self) -> Result<(), DiagMsg> {
+        loop {
+            match self.current_token().kind {
+                TokenType::NewLine | TokenType::Indent | TokenType::Dedent => {
+                    self.skip_token();
+                }
+                _ => break,
+            }
+        }
+        Ok(())
+    }
+
     fn skip_token_only(&mut self, expected: TokenType) -> Result<(), DiagMsg> {
         let tok = self.current_token();
         if tok.kind == expected {
@@ -167,8 +180,33 @@ impl<'a> Parser<'a> {
                 self.parse_fun_type(start_off)
             }
 
+            TokenType::KwTypeOf => {
+                self.skip_token();
+                self.skip_token_only(TokenType::Lparen)?;   // '('
+
+                let expr_start = self.current_token().span.start_off;
+                let expr_red = self.parse_expr()?;
+                let expr_child = GreenChild {
+                    relative_start: expr_start - start_off,
+                    node: Arc::clone(&expr_red.inner),
+                };
+
+                self.skip_token_only(TokenType::Rparen)?;   // ')'
+                let end_off = self.tokens.data[self.index - 1].span.end_off;
+                let text_len = end_off - start_off;
+
+                Ok(TypeName::Typeof {  expr: expr_child, text_len })
+            }
+
+            TokenType::Ident if self.current_token().text == "_" => {
+                let start_off = self.current_token().span.start_off;
+                self.skip_token();
+                let end_off = self.current_token().span.end_off;
+                let text_len = end_off - start_off;
+                Ok(TypeName::Wildcard { text_len })
+            }
+
             _ => {
-                // 命名类型
                 let path_start = self.current_token().span.start_off;
                 let path_node = self.parse_pure_static_path()?;
                 let mut generics = vec![];

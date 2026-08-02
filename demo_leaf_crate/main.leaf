@@ -4,6 +4,9 @@ type Int8;
 #lang("builtin_u8_type")
 type UInt8;
 
+#lang("builtin_u64_type")
+type UInt64;
+
 #lang("builtin_i32_type")
 type Int32;
 
@@ -34,6 +37,9 @@ type CChar;
 
 type Unit = ()
 
+type USize = UInt64
+
+external fun malloc(size: USize) -> CVoidPtr;
 external fun printf(fmt: RawPtr[CChar], ...) -> Int;
 external fun puts(a: CVoidPtr) -> ()  = "leaf_rt__puts";
 external fun itoa(a: Int32) -> CVoidPtr = "leaf_rt__itoa";
@@ -50,12 +56,14 @@ type Maybe [t]
 effect Effect
     | control(x: Int) -> Int
 
-fun foo()
-    print_int(raise Effect.control(100))
-    return 666
+const fun foo()
+    return raise Effect.control(100)
 
-fun main()
+const fun call_foo()
     let x = with foo()
     catch Effect.control(binding x)
         resume x * 2
-    print_int(x)
+    return x
+
+fun main()
+    print_int(call_foo())

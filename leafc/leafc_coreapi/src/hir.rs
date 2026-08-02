@@ -44,6 +44,8 @@ pub enum HirTypeName {
         return_type: Box<HirTypeName>,
     },
     Impl(Box<HirTypeName>),
+    Typeof(HirExprId),
+    Wildcard,
 }
 
 #[derive(Debug, Clone)]

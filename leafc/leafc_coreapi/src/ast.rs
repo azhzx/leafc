@@ -103,6 +103,13 @@ pub enum TypeName {
         trait_type: GreenChild<TypeName>,
         text_len: TextLen,
     },
+    Typeof {
+        expr: GreenChild<GreenExpr>,
+        text_len: TextLen,
+    },
+    Wildcard {
+        text_len: TextLen,
+    },
 }
 
 /// 元组
@@ -704,7 +711,9 @@ impl HasTextLen for TypeName {
             | TypeName::Share { text_len, .. }
             | TypeName::Tuple { text_len, .. }
             | TypeName::Impl { text_len, .. }
-            | TypeName::Fun { text_len, .. } => *text_len,
+            | TypeName::Fun { text_len, .. }
+            | TypeName::Typeof { text_len, .. }
+            | TypeName::Wildcard { text_len } => *text_len
         }
     }
 }

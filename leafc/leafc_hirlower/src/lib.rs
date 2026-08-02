@@ -136,7 +136,7 @@ impl<'a> HirLower<'a> {
 
 
     fn lower_type_name(
-        &self,
+        &mut self,
         type_name: &TypeName,
         scope_id: ScopeId,
         span: Span,
@@ -196,6 +196,22 @@ impl<'a> HirLower<'a> {
                 let inner = self.lower_type_name(&trait_type.node, scope_id, inner_span)?;
                 Ok(HirTypeName::Impl(Box::new(inner)))
             }
+            TypeName::Typeof { expr, .. } => {
+                let expr_span = Span {
+                    source_id: span.source_id,
+                    start_off: span.start_off + expr.relative_start,
+                    end_off: span.start_off + expr.relative_start + expr.node.text_len,
+                };
+                let expr_red = ExprRedNode {
+                    span: expr_span,
+                    inner: Arc::clone(&expr.node),
+                };
+                let id = self.lower_expr(&expr_red, scope_id)?;
+                Ok(HirTypeName::Typeof(id))
+            }
+            TypeName::Wildcard { .. } => {
+                Ok(HirTypeName::Wildcard)
+            }
         }
     }
 
@@ -211,7 +227,7 @@ impl<'a> HirLower<'a> {
 
     /// generic params
     fn lower_generic_params(
-        &self,
+        &mut self,
         generic_vars: &[GreenChild<GreenGenericVar>],
         where_clause: Option<&GreenWhereClause>,
         scope_id: ScopeId,
@@ -269,7 +285,7 @@ impl<'a> HirLower<'a> {
 
     /// pattern
     fn lower_pattern(
-        &self,
+        &mut self,
         pattern: &GreenPattern,
         scope_id: ScopeId,
         span: &Span,
@@ -402,7 +418,7 @@ impl<'a> HirLower<'a> {
 
     /// field def
     fn lower_field_def(
-        &self,
+        &mut self,
         field: &GreenChild<GreenField>,
         scope_id: ScopeId,
         parent_span: &Span,
@@ -432,7 +448,7 @@ impl<'a> HirLower<'a> {
 
     /// param
     fn lower_param(
-        &self,
+        &mut self,
         param: &GreenChild<GreenParam>,
         scope_id: ScopeId,
         parent_span: &Span,
@@ -462,7 +478,7 @@ impl<'a> HirLower<'a> {
 
     /// method of abstract decl
     fn lower_method_decl(
-        &self,
+        &mut self,
         method: &GreenChild<GreenMethodDecl>,
         scope_id: ScopeId,
         parent_span: &Span,
@@ -505,7 +521,7 @@ impl<'a> HirLower<'a> {
 
     /// ctor def of ADT decl
     fn lower_ctor_def(
-        &self,
+        &mut self,
         ctor: &GreenChild<GreenCtor>,
         scope_id: ScopeId,
         parent_span: &Span,

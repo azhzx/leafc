@@ -1178,7 +1178,8 @@ impl<'a> Parser<'a> {
                         },
                         inner: Arc::new(green),
                     }
-                } else {
+                }
+                else {
                     let first_red = self.parse_expr()?;
                     match self.current_token().kind {
                         TokenType::Rparen => {
@@ -1475,6 +1476,7 @@ impl<'a> Parser<'a> {
                 /// call expr
                 TokenType::Lparen => {
                     self.skip_token(); // '('
+                    self.skip_layout_tokens()?;
                     let mut args: Vec<GreenChild<GreenCallArg>> = vec![];
 
                     while self.current_token().kind != TokenType::Rparen {
@@ -1530,6 +1532,7 @@ impl<'a> Parser<'a> {
                         // 处理逗号或结尾
                         if self.current_token().kind == TokenType::Comma {
                             self.skip_token();
+                            self.skip_layout_tokens()?;
                         } else if self.current_token().kind == TokenType::Rparen {
                             break;
                         } else {
@@ -1733,6 +1736,7 @@ impl<'a> Parser<'a> {
                 // path { field: expr, ... }
                 TokenType::Lbrace => {
                     self.skip_token(); // '{'
+                    self.skip_layout_tokens()?;
                     let mut fields = vec![];
                     let brace_start = token_start;
 
@@ -1772,6 +1776,7 @@ impl<'a> Parser<'a> {
 
                         if self.current_token().kind == TokenType::Comma {
                             self.skip_token();
+                            self.skip_layout_tokens()?;
                         } else if self.current_token().kind == TokenType::Rbrace {
                             break;
                         } else {

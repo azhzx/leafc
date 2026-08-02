@@ -28,6 +28,7 @@ pub enum ParserError {
     InvalidStructInit,
     InvalidPattern,
     InvalidCatch,
+    InvalidTypeOf,
 }
 
 
