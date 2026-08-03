@@ -200,6 +200,91 @@ impl CCodeGen {
         }
     }
 
+    fn const_to_c_with_ty(&self, c: &Const, ty: TyId) -> String {
+        match c {
+            Const::Unit => "/* void */".into(),
+            Const::Tuple(elems) => {
+                let type_name = self.ty_to_c(ty);
+                if elems.is_empty() {
+                    "/* void */".into()
+                } else {
+                    let pool = &self.type_checker_result.type_pool;
+                    let root = get_type_root(pool, ty);
+                    let elem_tys = if let TypeNodeKind::Tuple(elem_tys) = &pool[root].kind {
+                        elem_tys.clone()
+                    } else {
+                        vec![]
+                    };
+                    let fields_str = elems
+                        .iter()
+                        .enumerate()
+                        .map(|(i, e)| {
+                            let elem_ty = elem_tys.get(i).copied().unwrap_or(0);
+                            format!(".f{} = {}", i, self.const_to_c_with_ty(e, elem_ty))
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!("({}){{ {} }}", type_name, fields_str)
+                }
+            }
+            Const::Struct(fields) => {
+                let type_name = self.ty_to_c(ty);
+                if fields.is_empty() {
+                    format!("({}){{0}}", type_name)
+                } else {
+                    let pool = &self.type_checker_result.type_pool;
+                    let root = get_type_root(pool, ty);
+                    let field_tys = if let TypeNodeKind::Struct { field_tys, .. } = &pool[root].kind {
+                        field_tys.clone()
+                    } else {
+                        vec![]
+                    };
+                    let fields_str = fields
+                        .iter()
+                        .enumerate()
+                        .map(|(i, f)| {
+                            let f_ty = field_tys.get(i).copied().unwrap_or(0);
+                            format!(".f{} = {}", i, self.const_to_c_with_ty(f, f_ty))
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!("({}){{ {} }}", type_name, fields_str)
+                }
+            }
+            Const::Enum(tag, data) => {
+                let type_name = self.ty_to_c(ty);
+                let has_payload = {
+                    let pool = &self.type_checker_result.type_pool;
+                    let root = get_type_root(pool, ty);
+                    if let TypeNodeKind::ADT { variants, .. } = &pool[root].kind {
+                        variants[*tag as usize].is_some()
+                    } else {
+                        false
+                    }
+                };
+                if has_payload {
+                    let payload_ty = {
+                        let pool = &self.type_checker_result.type_pool;
+                        let root = get_type_root(pool, ty);
+                        if let TypeNodeKind::ADT { variants, .. } = &pool[root].kind {
+                            variants[*tag as usize].unwrap()
+                        } else {
+                            0
+                        }
+                    };
+                    let inner_str = self.const_to_c_with_ty(data, payload_ty);
+                    format!(
+                        "({}){{ .tag = {}, .data.v{} = {} }}",
+                        type_name, tag, tag, inner_str
+                    )
+                } else {
+                    format!("({}){{ .tag = {} }}", type_name, tag)
+                }
+            }
+            other => Self::const_to_c(other),
+        }
+    }
+
     fn const_to_c(c: &Const) -> String {
         match c {
             Const::Int8(v) => v.to_string(),
@@ -335,6 +420,7 @@ impl CCodeGen {
         fun: &MirFun,
     ) -> String {
         match rv {
+            Rvalue::Constant(c) => self.const_to_c_with_ty(c, ty),
             Rvalue::BuildStruct(vals) => {
                 let type_name = self.ty_to_c(ty);
                 let field_vals: Vec<String> = vals.iter()
@@ -628,7 +714,7 @@ impl CCodeGen {
                     let param_ty = fun.local_decls[*param_id].ty;
                     if self.ty_to_c(param_ty) == "void" { continue; }
                     let lhs = var_names[param_id].clone();
-                    let rhs = self.rvalue_to_c(arg, var_names, fun);
+                    let rhs = self.rvalue_to_c_with_ty(arg, param_ty, var_names, fun);
                     code += &format!("    {} = {};\n", lhs, rhs);
                 }
                 code += &format!("    goto block_{};\n", target);
@@ -827,6 +913,8 @@ impl CCodeGen {
                 if *target == merge_block {
                     let resume_val = if block_args.len() == 1 {
                         let arg = &block_args[0];
+                        let target_ty = blocks[*target].block_params.first().map(|id| fun.local_decls[*id].ty);
+
                         match arg {
                             Rvalue::Move(Place::Local(id)) | Rvalue::Copy(Place::Local(id)) => {
                                 let ty = fun.local_decls[*id].ty;
@@ -837,7 +925,13 @@ impl CCodeGen {
                                 }
                             }
                             Rvalue::Tuple(elems) if elems.is_empty() => "0".to_string(),
-                            _ => self.rvalue_to_c(arg, var_names, fun),
+                            _ => {
+                                if let Some(ty) = target_ty {
+                                    self.rvalue_to_c_with_ty(arg, ty, var_names, fun)
+                                } else {
+                                    self.rvalue_to_c(arg, var_names, fun)
+                                }
+                            }
                         }
                     } else if block_args.is_empty() {
                         "0".to_string()
@@ -854,7 +948,9 @@ impl CCodeGen {
                         let param_ty = fun.local_decls[*param_id].ty;
                         if self.ty_to_c(param_ty) == "void" { continue; }
                         let lhs = var_names[param_id].clone();
-                        let rhs = self.rvalue_to_c(arg, var_names, fun);
+
+                        let rhs = self.rvalue_to_c_with_ty(arg, param_ty, var_names, fun);
+
                         code += &format!("    {} = {};\n", lhs, rhs);
                     }
                     code += &format!("    goto block_{};\n", target);

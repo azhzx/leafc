@@ -53,17 +53,11 @@ type Maybe [t]
     | None
 
 
-effect Effect
-    | control(x: Int) -> Int
-
 const fun foo()
-    return raise Effect.control(100)
+    return Just(100)
 
-const fun call_foo()
-    let x = with foo()
-    catch Effect.control(binding x)
-        resume x * 2
-    return x
+const fun bar(x)
+    return if x is Just(binding _) then _ else 9
 
 fun main()
-    print_int(call_foo())
+    foo() |> bar |> print_int

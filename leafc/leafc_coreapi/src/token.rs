@@ -111,6 +111,7 @@ pub enum TokenType {
     KwBinding,
     KwWith,
     KwIs,
+    PipeLine,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

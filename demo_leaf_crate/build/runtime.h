@@ -1,3 +1,9 @@
+/// ===-------------------------------------------------
+///  Leaf <runtime.h>
+///              -- give basic runtime support for leaf
+/// ===-------------------------------------------------
+
+
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -29,7 +35,12 @@
 #endif
 
 // ===----------------------------
-// Main Runtime functions
+// Main Runtime Types
+// ===----------------------------
+typedef int leaf_unit_t;
+
+// ===----------------------------
+// Main Runtime Functions
 // ===----------------------------
 
 
@@ -77,7 +88,7 @@ leaf_rt__now() {
     /// leaf fiber stack size
     #define LEAF_FIBER_STACK_SIZE 65536
 
-    /// leaf_create_fiber
+    /// leaf create fiber
     static inline leaf_fiber_t
     leaf_create_fiber(
         LPFIBER_START_ROUTINE fn,
@@ -87,19 +98,19 @@ leaf_rt__now() {
     }
 
 
-    /// leaf_switch_to_fiber
+    /// switch to fiber
     static inline void
     leaf_switch_to_fiber(leaf_fiber_t fiber) {
         SwitchToFiber(fiber);
     }
 
-    /// leaf_convert_thread_to_fiber
+    /// convert thread to fiber
     static inline leaf_fiber_t
     leaf_convert_thread_to_fiber(void* arg) {
         return ConvertThreadToFiber(arg);
     }
 
-    /// leaf_delete_fiber
+    /// delete fiber
     static inline void
     leaf_delete_fiber(leaf_fiber_t fiber) {
         DeleteFiber(fiber);
@@ -109,7 +120,7 @@ leaf_rt__now() {
 #endif
 
 
-/// main_fiber
+/// main fiber
 static leaf_fiber_t main_fiber;
 
 
@@ -117,20 +128,20 @@ static leaf_fiber_t main_fiber;
 static leaf_fiber_t current_body_fiber = NULL;
 
 
-// HandlerFrame
+// Handler Frame
 typedef struct {
     int control_id;
-    void **args_dest;
+    void** args_dest;
     int num_args;
     leaf_fiber_t body_fiber;
 } HandlerFrame;
 
 
-/// handler_stack
+/// handler stack
 static HandlerFrame* handler_stack[256];
 
 
-/// handler_sp
+/// handler sp
 static int handler_sp = 0;
 
 
@@ -150,7 +161,7 @@ leafc_push_handler(
     int num_args,
     leaf_fiber_t body_fiber
 ) {
-    HandlerFrame *hf = (HandlerFrame*) malloc( sizeof(HandlerFrame) );
+    HandlerFrame* hf = (HandlerFrame*) malloc( sizeof(HandlerFrame) );
     hf->control_id = control_id;
     hf->args_dest = (void**) malloc( num_args * sizeof(void*) );
 
@@ -167,7 +178,7 @@ leafc_push_handler(
 static inline void
 leafc_pop_handler() {
     if (handler_sp > 0) {
-        HandlerFrame *hf = handler_stack[--handler_sp];
+        HandlerFrame* hf = handler_stack[--handler_sp];
         free(hf->args_dest);
         free(hf);
     }
@@ -184,7 +195,7 @@ leafc_raise(int control_id, ...) {
     for (int i = handler_sp - 1; i >= 0; i--) {
 
         if (handler_stack[i]->control_id == control_id) {
-            HandlerFrame *hf = handler_stack[i];
+            HandlerFrame* hf = handler_stack[i];
 
             for (int j = 0; j < hf->num_args; j++) {
                 intptr_t arg = va_arg(ap, intptr_t);

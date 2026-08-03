@@ -19,6 +19,7 @@ pub enum Operator {
     Le,
     Ge,
     UserOp(String),
+    PipeLine,
 }
 
 impl Operator {
@@ -45,6 +46,7 @@ impl Operator {
             Operator::Gt => ">",
             Operator::Le => "<=",
             Operator::Ge => ">=",
+            Operator::PipeLine => "|>",
             Operator::UserOp(s) => s.as_str(),
         }
     }
@@ -66,6 +68,7 @@ pub fn token_type_to_operator(tt: &TokenType) -> Option<Operator> {
         TokenType::Gt => Some(Operator::Gt),
         TokenType::Le => Some(Operator::Le),
         TokenType::Ge => Some(Operator::Ge),
+        TokenType::PipeLine => Some(Operator::PipeLine),
         _ => None,
     }
 }
@@ -117,6 +120,7 @@ const BUILTIN_OPS: &[(&str, TokenType)] = &[
     (";", TokenType::Semicolon),
     ("#", TokenType::Hash),
     ("@", TokenType::At),
+    ("|>", TokenType::PipeLine),
     ("_", TokenType::Underline),
 ];
 

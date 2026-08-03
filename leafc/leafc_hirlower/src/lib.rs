@@ -1181,6 +1181,39 @@ impl<'a> HirLower<'a> {
                 let expr_id = self.lower_expr(&expr_red.child_to_red(e), scope_id)?;
                 HirExprKind::Resume { expr: expr_id }
             }
+            GreenExprKind::PipeLine { left, right } => {
+                let left_id = self.lower_expr(&expr_red.child_to_red(left), scope_id)?;
+                let right_red = expr_red.child_to_red(right);
+                let (callee_id, mut args) = match &right_red.inner.kind {
+                    GreenExprKind::StaticPath { .. } => {
+                        let callee_id = self.lower_expr(&right_red, scope_id)?;
+                        (callee_id, vec![])
+                    }
+                    GreenExprKind::Call { callee, args: existing_args } => {
+                        let callee_id = self.lower_expr(&right_red.child_to_red(callee), scope_id)?;
+                        let args_ids = existing_args
+                            .iter()
+                            .map(|a| self.lower_expr(&right_red.child_to_red(&a.node.value), scope_id))
+                            .collect::<Result<Vec<_>, _>>()?;
+                        (callee_id, args_ids)
+                    }
+                    _ => {
+                        return Err(DiagMsg {
+                            title: format!("{:?}", HirLowerError::InvalidPipeLineTarget),
+                            msg: "right-hand side of pipeline must be a callable path or call expression".into(),
+                            span: span.clone(),
+                        });
+                    }
+                };
+
+                let mut all_args = vec![left_id];
+                all_args.extend(args);
+                HirExprKind::Call { callee: callee_id, args: all_args }
+            }
+            GreenExprKind::ConstEval { expr } => {
+                let inner_id = self.lower_expr(&expr_red.child_to_red(expr), scope_id)?;
+                HirExprKind::ConstEval { expr: inner_id }
+            }
         };
 
         let hir_id = self.hir.hir_expr_pool.len();

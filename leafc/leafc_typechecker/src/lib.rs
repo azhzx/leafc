@@ -52,6 +52,8 @@ pub struct TypeChecker {
     builtin: BuiltinTypes,
 
     type_defs: HashMap<HirDeclId, TypeDef>,
+
+    current_expected_return_ty: Option<TyId>,
 }
 
 impl TypeChecker {
@@ -1554,7 +1556,7 @@ impl TypeChecker {
             HirExprKind::Tuple { elements } =>
                 self.infer_tuple(elements, expected, &span)?,
             HirExprKind::Return { expr } =>
-                self.infer_return(expr.as_ref(), expected, &span)?,
+                self.infer_return(expr.as_ref(), None, &span)?,
             HirExprKind::TypeCast { expr, type_ann } =>
                 self.infer_cast(*expr, type_ann, &span)?,
             HirExprKind::Move { target } | HirExprKind::Copy { target } => {
@@ -2086,6 +2088,9 @@ impl TypeChecker {
 
                 self.builtin.bool_ty
             }
+            HirExprKind::ConstEval { expr } => {
+                self.infer_expr(*expr, expected)?
+            }
 
             HirExprKind::Ellipsis => todo!("maybe deprecated?"),
 
@@ -2287,9 +2292,18 @@ impl TypeChecker {
         Ok(self.intern_type(TypeNodeKind::Tuple(elem_tys)))
     }
 
-    fn infer_return(&mut self, expr: Option<&HirExprId>, expected: Option<TyId>, _span: &Span) -> Result<TyId, DiagMsg> {
+    fn infer_return(&mut self, expr: Option<&HirExprId>, _expected: Option<TyId>, span: &Span) -> Result<TyId, DiagMsg> {
+        let ret_ty = self.current_expected_return_ty
+            .ok_or_else(|| DiagMsg {
+                title: "Return outside function".into(),
+                msg: "return used outside of a function body".into(),
+                span: span.clone(),
+            })?;
+
         if let Some(e) = expr {
-            self.infer_expr(*e, expected)?;
+            self.infer_expr(*e, Some(ret_ty))?;
+        } else {
+            self.unify(self.builtin.unit, ret_ty, span.clone())?;
         }
         Ok(self.builtin.never)
     }
@@ -2375,6 +2389,8 @@ impl TypeChecker {
         let has_ret_ty_ann = return_type.is_some();
 
 
+        self.current_expected_return_ty = Some(ret_ty);
+
         let body_ty = if body.is_empty() {
             self.builtin.unit
         } else {
@@ -2384,6 +2400,8 @@ impl TypeChecker {
             }
             self.infer_expr(body[last_idx], Some(ret_ty))?
         };
+
+        self.current_expected_return_ty = None;
 
 
         self.unify(body_ty, ret_ty, self.hir_crate.hir_decl_pool[decl_id].span.clone())?;
@@ -2876,6 +2894,7 @@ impl TypeCheckerApi for TypeChecker {
             current_resume_ty: None,
             builtin,
             type_defs: HashMap::new(),
+            current_expected_return_ty: None,
         }
     }
 

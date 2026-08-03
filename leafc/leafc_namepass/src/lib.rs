@@ -371,6 +371,13 @@ impl<'a> NamePass<'a> {
                     self.build_expr_scope(&child_expr_red(&clause_span, &clause.body), catch_scope)?;
                 }
             }
+            GreenExprKind::PipeLine { left, right } => {
+                self.build_expr_scope(&child_expr_red(&expr_red.span, left), current_scope)?;
+                self.build_expr_scope(&child_expr_red(&expr_red.span, right), current_scope)?;
+            }
+            GreenExprKind::ConstEval { expr } => {
+                self.build_expr_scope(&child_expr_red(&expr_red.span, expr), current_scope)?;
+            }
             GreenExprKind::Resume { expr: e } => {
                 self.build_expr_scope(&child_expr_red(&expr_red.span, e), current_scope)?;
             }
@@ -523,6 +530,13 @@ impl<'a> NamePass<'a> {
                     // body
                     self.resolve_expr(&child_expr_red(&clause_span, &clause.body), *catch_scope)?;
                 }
+            }
+            GreenExprKind::PipeLine { left, right } => {
+                self.resolve_expr(&child_expr_red(&expr_red.span, left), current_scope)?;
+                self.resolve_expr(&child_expr_red(&expr_red.span, right), current_scope)?;
+            }
+            GreenExprKind::ConstEval { expr } => {
+                self.resolve_expr(&child_expr_red(&expr_red.span, expr), current_scope)?;
             }
             GreenExprKind::Resume { expr: e } => {
                 self.resolve_expr(&child_expr_red(&expr_red.span, e), current_scope)?;

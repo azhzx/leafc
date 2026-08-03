@@ -27,6 +27,7 @@ pub enum HirLowerError {
     DuplicateKeywordArg,
     CannotResolveFunction,
     ArgumentConflict,
+    InvalidPipeLineTarget,
 }
 
 

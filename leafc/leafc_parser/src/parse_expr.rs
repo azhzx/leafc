@@ -943,6 +943,41 @@ impl<'a> Parser<'a> {
         })
     }
 
+    /// const(expr)
+    pub fn parse_const_expr(&mut self) -> Result<ExprRedNode, DiagMsg> {
+        let const_token = self.current_token().clone();
+        let const_start = const_token.span.start_off;
+        self.skip_token_only(TokenType::KwConst)?;
+        self.skip_token_only(TokenType::Lparen)?;
+
+        let expr_red = self.parse_expr()?;
+
+        self.skip_token_only(TokenType::Rparen)?;
+        let end_off = self.tokens.data[self.index - 1].span.end_off;
+        let text_len = end_off - const_start;
+
+        let expr_child = GreenChild {
+            relative_start: expr_red.span.start_off - const_start,
+            node: expr_red.inner.clone(),
+        };
+
+        let green = GreenExpr {
+            kind: GreenExprKind::ConstEval {
+                expr: expr_child,
+            },
+            text_len,
+        };
+
+        Ok(ExprRedNode {
+            span: Span {
+                source_id: const_token.span.source_id,
+                start_off: const_start,
+                end_off,
+            },
+            inner: Arc::new(green),
+        })
+    }
+
     /// return expr
     pub fn parse_return_expr(&mut self) -> Result<ExprRedNode, DiagMsg> {
         let return_start = self.current_token().span.start_off;
@@ -1031,6 +1066,7 @@ impl<'a> Parser<'a> {
     /// 中缀运算符左绑定优先级
     fn lbp(token: TokenType) -> Option<usize> {
         match token {
+            TokenType::PipeLine => Some(1),
             TokenType::Or => Some(10),
             TokenType::And => Some(20),
             TokenType::EqEq
@@ -1066,6 +1102,7 @@ impl<'a> Parser<'a> {
             TokenType::KwRaise => return self.parse_raise_expr(),
             TokenType::KwWith => return self.parse_with_expr(),
             TokenType::KwResume => return self.parse_resume_expr(),
+            TokenType::KwConst => return self.parse_const_expr(),
             TokenType::KwUnsafeCallExternal => return self.parse_unsafe_call_external_expr(),
             _ => {}
         }
@@ -1428,6 +1465,41 @@ impl<'a> Parser<'a> {
                                 });
                             }
                         }
+                    }
+                    TokenType::PipeLine => {
+                        self.skip_token();
+                        let rhs = self.parse_expr_bp(lbp + 1)?;
+
+                        let expr_start = lhs.span.start_off;
+                        let expr_end = rhs.span.end_off;
+
+                        let left_child = GreenChild {
+                            relative_start: lhs.span.start_off - expr_start,
+                            node: lhs.inner.clone(),
+                        };
+                        let right_child = GreenChild {
+                            relative_start: rhs.span.start_off - expr_start,
+                            node: rhs.inner.clone(),
+                        };
+
+                        let green = GreenExpr {
+                            kind: GreenExprKind::PipeLine {
+                                left: left_child,
+                                right: right_child,
+                            },
+                            text_len: expr_end - expr_start,
+                        };
+
+                        lhs = ExprRedNode {
+                            span: Span {
+                                source_id: token.span.source_id,
+                                start_off: expr_start,
+                                end_off: expr_end,
+                            },
+                            inner: Arc::new(green),
+                        };
+
+                        continue;
                     }
                     _ => {
                         self.skip_token();

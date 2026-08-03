@@ -844,6 +844,9 @@ pub struct MirLower {
     bool_ty: TyId,
     uint8_ty: TyId,
     unit_ty: TyId,
+
+    const_eval_counter: usize,
+    current_blocks: Option<Vec<BasicBlockId>>,
 }
 
 impl MirLower {
@@ -855,6 +858,9 @@ impl MirLower {
             terminator: TerminatorKind::Unreachable,
             span,
         });
+        if let Some(ref mut current) = self.current_blocks {
+            current.push(id);
+        }
         id
     }
 
@@ -885,6 +891,71 @@ impl MirLower {
         });
         self.start_block(next_block);
         next_block
+    }
+
+    fn make_const_eval_fun(&mut self, inner_expr: HirExprId, span: Span) -> Result<FunId, DiagMsg> {
+        let inner_ty = self.expr_ty(inner_expr)?;
+        let counter = self.const_eval_counter;
+        self.const_eval_counter += 1;
+        let fun_name = format!("__const_eval_{}", counter);
+
+        let sig = FnSig { params: vec![], return_ty: inner_ty };
+
+        let saved_fun = self.fun.take();
+        let saved_current_block = self.current_block;
+        let saved_stmts = std::mem::take(&mut self.current_stmts);
+        let saved_current_blocks = self.current_blocks.take();   // 保存外层跟踪
+
+        self.current_blocks = Some(Vec::new());
+
+        let mut builder = FnBuilder {
+            name: fun_name.clone(),
+            locals_map: HashMap::new(),
+            generic_params: vec![],
+            signature: sig.clone(),
+            local_decls: vec![],
+            blocks: vec![],
+            return_local: 0,
+        };
+
+        self.fun = Some(builder);
+        let ret_local = self.new_local(
+            inner_ty, true, Some("return_val".to_string()), span.clone());
+        self.fun.as_mut().unwrap().return_local = ret_local;
+
+        let entry_block = self.new_block(span.clone());
+        self.start_block(entry_block);
+
+        let maybe_place = self.compile_expr(inner_expr)?;
+        if let Some(place) = maybe_place {
+            let ret_id = self.fun.as_ref().unwrap().return_local;
+            self.push_stmt(MirStmtKind::Store {
+                place: Place::Local(ret_id),
+                rvalue: Rvalue::Move(place),
+            }, span.clone());
+        }
+        self.set_terminator(TerminatorKind::Return);
+
+        let mut finished = self.fun.take().unwrap();
+        let fun_blocks = self.current_blocks.take().unwrap();    // 匿名函数的块列表
+        finished.blocks = fun_blocks;
+
+        self.fun = saved_fun;
+        self.current_block = saved_current_block;
+        self.current_stmts = saved_stmts;
+        self.current_blocks = saved_current_blocks;
+
+        let fun_id = self.functions.len();
+        self.functions.push(MirFun {
+            name: finished.name,
+            generic_params: finished.generic_params,
+            signature: finished.signature,
+            local_decls: finished.local_decls,
+            blocks: finished.blocks,
+            is_consteval: true,
+            span,
+        });
+        Ok(fun_id)
     }
 
     fn build_call_by_ptr(
@@ -1129,6 +1200,8 @@ impl MirLower {
             self.bind_local(param.name.sym_id, local);
         }
 
+        self.current_blocks = Some(Vec::new());
+
         let entry_block = self.new_block(decl.span.clone());
         self.start_block(entry_block);
 
@@ -1138,9 +1211,9 @@ impl MirLower {
         }
 
         let need_terminator = matches!(
-            self.blocks[self.current_block].terminator,
-            TerminatorKind::Unreachable
-        );
+        self.blocks[self.current_block].terminator,
+        TerminatorKind::Unreachable
+    );
         let is_never = self.type_checker_result.type_pool[return_ty].kind == TypeNodeKind::Never;
 
         if need_terminator && !is_never {
@@ -1157,8 +1230,9 @@ impl MirLower {
             self.set_terminator(TerminatorKind::Return);
         }
 
+        let fun_blocks = self.current_blocks.take().unwrap();
         let mut fun = self.fun.take().unwrap();
-        fun.blocks = (entry_block..self.blocks.len()).collect();
+        fun.blocks = fun_blocks;
 
         Ok(MirFun {
             name: fun.name,
@@ -1865,7 +1939,15 @@ impl MirLower {
                 let entry_block = self.current_block;
 
                 let body_block = self.new_block(span.clone());
+                let body_entry = self.new_block(span.clone());
+
                 self.start_block(body_block);
+                self.set_terminator(TerminatorKind::Goto {
+                    target: body_entry,
+                    block_args: vec![],
+                });
+
+                self.start_block(body_entry);
                 let body_place = self.compile_expr(*handler)?;
                 let body_value = match body_place {
                     Some(p) => Rvalue::Move(p),
@@ -1886,7 +1968,11 @@ impl MirLower {
                     for param in &clause.params {
                         match param {
                             HirCatchParam::Binding(name) => {
-                                let pty = self.get_control_param_ty(&clause.control_path, param_locals.len(), span.clone())?;
+                                let pty = self.get_control_param_ty(
+                                    &clause.control_path,
+                                    param_locals.len(),
+                                    span.clone(),
+                                )?;
                                 let local = self.new_local(pty, false, Some(name.name.clone()), span.clone());
                                 param_locals.push(local);
                                 bound_syms.push((name.sym_id, local));
@@ -1908,6 +1994,13 @@ impl MirLower {
                             span.clone(),
                         );
                     }
+
+                    let handler_body_entry = self.new_block(span.clone());
+                    self.set_terminator(TerminatorKind::Goto {
+                        target: handler_body_entry,
+                        block_args: vec![],
+                    });
+                    self.start_block(handler_body_entry);
 
                     let old_resume_target = self.resume_target;
                     self.resume_target = Some(merge_block);
@@ -1953,7 +2046,6 @@ impl MirLower {
                 self.start_block(merge_block);
                 Ok(Some(Place::Local(result_local)))
             }
-
             HirExprKind::Raise { control_name, args } => {
                 let control_id = *self.control_map.get(&control_name.sym_id)
                     .ok_or_else(|| DiagMsg {
@@ -2014,7 +2106,22 @@ impl MirLower {
                 });
                 Ok(None)
             }
-            HirExprKind::Ellipsis => todo!()
+            HirExprKind::Ellipsis => todo!(),
+            HirExprKind::ConstEval { expr } => {
+                let fun_id = self.make_const_eval_fun(*expr, span.clone())?;
+                let ty = self.expr_ty(expr_id)?;
+                let result_temp = self.new_mutable_temp(ty, span.clone());
+                let next_block = self.new_block(span.clone());
+
+                self.set_terminator(TerminatorKind::Call {
+                    func: fun_id,
+                    args: vec![],
+                    dest: Place::Local(result_temp),
+                    target: Some(next_block),
+                });
+                self.start_block(next_block);
+                Ok(Some(Place::Local(result_temp)))
+            }
         }
     }
 
@@ -2083,6 +2190,8 @@ impl MirLowerApi for MirLower {
             bool_ty,
             uint8_ty,
             unit_ty,
+            const_eval_counter: 0,
+            current_blocks: None,
         }
     }
 

@@ -436,7 +436,14 @@ pub enum GreenExprKind {
     TupleIndex {
         expr: GreenChild<GreenExpr>,
         index: usize,
-    }
+    },
+    PipeLine {
+        left: GreenChild<GreenExpr>,
+        right: GreenChild<GreenExpr>,
+    },
+    ConstEval {
+        expr: GreenChild<GreenExpr>,
+    },
 }
 
 

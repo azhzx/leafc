@@ -316,6 +316,9 @@ pub enum HirExprKind {
         path: HirExprId,
         fields: Vec<(String, HirExprId)>,
     },
+    ConstEval {
+        expr: HirExprId,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
