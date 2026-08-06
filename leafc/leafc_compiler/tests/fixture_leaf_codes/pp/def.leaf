@@ -1,0 +1,2 @@
+__define A B + B + B + B
+__define B A + A + A + A

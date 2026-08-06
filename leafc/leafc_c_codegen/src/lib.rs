@@ -6,12 +6,29 @@ use leafc_coreapi::type_system::{get_type_root, TyId, TypeNodeKind};
 use leafc_coreapi::type_system::{TypeCtx, TypeDefKind, GenericParamDef, TypeDef};
 use std::collections::{HashMap, HashSet};
 
+
 pub struct CCodeGen {
     mono_mir: MirCrate,
     type_checker_result: TypeCtx,
 }
 
 impl CCodeGen {
+    fn terminator_successors(terminator_kind: TerminatorKind) -> Vec<BasicBlockId> {
+        match terminator_kind {
+            TerminatorKind::Goto { target, .. } => vec![target],
+            TerminatorKind::Call { target, .. } | TerminatorKind::CallByPtr { target, .. } => {
+                target.iter().cloned().collect()
+            }
+            TerminatorKind::SwitchInt { targets, default, .. } => {
+                let mut v: Vec<_> = targets.iter().map(|(_, t)| *t).collect();
+                v.push(default);
+                v
+            }
+            TerminatorKind::Resume { target, .. } => vec![target],
+            _ => vec![],
+        }
+    }
+
     fn ty_to_mangle(&self, ty_id: TyId) -> String {
         let pool = &self.type_checker_result.type_pool;
         let root = get_type_root(pool, ty_id);
@@ -488,6 +505,59 @@ impl CCodeGen {
         }
     }
 
+    fn compute_merge_block(blocks: &[BasicBlock], handler_block: BasicBlockId) -> BasicBlockId {
+        let mut visited = HashSet::new();
+        let mut stack = vec![handler_block];
+        while let Some(bid) = stack.pop() {
+            if !visited.insert(bid) { continue; }
+            match &blocks[bid].terminator {
+                TerminatorKind::Resume { target, .. } => return *target,
+                TerminatorKind::Goto { target, .. } => stack.push(*target),
+                _ => {}
+            }
+        }
+        unreachable!("Handler block must eventually reach a Resume")
+    }
+
+    fn compute_merge_block_from_body(
+        &self,
+        blocks: &[BasicBlock],
+        next: BasicBlockId,
+        handler_block: BasicBlockId,
+    ) -> BasicBlockId {
+        let mut body_set = HashSet::new();
+        let mut stack = vec![next];
+        while let Some(bid) = stack.pop() {
+            if bid == handler_block || !body_set.insert(bid) {
+                continue;
+            }
+            let block = &blocks[bid];
+            for succ in Self::terminator_successors(block.terminator.clone()) {
+                if succ != handler_block {
+                    stack.push(succ)
+                }
+            }
+        }
+
+        let mut merge_candidates = HashSet::new();
+        for &bid in &body_set {
+            let block = &blocks[bid];
+            for succ in Self::terminator_successors(block.terminator.clone()) {
+                if succ != handler_block && !body_set.contains(&succ) {
+                    merge_candidates.insert(succ);
+                }
+            }
+        }
+
+        if merge_candidates.len() == 1 {
+            *merge_candidates.iter().next().unwrap()
+        } else if merge_candidates.is_empty() {
+            blocks.len() - 1
+        } else {
+            *merge_candidates.iter().min().unwrap()
+        }
+    }
+
     fn gen_function(&self, fun: &MirFun, fun_id: FunId) -> String {
         let blocks = &self.mono_mir.blocks;
 
@@ -533,12 +603,7 @@ impl CCodeGen {
 
         for &bid in &fun.blocks {
             if let TerminatorKind::InstallHandler { handler_block, next, args_dest, control_id } = &blocks[bid].terminator {
-                let merge_block = match &blocks[*handler_block].terminator {
-                    TerminatorKind::Goto { target, .. } => *target,
-                    TerminatorKind::Resume { target, .. } => *target,
-                    _ => panic!("handler block must end with Goto or Resume"),
-                };
-                let body_fun_name = format!("{}_with_body_{}", mangled, body_fun_count);
+                let merge_block = self.compute_merge_block_from_body(blocks, *next, *handler_block);                let body_fun_name = format!("{}_with_body_{}", mangled, body_fun_count);
                 body_info.insert(bid, (body_fun_name.clone(), merge_block, *next, *control_id, args_dest.clone()));
 
                 body_functions += &self.extract_with_body(
@@ -560,6 +625,39 @@ impl CCodeGen {
                 }
                 skip_blocks.extend(body_set);
                 body_fun_count += 1;
+            }
+        }
+
+        loop {
+            let mut changed = false;
+            for &bid in &fun.blocks {
+                if skip_blocks.contains(&bid) {
+                    continue;
+                }
+                let term = &blocks[bid].terminator;
+                let targets: Vec<BasicBlockId> = match term {
+                    TerminatorKind::Goto { target, .. } => vec![*target],
+                    TerminatorKind::Call { target, .. } | TerminatorKind::CallByPtr { target, .. } => {
+                        target.iter().cloned().collect()
+                    }
+                    TerminatorKind::SwitchInt { targets, default, .. } => {
+                        let mut v: Vec<_> =
+                            targets.iter().map(|(_, target)| *target).collect();
+                        v.push(*default);
+                        v
+                    }
+                    _ => vec![],
+                };
+                for t in targets {
+                    if skip_blocks.contains(&t) {
+                        skip_blocks.insert(bid);
+                        changed = true;
+                        break;
+                    }
+                }
+            }
+            if !changed {
+                break;
             }
         }
 
@@ -602,6 +700,7 @@ impl CCodeGen {
             code += "    main_fiber = leaf_convert_thread_to_fiber(NULL);\n";
         }
 
+        // _ret
         if returns_value && !is_main {
             let decl_str = if let Some((ref fun_params, fun_ret)) = inner_fun_params.zip(inner_fun_ret) {
                 let ret_c = self.ty_to_c(fun_ret);
@@ -616,6 +715,20 @@ impl CCodeGen {
 
         for &bid in &fun.blocks {
             if skip_blocks.contains(&bid) { continue; }
+
+            if body_info.values().any(|(_, mb, _, _, _)| *mb == bid) {
+                code += &format!("  block_{}:\n", bid);
+                let ret_ty = fun.signature.return_ty;
+                let ret_c_ty = self.ty_to_c(ret_ty);
+                if ret_c_ty != "void" {
+                    code += &format!("    _ret = ({})_raise_resume_val;\n", ret_c_ty);
+                    code += "    return _ret;\n";
+                } else {
+                    code += "    return;\n";
+                }
+                continue;
+            }
+
             let block = &blocks[bid];
             code += &format!("  block_{}:\n", bid);
 
@@ -624,24 +737,49 @@ impl CCodeGen {
                     TerminatorKind::InstallHandler { handler_block, .. } => *handler_block,
                     _ => unreachable!(),
                 };
+                let args_count = std::cmp::max(1, args_dest.len());
+                code += &format!("    intptr_t _handler_args_{}[{}];\n", bid, args_count);
                 let args_dest_array = if !args_dest.is_empty() {
-                    let names: Vec<String> = args_dest.iter().map(|id| format!("&{}", var_names[id])).collect();
+                    let names: Vec<String> = (0..args_dest.len())
+                        .map(|i| format!("&_handler_args_{}[{}]", bid, i))
+                        .collect();
                     format!("(void*[]){{{}}}", names.join(", "))
                 } else {
                     "(void*[]){0}".to_string()
                 };
-                let result_param = &blocks[*merge_block].block_params[0]; // with 的结果参数
-                let result_local = *result_param;
-                let result_ty = fun.local_decls[result_local].ty;
-                let result_c_ty = self.ty_to_c(result_ty);
-                let result_name = &var_names[&result_local];
 
                 code += &format!(
                     "    _body_fiber = leaf_create_fiber({}, NULL);\n",
                     body_fun_name
                 );
                 code += &format!(
-                    "    leafc_push_handler({}, {}, {}, _body_fiber);\n",
+                    "    leafc_push_handler({}, {}, {}, _body_fiber, GetCurrentFiber());\n",
+                    control_id, args_dest_array, args_dest.len()
+                );
+                code += "    leaf_switch_to_fiber(_body_fiber);\n";
+                code += "    if (_effect_raised) {\n";
+                code += "        _effect_raised = 0;\n";
+
+                for (i, &local_id) in args_dest.iter().enumerate() {
+                    let ty_c = self.ty_to_c(fun.local_decls[local_id].ty);
+                    code += &format!(
+                        "        {} = ({})_handler_args_{}[{}];\n",
+                        var_names[&local_id], ty_c, bid, i
+                    );
+                }
+
+                code += &format!("        goto block_{};\n", handler_block);
+                code += "    } else {\n";
+                code += "        leafc_pop_handler();\n";
+                code += &format!("        goto block_{};\n", merge_block);
+                code += "    }\n";
+
+                code += &format!(
+                    "    _body_fiber = leaf_create_fiber({}, NULL);\n",
+                    body_fun_name
+                );
+                code += &format!(
+                    "    leafc_push_handler({}, {}, {}, _body_fiber, GetCurrentFiber());\n",
                     control_id, args_dest_array, args_dest.len()
                 );
                 code += "    leaf_switch_to_fiber(_body_fiber);\n";
@@ -649,10 +787,6 @@ impl CCodeGen {
                 code += "        _effect_raised = 0;\n";
                 code += &format!("        goto block_{};\n", handler_block);
                 code += "    } else {\n";
-                code += &format!(
-                    "        {} = ({})_raise_resume_val;\n",
-                    result_name, result_c_ty
-                );
                 code += &format!("        goto block_{};\n", merge_block);
                 code += "    }\n";
                 continue;
@@ -695,7 +829,6 @@ impl CCodeGen {
 
         body_functions + &code
     }
-
     fn gen_terminator(
         &self,
         block: &BasicBlock,
@@ -797,14 +930,17 @@ impl CCodeGen {
                 let arg_list = arg_strs.join(", ");
                 code += &format!("    leafc_raise({}, {});\n", control_name, arg_list);
                 let dest_str = self.place_to_c(dest, var_names);
-                code += &format!("    {} = _raise_resume_val;\n", dest_str);
+                let dest_ty = self.place_ty(dest, fun);
+                if self.ty_to_c(dest_ty) != "void" {
+                    code += &format!("    {} = _raise_resume_val;\n", dest_str);
+                }
                 let resume_block = block_id + 1;
                 code += &format!("    goto block_{};\n", resume_block);
             }
             TerminatorKind::Resume { place, target } => {
                 let val = self.place_to_c(place, var_names);
                 code += &format!("    leafc_resume((intptr_t){});\n", val);
-                code += "    __builtin_unreachable();\n";
+                code += &format!("    goto block_{};\n", target);
             }
             TerminatorKind::InstallHandler { .. } => {
                 unreachable!("InstallHandler should be handled in gen_function directly");
@@ -850,7 +986,6 @@ impl CCodeGen {
         var_names.insert(0, "_ret".into());
         let mut var_counter = 0u32;
         for (i, decl) in fun.local_decls.iter().enumerate() {
-            if i == 0 { continue; }
             let mut name = decl.name.clone().unwrap_or_else(|| format!("v{}", i));
             if name == "return" { name = "_ret".to_string(); }
             let unique = format!("{}_{}", name, var_counter);
@@ -858,7 +993,6 @@ impl CCodeGen {
             var_names.insert(i, unique);
         }
         for (i, decl) in fun.local_decls.iter().enumerate() {
-            if i == 0 || (i >= 1 && i <= fun.signature.params.len()) { continue; }
             let ty = self.ty_to_c(decl.ty);
             if ty == "void" { continue; }
             let name = &var_names[&i];
@@ -938,10 +1072,12 @@ impl CCodeGen {
                     } else {
                         unreachable!("multiple return values in with body not supported")
                     };
+
                     code += "    _effect_raised = 0;\n";
                     code += &format!("    _raise_resume_val = (intptr_t){};\n", resume_val);
-                    code += "    leaf_switch_to_fiber(main_fiber);\n";
+                    code += "    leaf_switch_to_fiber(handler_stack[handler_sp - 1]->caller_fiber);\n";
                     code += "    __builtin_unreachable();\n";
+
                 } else {
                     let target_params = &blocks[*target].block_params;
                     for (param_id, arg) in target_params.iter().zip(block_args.iter()) {
@@ -1033,7 +1169,7 @@ impl CCodeGen {
             TerminatorKind::Return => {
                 code += "    _effect_raised = 0;\n";
                 code += "    _raise_resume_val = 0;\n";
-                code += "    leaf_switch_to_fiber(main_fiber);\n";
+                code += "    leaf_switch_to_fiber(handler_stack[handler_sp - 1]->caller_fiber);\n";
                 code += "    __builtin_unreachable();\n";
             }
             TerminatorKind::Unreachable => {

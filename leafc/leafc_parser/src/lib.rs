@@ -490,12 +490,13 @@ impl<'a> Parser<'a> {
         code: &String,
         user_operators: &'a HashMap<String, OperatorDef>
     ) -> Result<TokenStream, DiagMsg> {
-        let mut lex = Lexer::new(source_id, &code, user_operators);
-        let tokens = lex.tokenize()?;
-        for token in &tokens.data {
-            println!("{:?}", token);
-        }
-        Ok(tokens)
+        // let mut lex = Lexer::new(source_id, &code, user_operators);
+        // let tokens = lex.tokenize()?;
+        // for token in &tokens.data {
+        //     println!("{:?}", token);
+        // }
+        // Ok(tokens)
+        todo!()
     }
 
     pub fn pp(source_id: SourceId, token_stream: &TokenStream) -> Result<TokenStream, DiagMsg> {

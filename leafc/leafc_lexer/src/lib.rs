@@ -4,9 +4,8 @@ mod test;
 use std::collections::{HashMap, HashSet};
 use leafc_coreapi::crate_meta::OperatorDef;
 use unicode_xid::UnicodeXID;
-use leafc_coreapi::diagnostic::DiagMsg;
-use leafc_coreapi::lexer::{Document, DocumentString, LexerApi, LexerError, TokenStream};
-use leafc_coreapi::lexer::LexerError::{InvalidChar, InvalidString};
+use leafc_coreapi::error_items::{CompileTimeErrorKind, DiagCtx, ErrorKind, LexerErrorKind, LocalizedMessage, MsgKind};
+use leafc_coreapi::lexer::{Document, DocumentString, LexerApi, TokenStream};
 use leafc_coreapi::operators::build_operator_tables;
 use leafc_coreapi::source::{SourceId, Span};
 use leafc_coreapi::token::{Token, TokenType};
@@ -22,7 +21,7 @@ pub enum LexerState {
 
 const INDENT_WIDTH: usize = 4;
 
-pub struct Lexer<'a> {
+pub struct Lexer {
     index: usize,
     byte_index: usize,
     source: SourceId,
@@ -32,10 +31,9 @@ pub struct Lexer<'a> {
 
     operator_table: HashMap<String, TokenType>,
     operator_prefixes: HashSet<String>,
-    user_operators: &'a HashMap<String, OperatorDef>
 }
 
-impl<'a> Lexer<'a> {
+impl Lexer {
     fn current_offset(&self) -> usize {
         self.byte_index
     }
@@ -53,8 +51,8 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn keyword_map(&self, s: &String) -> TokenType {
-        match s.as_str() {
+    fn keyword_map(&self, s: &str) -> TokenType {
+        match s {
             "is" => TokenType::KwIs,
             "typeof" => TokenType::KwTypeOf,
             "use" => TokenType::KwUse,
@@ -108,18 +106,23 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn handle_escape(&mut self) -> Result<char, DiagMsg> {
+
+    fn handle_escape(&mut self, diag: &mut DiagCtx) -> char {
         let ch = match self.current_char() {
             Some(c) => c,
-            None => return Err(DiagMsg {
-                title: format!("{:?}", InvalidString),
-                msg: "Unexpected end of input in escape sequence".to_string(),
-                span: Span {
+            None => {
+                let span = Span {
                     source_id: self.source,
                     start_off: self.current_offset(),
                     end_off: self.current_offset(),
-                },
-            }),
+                };
+                diag.emit_error(
+                    ErrorKind::CompileTimeError(CompileTimeErrorKind::LexerError(LexerErrorKind::UnexpectedEof)),
+                    span,
+                    LocalizedMessage::new(MsgKind::LexerUnexpectedEof, std::iter::empty::<&str>()),
+                );
+                return '\0';
+            }
         };
         let result = match ch {
             'n' => '\n',
@@ -128,39 +131,96 @@ impl<'a> Lexer<'a> {
             '\\' => '\\',
             '"' => '\"',
             '0' => '\0',
-            _ => return Err(DiagMsg {
-                title: format!("{:?}", InvalidString),
-                msg: format!("Invalid escape sequence \\{}", ch),
-                span: Span {
+            _ => {
+                let span = Span {
                     source_id: self.source,
                     start_off: self.current_offset() - 1,
                     end_off: self.current_offset(),
-                },
-            }),
+                };
+                self.emit_unexpected_eof(diag, span);
+                self.next_char();
+                return ch;
+            }
         };
         self.next_char();
-        Ok(result)
+        result
     }
 
     fn current_char(&self) -> Option<char> {
         self.code.get(self.index).copied()
     }
 
-    fn next_char(&mut self) -> () {
+    fn next_char(&mut self) {
         if let Some(&ch) = self.code.get(self.index) {
             self.index += 1;
             self.byte_index += ch.len_utf8();
         }
     }
 
-    fn main_loop(&mut self, tokens: &mut Vec<Token>) -> Result<(), DiagMsg> {
+    fn emit_lexer_error(
+        &self,
+        diag: &mut DiagCtx,
+        kind: LexerErrorKind,
+        span: Span,
+        msg_kind: MsgKind,
+        args: impl IntoIterator<Item = impl ToString>,
+    ) {
+        diag.emit_error(
+            ErrorKind::CompileTimeError(CompileTimeErrorKind::LexerError(kind)),
+            span,
+            LocalizedMessage::new(msg_kind, args),
+        );
+    }
+
+    fn emit_unexpected_eof(&self, diag: &mut DiagCtx, span: Span) {
+        self.emit_lexer_error(
+            diag,
+            LexerErrorKind::UnexpectedEof,
+            span,
+            MsgKind::LexerUnexpectedEof,
+            std::iter::empty::<&str>(),
+        );
+    }
+
+    fn emit_invalid_string(&self, diag: &mut DiagCtx, span: Span, extra: Option<char>) {
+        let args = extra.map(|c| vec![c.to_string()]).unwrap_or_default();
+        self.emit_lexer_error(
+            diag,
+            LexerErrorKind::InvalidString,
+            span,
+            MsgKind::LexerInvalidString,
+            args,
+        );
+    }
+
+    fn emit_invalid_indent(&self, diag: &mut DiagCtx, span: Span) {
+        self.emit_lexer_error(
+            diag,
+            LexerErrorKind::InvalidIndent,
+            span,
+            MsgKind::LexerInvalidIndent,
+            std::iter::empty::<&str>(),
+        );
+    }
+
+    fn emit_invalid_char(&self, diag: &mut DiagCtx, span: Span, ch: char) {
+        self.emit_lexer_error(
+            diag,
+            LexerErrorKind::InvalidChar(ch),
+            span,
+            MsgKind::LexerInvalidChar,
+            std::iter::once(ch.to_string()),
+        );
+    }
+
+    fn main_loop(&mut self, tokens: &mut Vec<Token>, diag: &mut DiagCtx) {
         let mut state = LexerState::Start;
         loop {
             let c = self.current_char();
             match state {
                 LexerState::Start => {
                     match c {
-                        None => return Ok(()),
+                        None => break,
                         Some('\n') => {
                             state = LexerState::LineStart;
                             continue;
@@ -180,24 +240,22 @@ impl<'a> Lexer<'a> {
                         Some(ch) => {
                             if ch.is_ascii_digit() {
                                 state = LexerState::Number;
-                            }
-                            else if ch == '_' || ch.is_xid_start() {
+                            } else if ch == '_' || ch.is_xid_start() {
                                 state = LexerState::Ident;
                             } else if ch == '/'
-                                && self.index+1 < self.code.len()
-                                && self.code[self.index+1] == '/' {
+                                && self.index + 1 < self.code.len()
+                                && self.code[self.index + 1] == '/'
+                            {
+                                self.next_char(); //  '/'
+                                self.next_char(); // '/'
 
-                                self.next_char();
-                                self.next_char();
-
-                                if self.code[self.index] == '/' {
-                                    // 文档字符串
+                                if self.index < self.code.len() && self.code[self.index] == '/' {
                                     let mut docstring = String::new();
-
-                                    self.next_char();
+                                    self.next_char(); // '/'
                                     let start_offset = self.current_offset();
                                     while self.index < self.code.len()
-                                        && self.code[self.index] != '\n' {
+                                        && self.code[self.index] != '\n'
+                                    {
                                         docstring.push(self.code[self.index]);
                                         self.next_char();
                                     }
@@ -208,41 +266,43 @@ impl<'a> Lexer<'a> {
                                             end_off: self.current_offset(),
                                         },
                                         data: docstring,
-                                    })
+                                    });
                                 } else {
-                                    // 普通注释
                                     while self.index < self.code.len()
-                                        && self.code[self.index] != '\n' {
+                                        && self.code[self.index] != '\n'
+                                    {
                                         self.next_char();
                                     }
                                 }
-
-                            } else if matches!(ch,
+                            } else if matches!(
+                                ch,
                                 '+' | '-' | '*' | '/' | '%' | '&'
                                 | '|' | '^' | '!' | '=' | '<' | '>'
                                 | '.' | '(' | ')' | '{' | '}' | '['
-                                | ',' | ':' | ';' | '#' | '@' | '_'  | ']'
+                                | ',' | ':' | ';' | '#' | '@' | '_' | ']'
                             ) {
                                 state = LexerState::Symbol;
                             } else {
                                 let off = self.current_offset();
-                                return Err(DiagMsg {
-                                    title : format!("{:?}", InvalidChar),
-                                    msg : format!("Invalid char '{}'", ch),
-                                    span : Span {
-                                        source_id: self.source,
-                                        start_off: off,
-                                        end_off: off
-                                    },
-                                });
+                                let span = Span {
+                                    source_id: self.source,
+                                    start_off: off,
+                                    end_off: off + ch.len_utf8(),
+                                };
+                                diag.emit_error(
+                                    ErrorKind::CompileTimeError(CompileTimeErrorKind::LexerError(LexerErrorKind::InvalidChar(ch))),
+                                    span,
+                                    LocalizedMessage::new(MsgKind::LexerInvalidChar, std::iter::once(ch.to_string())),
+                                );
+                                self.next_char();
                             }
                             continue;
                         }
-                    };
+                    }
                 }
                 LexerState::String => {
                     let start_offset = self.current_offset();
-                    self.next_char();
+                    self.next_char(); // '"'
                     let mut closed = false;
                     let mut text = String::new();
                     while self.index < self.code.len() {
@@ -253,29 +313,26 @@ impl<'a> Lexer<'a> {
                             break;
                         } else if c == '\\' {
                             self.next_char();
-                            text.push(self.handle_escape()?);
+                            text.push(self.handle_escape(diag));
                         } else {
                             text.push(c);
                             self.next_char();
                         }
                     }
                     if !closed {
-                        return Err(DiagMsg {
-                            title: format!("{:?}", InvalidString),
-                            msg: "Unclosed string literal".to_string(),
-                            span: Span {
-                                start_off: start_offset,
-                                end_off: self.current_offset(),
-                                source_id: self.source
-                            },
-                        });
+                        let span = Span {
+                            source_id: self.source,
+                            start_off: start_offset,
+                            end_off: self.current_offset(),
+                        };
+                        self.emit_invalid_string(diag, span, self.current_char());
                     }
                     tokens.push(Token {
                         kind: TokenType::String,
                         span: Span {
                             start_off: start_offset,
                             end_off: self.current_offset(),
-                            source_id: self.source
+                            source_id: self.source,
                         },
                         text,
                     });
@@ -290,25 +347,24 @@ impl<'a> Lexer<'a> {
                         if c.is_ascii_digit() {
                             text.push(*c);
                             self.next_char();
-                        } else if * c == '.'{
+                        } else if *c == '.' {
                             is_float = true;
                             text.push(*c);
                             self.next_char();
-                        } else { break; }
-                    }
-                    tokens.push(
-                        Token {
-                            kind: if is_float { TokenType::Float } else { TokenType::Int },
-                            span: Span {
-                                source_id: self.source,
-                                start_off: start_offset,
-                                end_off: self.current_offset()
-                            },
-                            text,
+                        } else {
+                            break;
                         }
-                    );
+                    }
+                    tokens.push(Token {
+                        kind: if is_float { TokenType::Float } else { TokenType::Int },
+                        span: Span {
+                            source_id: self.source,
+                            start_off: start_offset,
+                            end_off: self.current_offset(),
+                        },
+                        text,
+                    });
                     state = LexerState::Start;
-
                 }
                 LexerState::Ident => {
                     let start_offset = self.current_offset();
@@ -317,35 +373,23 @@ impl<'a> Lexer<'a> {
                         let c = self.code.get(self.index).unwrap();
                         if c.is_xid_continue() {
                             text.push(*c);
-                            self.next_char()
-                        } else { break; }
+                            self.next_char();
+                        } else {
+                            break;
+                        }
                     }
                     let try_keyword = self.keyword_map(&text);
-                    if try_keyword != TokenType::Error {
-                        tokens.push(
-                            Token {
-                                kind: try_keyword,
-                                span: Span {
-                                    source_id: self.source,
-                                    start_off: start_offset,
-                                    end_off: self.current_offset()
-                                },
-                                text,
-                            });
-                        state = LexerState::Start;
-                    } else {
-                        tokens.push(
-                            Token {
-                                kind: TokenType::Ident,
-                                span: Span {
-                                    source_id: self.source,
-                                    start_off: start_offset,
-                                    end_off: self.current_offset()
-                                },
-                                text,
-                            });
-                        state = LexerState::Start;
-                    }
+                    let kind = if try_keyword != TokenType::Error { try_keyword } else { TokenType::Ident };
+                    tokens.push(Token {
+                        kind,
+                        span: Span {
+                            source_id: self.source,
+                            start_off: start_offset,
+                            end_off: self.current_offset(),
+                        },
+                        text,
+                    });
+                    state = LexerState::Start;
                 }
                 LexerState::Symbol => {
                     let start_offset = self.current_offset();
@@ -358,115 +402,117 @@ impl<'a> Lexer<'a> {
                             Some(ch) => ch,
                             None => break,
                         };
-
                         text.push(c);
-
                         if let Some(tt) = self.operator_table.get(&text) {
                             matched_text = text.clone();
                             token_type = tt.clone();
                         }
-
                         if !self.operator_prefixes.contains(&text) {
                             break;
                         }
-
                         self.next_char();
                     }
 
                     if token_type == TokenType::Error {
                         let ch = text.chars().next().unwrap();
-                        self.next_char(); // 至少消费一个字符, 防止死循环
-                        return Err(DiagMsg {
-                            title: format!("{:?}", InvalidChar),
-                            msg: format!("Invalid character '{}'", ch),
+                        let span = Span {
+                            source_id: self.source,
+                            start_off: start_offset,
+                            end_off: start_offset + ch.len_utf8(),
+                        };
+                        self.emit_invalid_char(diag, span, ch);
+                        self.next_char();
+                    } else {
+                        tokens.push(Token {
+                            kind: token_type,
                             span: Span {
                                 source_id: self.source,
                                 start_off: start_offset,
                                 end_off: self.current_offset(),
                             },
+                            text: matched_text,
                         });
                     }
-
-                    tokens.push(Token {
-                        kind: token_type,
-                        span: Span {
-                            source_id: self.source,
-                            start_off: start_offset,
-                            end_off: self.current_offset(),
-                        },
-                        text: matched_text,
-                    });
                     state = LexerState::Start;
                 }
                 LexerState::LineStart => {
                     let last_line_byte = self.current_offset();
-                    self.next_char(); // consume '\n'
+                    self.next_char(); // '\n'
                     tokens.push(Token {
                         kind: TokenType::NewLine,
                         span: Span {
                             source_id: self.source,
                             start_off: last_line_byte,
-                            end_off: last_line_byte },
+                            end_off: last_line_byte,
+                        },
                         text: "\n".to_string(),
                     });
 
                     let start_offset = self.current_offset();
-                    let mut text = String::new();
+                    let mut indent_text = String::new();
                     while self.index < self.code.len() {
                         let c = self.code[self.index];
                         if c == ' ' {
-                            text.push(c);
+                            indent_text.push(c);
                             self.next_char();
                         } else if c == '\t' {
-                            // 替换为4个空格
-                            text.push_str("    ");
+                            indent_text.push_str("    ");
                             self.next_char();
                         } else {
                             break;
                         }
                     }
-                    let leading_space_width = text.len();
+                    let leading_space_width = indent_text.len();
 
-                    // 忽略空行
-                    if self.index >= self.code.len() || self.code[self.index] == '\n' || self.code[self.index] == '\r' {
+                    if self.index >= self.code.len()
+                        || self.code[self.index] == '\n'
+                        || self.code[self.index] == '\r'
+                    {
                         state = LexerState::Start;
                         continue;
                     }
 
                     if leading_space_width % INDENT_WIDTH != 0 {
-                        return Err(DiagMsg {
-                            title : format!("{:?}", LexerError::InvalidIndent),
-                            msg : "invalid indent".to_string(),
-                            span : Span {
-                                source_id: self.source,
-                                start_off: start_offset,
-                                end_off: self.current_offset() },
-                        });
+                        let span = Span {
+                            source_id: self.source,
+                            start_off: start_offset,
+                            end_off: self.current_offset(),
+                        };
+                        diag.emit_error(
+                            ErrorKind::CompileTimeError(CompileTimeErrorKind::LexerError(LexerErrorKind::InvalidIndent)),
+                            span,
+                            LocalizedMessage::new(MsgKind::LexerInvalidIndent, std::iter::empty::<&str>()),
+                        );
+                        self.indent_level = 0;
+                        state = LexerState::Start;
+                        continue;
                     }
 
                     let new_level = leading_space_width / INDENT_WIDTH;
 
-                    while new_level > self.indent_level as usize {
+                    while (new_level as isize) > self.indent_level {
                         self.indent_level += 1;
                         tokens.push(Token {
                             kind: TokenType::Indent,
                             span: Span {
                                 source_id: self.source,
                                 start_off: start_offset,
-                                end_off: self.current_offset()
+                                end_off: self.current_offset(),
                             },
-                            text: text.clone(), });
+                            text: indent_text.clone(),
+                        });
                     }
-                    while new_level < self.indent_level as usize {
+                    while (new_level as isize) < self.indent_level {
                         self.indent_level -= 1;
                         tokens.push(Token {
                             kind: TokenType::Dedent,
                             span: Span {
                                 source_id: self.source,
                                 start_off: start_offset,
-                                end_off: self.current_offset()
+                                end_off: self.current_offset(),
                             },
-                            text: text.clone(),  });
+                            text: indent_text.clone(),
+                        });
                     }
 
                     state = LexerState::Start;
@@ -476,16 +522,10 @@ impl<'a> Lexer<'a> {
     }
 }
 
-impl<'a> LexerApi<'a> for Lexer<'a> {
-    fn new(
-        source: SourceId,
-        text: &String,
-        user_operators: &'a HashMap<String, OperatorDef>,
-    ) -> Self {
+impl<'a> LexerApi<'a> for Lexer {
+    fn new(source: SourceId, text: &str, user_operators: &'a HashMap<String, OperatorDef>) -> Self {
         let code: Vec<char> = text.chars().collect();
-
-        let (operator_table, operator_prefixes) =
-            build_operator_tables(user_operators);
+        let (operator_table, operator_prefixes) = build_operator_tables(user_operators);
 
         Lexer {
             index: 0,
@@ -496,16 +536,13 @@ impl<'a> LexerApi<'a> for Lexer<'a> {
             docstrings: Document { data: Vec::new() },
             operator_table,
             operator_prefixes,
-            user_operators,
         }
     }
 
-    fn tokenize(&mut self) -> Result<TokenStream, DiagMsg> {
+    fn tokenize(&mut self, diag: &mut DiagCtx) -> TokenStream {
         let mut tokens = Vec::new();
+        self.main_loop(&mut tokens, diag);
 
-        self.main_loop(&mut tokens)?;
-
-        // 补全末尾的NewLine
         if let Some(last) = tokens.last() {
             if last.kind != TokenType::NewLine {
                 let off = self.current_offset();
@@ -535,7 +572,7 @@ impl<'a> LexerApi<'a> for Lexer<'a> {
         }
 
         tokens.push(self.eof());
-        Ok(TokenStream { data: tokens })
+        TokenStream { data: tokens }
     }
 
     fn get_document_strings(&self) -> &Document {

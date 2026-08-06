@@ -134,6 +134,7 @@ typedef struct {
     void** args_dest;
     int num_args;
     leaf_fiber_t body_fiber;
+    leaf_fiber_t caller_fiber;
 } HandlerFrame;
 
 
@@ -153,27 +154,6 @@ static intptr_t _raise_resume_val;
 static int _effect_raised = 0;
 
 
-/// leafc_push_handler
-static inline void
-leafc_push_handler(
-    int control_id,
-    void** args_dest,
-    int num_args,
-    leaf_fiber_t body_fiber
-) {
-    HandlerFrame* hf = (HandlerFrame*) malloc( sizeof(HandlerFrame) );
-    hf->control_id = control_id;
-    hf->args_dest = (void**) malloc( num_args * sizeof(void*) );
-
-    for (int i = 0; i < num_args; i++)
-        hf->args_dest[i] = args_dest[i];
-
-    hf->num_args = num_args;
-    hf->body_fiber = body_fiber;
-    handler_stack[handler_sp++] = hf;
-}
-
-
 /// leafc_pop_handler
 static inline void
 leafc_pop_handler() {
@@ -185,10 +165,30 @@ leafc_pop_handler() {
 }
 
 
-/// raise
+static inline void
+leafc_push_handler(
+    int control_id,
+    void** args_dest,
+    int num_args,
+    leaf_fiber_t body_fiber,
+    leaf_fiber_t caller_fiber
+) {
+    HandlerFrame* hf = (HandlerFrame*) malloc( sizeof(HandlerFrame) );
+    hf->control_id = control_id;
+    hf->args_dest = (void**) malloc( num_args * sizeof(void*) );
+
+    for (int i = 0; i < num_args; i++)
+        hf->args_dest[i] = args_dest[i];
+
+    hf->num_args = num_args;
+    hf->body_fiber = body_fiber;
+    hf->caller_fiber = caller_fiber;
+    handler_stack[handler_sp++] = hf;
+}
+
+/// leafc_raise
 static inline void
 leafc_raise(int control_id, ...) {
-
     va_list ap;
     va_start(ap, control_id);
 
@@ -205,19 +205,17 @@ leafc_raise(int control_id, ...) {
             va_end(ap);
             current_body_fiber = hf->body_fiber;
             _effect_raised = 1;
-            leaf_switch_to_fiber(main_fiber);
+            leaf_switch_to_fiber(hf->caller_fiber);
             return;
         }
     }
-
     fprintf(stderr, "Unhandled effect control %d\n", control_id);
     abort();
 }
-
 
 /// resume
 static inline void
 leafc_resume(intptr_t value) {
     _raise_resume_val = value;
-    leaf_switch_to_fiber(current_body_fiber);
+    leaf_switch_to_fiber(handler_stack[handler_sp - 1]->body_fiber);
 }

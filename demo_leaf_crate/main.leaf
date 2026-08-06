@@ -44,7 +44,6 @@ external fun printf(fmt: RawPtr[CChar], ...) -> Int;
 external fun puts(a: CVoidPtr) -> ()  = "leaf_rt__puts";
 external fun itoa(a: Int32) -> CVoidPtr = "leaf_rt__itoa";
 
-
 fun print_int(a)
     unsafe_call_external puts(unsafe_call_external itoa(a))
 
@@ -53,11 +52,9 @@ type Maybe [t]
     | None
 
 
-const fun foo()
-    return Just(100)
-
-const fun bar(x)
-    return if x is Just(binding _) then _ else 9
+fun data(a)
+    a~`
 
 fun main()
-    foo() |> bar |> print_int
+    let x = data(100)
+    let y = data(0.1)

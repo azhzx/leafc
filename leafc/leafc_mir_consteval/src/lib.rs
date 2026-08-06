@@ -1,11 +1,11 @@
 use leafc_coreapi::diagnostic::DiagMsg;
 use leafc_coreapi::lang_items::BuiltinType;
-use leafc_coreapi::mir::{BasicBlockId, Const, ControlId, FunId, LocalId, MirBinOp, MirCrate, MirFun, MirStmt, MirStmtKind, MirUnOp, Place, Rvalue, StaticId, TagId, TerminatorKind};
+use leafc_coreapi::mir::{BasicBlock, BasicBlockId, Const, ControlId, FunId, LocalId, MirBinOp, MirCrate, MirFun, MirStmt, MirStmtKind, MirUnOp, Place, Rvalue, StaticId, TagId, TerminatorKind};
 use leafc_coreapi::mir_consteval::MirConstEvalApi;
 use leafc_coreapi::source::Span;
 use leafc_coreapi::type_system::{get_type_root, TyId, TypeCtx, TypeNode, TypeNodeKind};
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -44,6 +44,7 @@ struct Context {
     caller_ctx_idx: Option<usize>,
     ret_dest: Option<Place>,
     ret_target: Option<BasicBlockId>,
+    call_block: Option<BasicBlockId>,
 }
 
 struct SuspendedRaise {
@@ -105,15 +106,72 @@ impl MirConstEval {
         }
     }
 
+    fn value_to_const(value: &Value, ty: TyId, type_pool: &[TypeNode], span: Span) -> Result<Const, DiagMsg> {
+        let root = get_type_root(type_pool, ty);
+        let kind = &type_pool[root].kind;
+        match (value, kind) {
+            (Value::Int(v), TypeNodeKind::Builtin(b)) => {
+                use BuiltinType::*;
+                Ok(match b {
+                    I8 => Const::Int8(*v as i8),
+                    I16 => Const::Int16(*v as i16),
+                    I32 => Const::Int32(*v as i32),
+                    I64 => Const::Int64(*v),
+                    U8 => Const::UInt8(*v as u8),
+                    U16 => Const::UInt16(*v as u16),
+                    U32 => Const::UInt32(*v as u32),
+                    U64 => Const::UInt64(*v as u64),
+                    _ => return Err(DiagMsg { title: "const eval error".into(), msg: "unsupported integer target type".into(), span }),
+                })
+            }
+            (Value::Float(bits), TypeNodeKind::Builtin(BuiltinType::F32)) => Ok(Const::Float32(*bits)),
+            (Value::Float(bits), TypeNodeKind::Builtin(BuiltinType::F64)) => Ok(Const::Float64(*bits)),
+            (Value::Bool(b), TypeNodeKind::Builtin(BuiltinType::Bool)) => Ok(Const::Bool(*b)),
+            (Value::Str(s), _) => Ok(Const::Str(s.clone())),
+            (Value::Unit, TypeNodeKind::Tuple(elems)) if elems.is_empty() => Ok(Const::Unit),
+            (Value::Tuple(elems), TypeNodeKind::Tuple(tys)) => {
+                if elems.len() != tys.len() {
+                    return Err(DiagMsg { title: "const eval error".into(), msg: "tuple arity mismatch".into(), span });
+                }
+                let consts: Result<Vec<_>, _> = elems.iter().zip(tys).map(|(v, &ty)| Self::value_to_const(v, ty, type_pool, span.clone())).collect();
+                Ok(Const::Tuple(consts?))
+            }
+            (Value::Struct(elems), TypeNodeKind::Struct { field_tys, .. }) => {
+                if elems.len() != field_tys.len() {
+                    return Err(DiagMsg { title: "const eval error".into(), msg: "struct field count mismatch".into(), span });
+                }
+                let consts: Result<Vec<_>, _> = elems.iter().zip(field_tys).map(|(v, &ty)| Self::value_to_const(v, ty, type_pool, span.clone())).collect();
+                Ok(Const::Struct(consts?))
+            }
+            (Value::Enum(tag, data), TypeNodeKind::ADT { variants, .. }) => {
+                let payload_ty = variants.get(*tag).copied().flatten().ok_or_else(|| DiagMsg {
+                    title: "const eval error".into(),
+                    msg: format!("invalid enum variant tag {}", tag),
+                    span: span.clone(),
+                })?;
+                let payload_const = Self::value_to_const(data, payload_ty, type_pool, span)?;
+                Ok(Const::Enum(*tag, Box::new(payload_const)))
+            }
+            _ => Err(DiagMsg { title: "const eval error".into(), msg: "unsupported constant type".into(), span }),
+        }
+    }
+
     fn write_place(&self, place: &Place, value: Value, frame: &mut Frame, span: Span) -> Result<(), DiagMsg> {
         match place {
-            Place::Local(id) => { frame.locals[*id] = value; Ok(()) }
+            Place::Local(id) => {
+                frame.locals[*id] = value;
+                Ok(())
+            }
             Place::Field { base, field } => {
                 let mut base_val = self.eval_place_to_value(base, frame, span.clone())?;
                 match &mut base_val {
                     Value::Tuple(elems) | Value::Struct(elems) => {
                         if *field >= elems.len() {
-                            return Err(DiagMsg { title: "const eval error".into(), msg: format!("field index {} out of bounds", field), span });
+                            return Err(DiagMsg {
+                                title: "const eval error".into(),
+                                msg: format!("field index {} out of bounds", field),
+                                span,
+                            });
                         }
                         elems[*field] = value;
                     }
@@ -126,7 +184,11 @@ impl MirConstEval {
                 match &mut base_val {
                     Value::Tuple(elems) | Value::Struct(elems) => {
                         if *item_index >= elems.len() {
-                            return Err(DiagMsg { title: "const eval error".into(), msg: format!("index {} out of bounds", item_index), span });
+                            return Err(DiagMsg {
+                                title: "const eval error".into(),
+                                msg: format!("index {} out of bounds", item_index),
+                                span,
+                            });
                         }
                         elems[*item_index] = value;
                     }
@@ -140,39 +202,51 @@ impl MirConstEval {
         }
     }
 
-    fn value_to_const(value: &Value, ty: TyId, type_pool: &[TypeNode], span: Span) -> Result<Const, DiagMsg> {
-        let root = get_type_root(type_pool, ty);
-        let kind = &type_pool[root].kind;
-        match (value, kind) {
-            (Value::Int(v), TypeNodeKind::Builtin(b)) => {
-                use BuiltinType::*;
-                Ok(match b {
-                    I8 => Const::Int8(*v as i8), I16 => Const::Int16(*v as i16), I32 => Const::Int32(*v as i32), I64 => Const::Int64(*v),
-                    U8 => Const::UInt8(*v as u8), U16 => Const::UInt16(*v as u16), U32 => Const::UInt32(*v as u32), U64 => Const::UInt64(*v as u64),
-                    _ => return Err(DiagMsg { title: "const eval error".into(), msg: "unsupported integer target type".into(), span }),
+    fn eval_place_to_value(&self, place: &Place, frame: &Frame, span: Span) -> Result<Value, DiagMsg> {
+        match place {
+            Place::Local(id) => frame.locals.get(*id).cloned().ok_or_else(|| DiagMsg {
+                title: "const eval error".into(),
+                msg: format!("local {} not initialized", id),
+                span,
+            }),
+            Place::Static(sid) => {
+                let cache = self.static_cache.borrow();
+                cache.get(sid).map(|c| Self::const_to_value(c)).ok_or_else(|| DiagMsg {
+                    title: "const eval error".into(),
+                    msg: format!("static {} not evaluated", sid),
+                    span,
                 })
             }
-            (Value::Float(bits), TypeNodeKind::Builtin(BuiltinType::F32)) => Ok(Const::Float32(*bits)),
-            (Value::Float(bits), TypeNodeKind::Builtin(BuiltinType::F64)) => Ok(Const::Float64(*bits)),
-            (Value::Bool(b), TypeNodeKind::Builtin(BuiltinType::Bool)) => Ok(Const::Bool(*b)),
-            (Value::Str(s), _) => Ok(Const::Str(s.clone())),
-            (Value::Unit, TypeNodeKind::Tuple(elems)) if elems.is_empty() => Ok(Const::Unit),
-            (Value::Tuple(elems), TypeNodeKind::Tuple(tys)) => {
-                if elems.len() != tys.len() { return Err(DiagMsg { title: "const eval error".into(), msg: "tuple arity mismatch".into(), span }); }
-                let consts: Result<Vec<_>, _> = elems.iter().zip(tys).map(|(v, &ty)| Self::value_to_const(v, ty, type_pool, span.clone())).collect();
-                Ok(Const::Tuple(consts?))
+            Place::Field { base, field } => {
+                let base_val = self.eval_place_to_value(base, frame, span.clone())?;
+                match base_val {
+                    Value::Tuple(e) | Value::Struct(e) => e.get(*field).cloned().ok_or_else(|| DiagMsg {
+                        title: "const eval error".into(),
+                        msg: format!("field {} out of bounds", field),
+                        span,
+                    }),
+                    _ => Err(DiagMsg { title: "const eval error".into(), msg: "field on non-compound".into(), span }),
+                }
             }
-            (Value::Struct(elems), TypeNodeKind::Struct { field_tys, .. }) => {
-                if elems.len() != field_tys.len() { return Err(DiagMsg { title: "const eval error".into(), msg: "struct field count mismatch".into(), span }); }
-                let consts: Result<Vec<_>, _> = elems.iter().zip(field_tys).map(|(v, &ty)| Self::value_to_const(v, ty, type_pool, span.clone())).collect();
-                Ok(Const::Struct(consts?))
+            Place::EnumItem { place: inner, variant } => {
+                let val = self.eval_place_to_value(inner, frame, span.clone())?;
+                match val {
+                    Value::Enum(tag, data) if tag == *variant => Ok(*data),
+                    _ => Err(DiagMsg { title: "const eval error".into(), msg: "enum variant mismatch".into(), span }),
+                }
             }
-            (Value::Enum(tag, data), TypeNodeKind::ADT { variants, .. }) => {
-                let payload_ty = variants.get(*tag).copied().flatten().ok_or_else(|| DiagMsg { title: "const eval error".into(), msg: format!("invalid enum variant tag {}", tag), span: span.clone() })?;
-                let payload_const = Self::value_to_const(data, payload_ty, type_pool, span)?;
-                Ok(Const::Enum(*tag, Box::new(payload_const)))
+            Place::Index { place, item_index } => {
+                let base_val = self.eval_place_to_value(place, frame, span.clone())?;
+                match base_val {
+                    Value::Tuple(elems) | Value::Struct(elems) => elems.get(*item_index).cloned().ok_or_else(|| DiagMsg {
+                        title: "const eval error".into(),
+                        msg: "index out of bounds".into(),
+                        span,
+                    }),
+                    _ => Err(DiagMsg { title: "const eval error".into(), msg: "index on non-compound".into(), span }),
+                }
             }
-            _ => Err(DiagMsg { title: "const eval error".into(), msg: "unsupported constant type".into(), span }),
+            Place::Deref(_) => Err(DiagMsg { title: "const eval error".into(), msg: "deref not allowed".into(), span }),
         }
     }
 
@@ -201,18 +275,24 @@ impl MirConstEval {
                 let v = self.eval_rvalue(inner, frame, span.clone())?;
                 Ok(Value::Enum(*tag, Box::new(v)))
             }
-            Rvalue::Ref(_) | Rvalue::RefMut(_) | Rvalue::GcNewObject(_) | Rvalue::GcObjectRef(_) =>
-                Err(DiagMsg { title: "const eval error".into(), msg: "ref/gc not allowed in const".into(), span }),
+            Rvalue::Ref(_) | Rvalue::RefMut(_) | Rvalue::GcNewObject(_) | Rvalue::GcObjectRef(_) => {
+                Err(DiagMsg { title: "const eval error".into(), msg: "ref/gc not allowed in const".into(), span })
+            }
             Rvalue::GetFunPtr(_) => Err(DiagMsg { title: "const eval error".into(), msg: "fun ptr not allowed".into(), span }),
             Rvalue::Index { place, item_index } => {
                 let base = self.eval_place_to_value(place, frame, span.clone())?;
                 match base {
-                    Value::Tuple(e) | Value::Struct(e) => e.get(*item_index).cloned().ok_or_else(|| DiagMsg { title: "const eval error".into(), msg: "index out of bounds".into(), span }),
+                    Value::Tuple(e) | Value::Struct(e) => e.get(*item_index).cloned().ok_or_else(|| DiagMsg {
+                        title: "const eval error".into(),
+                        msg: "index out of bounds".into(),
+                        span,
+                    }),
                     _ => Err(DiagMsg { title: "const eval error".into(), msg: "index on non-compound".into(), span }),
                 }
             }
-            Rvalue::Field { place, item_index } =>
-                self.eval_rvalue(&Rvalue::Index { place: place.clone(), item_index: *item_index }, frame, span),
+            Rvalue::Field { place, item_index } => {
+                self.eval_rvalue(&Rvalue::Index { place: place.clone(), item_index: *item_index }, frame, span)
+            }
             Rvalue::Len(place) => {
                 let val = self.eval_place_to_value(place, frame, span.clone())?;
                 match val {
@@ -223,15 +303,27 @@ impl MirConstEval {
             }
             Rvalue::Tag(place) => {
                 let val = self.eval_place_to_value(place, frame, span.clone())?;
-                if let Value::Enum(tag, _) = val { Ok(Value::Int(tag as i64)) } else { Err(DiagMsg { title: "const eval error".into(), msg: "tag on non-enum".into(), span }) }
+                if let Value::Enum(tag, _) = val {
+                    Ok(Value::Int(tag as i64))
+                } else {
+                    Err(DiagMsg { title: "const eval error".into(), msg: "tag on non-enum".into(), span })
+                }
             }
             Rvalue::Cast(place, target_ty) => {
                 let val = self.eval_place_to_value(place, frame, span.clone())?;
                 self.cast_value(val, *target_ty, span)
             }
             Rvalue::HandlerArg(idx) => {
-                let local_id = frame.current_block_params.get(*idx).ok_or_else(|| DiagMsg { title: "const eval error".into(), msg: "invalid handler arg index".into(), span: span.clone() })?;
-                frame.locals.get(*local_id).cloned().ok_or_else(|| DiagMsg { title: "const eval error".into(), msg: "handler arg not initialized".into(), span })
+                let local_id = frame.current_block_params.get(*idx).ok_or_else(|| DiagMsg {
+                    title: "const eval error".into(),
+                    msg: "invalid handler arg index".into(),
+                    span: span.clone(),
+                })?;
+                frame.locals.get(*local_id).cloned().ok_or_else(|| DiagMsg {
+                    title: "const eval error".into(),
+                    msg: "handler arg not initialized".into(),
+                    span,
+                })
             }
         }
     }
@@ -258,38 +350,6 @@ impl MirConstEval {
         }
     }
 
-    fn eval_place_to_value(&self, place: &Place, frame: &Frame, span: Span) -> Result<Value, DiagMsg> {
-        match place {
-            Place::Local(id) => frame.locals.get(*id).cloned().ok_or_else(|| DiagMsg { title: "const eval error".into(), msg: format!("local {} not initialized", id), span }),
-            Place::Static(sid) => {
-                let cache = self.static_cache.borrow();
-                cache.get(sid).map(|c| Self::const_to_value(c)).ok_or_else(|| DiagMsg { title: "const eval error".into(), msg: format!("static {} not evaluated", sid), span })
-            }
-            Place::Field { base, field } => {
-                let base_val = self.eval_place_to_value(base, frame, span.clone())?;
-                match base_val {
-                    Value::Tuple(e) | Value::Struct(e) => e.get(*field).cloned().ok_or_else(|| DiagMsg { title: "const eval error".into(), msg: format!("field {} out of bounds", field), span }),
-                    _ => Err(DiagMsg { title: "const eval error".into(), msg: "field on non-compound".into(), span }),
-                }
-            }
-            Place::EnumItem { place: inner, variant } => {
-                let val = self.eval_place_to_value(inner, frame, span.clone())?;
-                match val {
-                    Value::Enum(tag, data) if tag == *variant => Ok(*data),
-                    _ => Err(DiagMsg { title: "const eval error".into(), msg: "enum variant mismatch".into(), span }),
-                }
-            }
-            Place::Index { place, item_index } => {
-                let base_val = self.eval_place_to_value(place, frame, span.clone())?;
-                match base_val {
-                    Value::Tuple(elems) | Value::Struct(elems) => elems.get(*item_index).cloned().ok_or_else(|| DiagMsg { title: "const eval error".into(), msg: "index out of bounds".into(), span }),
-                    _ => Err(DiagMsg { title: "const eval error".into(), msg: "index on non-compound".into(), span }),
-                }
-            }
-            Place::Deref(_) => Err(DiagMsg { title: "const eval error".into(), msg: "deref not allowed".into(), span }),
-        }
-    }
-
     fn eval_binary(&self, op: &MirBinOp, l: Value, r: Value, span: Span) -> Result<Value, DiagMsg> {
         use MirBinOp::*;
         match op {
@@ -298,12 +358,16 @@ impl MirConstEval {
             Mul => Ok(Value::Int(l.as_int(span.clone())? * r.as_int(span.clone())?)),
             Div => {
                 let rv = r.as_int(span.clone())?;
-                if rv == 0 { return Err(DiagMsg { title: "const eval error".into(), msg: "division by zero".into(), span }); }
+                if rv == 0 {
+                    return Err(DiagMsg { title: "const eval error".into(), msg: "division by zero".into(), span });
+                }
                 Ok(Value::Int(l.as_int(span.clone())? / rv))
             }
             Rem => {
                 let rv = r.as_int(span.clone())?;
-                if rv == 0 { return Err(DiagMsg { title: "const eval error".into(), msg: "modulo by zero".into(), span }); }
+                if rv == 0 {
+                    return Err(DiagMsg { title: "const eval error".into(), msg: "modulo by zero".into(), span });
+                }
                 Ok(Value::Int(l.as_int(span.clone())? % rv))
             }
             Eq => Ok(Value::Bool(l == r)),
@@ -328,7 +392,9 @@ impl MirConstEval {
                 (Value::Float(a), Value::Float(b)) => Ok(Value::Bool(f64::from_bits(*a) >= f64::from_bits(*b))),
                 _ => Err(DiagMsg { title: "const eval error".into(), msg: "comparison requires numbers".into(), span }),
             },
-            BitAnd | BitOr | BitXor | Shl | Shr => Err(DiagMsg { title: "const eval error".into(), msg: "bitwise ops not yet supported".into(), span }),
+            BitAnd | BitOr | BitXor | Shl | Shr => {
+                Err(DiagMsg { title: "const eval error".into(), msg: "bitwise ops not yet supported".into(), span })
+            }
         }
     }
 
@@ -346,14 +412,29 @@ impl MirConstEval {
         }
     }
 
-    fn push_context(&mut self, fun_id: FunId, args: Vec<Value>, caller_ctx_idx: Option<usize>, ret_dest: Option<Place>, ret_target: Option<BasicBlockId>) -> Result<(), DiagMsg> {
+    fn push_context(
+        &mut self,
+        fun_id: FunId,
+        args: Vec<Value>,
+        caller_ctx_idx: Option<usize>,
+        ret_dest: Option<Place>,
+        ret_target: Option<BasicBlockId>,
+        call_block: Option<BasicBlockId>,
+    ) -> Result<(), DiagMsg> {
         let fun = self.mir.functions[fun_id].clone();
         let return_local = fun.local_decls.iter().position(|d| d.name.as_deref() == Some("return_val")).unwrap_or(0);
         let mut locals = vec![Value::Unit; fun.local_decls.len()];
         for (i, arg) in args.iter().enumerate() {
             let param_local = return_local + 1 + i;
-            if param_local < locals.len() { locals[param_local] = arg.clone(); }
-            else { return Err(DiagMsg { title: "const eval error".into(), msg: format!("param index out of bounds"), span: fun.span.clone() }); }
+            if param_local < locals.len() {
+                locals[param_local] = arg.clone();
+            } else {
+                return Err(DiagMsg {
+                    title: "const eval error".into(),
+                    msg: "param index out of bounds".into(),
+                    span: fun.span.clone(),
+                });
+            }
         }
         let start_block = fun.blocks[0];
         let saved_depth = self.global_handlers.len();
@@ -366,6 +447,7 @@ impl MirConstEval {
             caller_ctx_idx,
             ret_dest,
             ret_target,
+            call_block,
         });
         Ok(())
     }
@@ -380,6 +462,81 @@ impl MirConstEval {
                 self.global_handlers.pop();
             }
         }
+    }
+
+    fn handle_raise(
+        &mut self,
+        control_name: &ControlId,
+        args: &[Rvalue],
+        dest: &Place,
+        block_span: Span,
+        ctx_idx: usize,
+        fun: &MirFun,
+    ) -> Result<(), DiagMsg> {
+        let frame_clone = self.context_stack[ctx_idx].frame.clone();
+        let frame_ref = frame_clone.borrow();
+        let raised_vals: Vec<Value> = args.iter()
+            .map(|a| self.eval_rvalue(a, &*frame_ref, block_span.clone()))
+            .collect::<Result<_, _>>()?;
+        drop(frame_ref);
+
+        let handler_pos = self.global_handlers.iter().rposition(|h| h.control_id == *control_name)
+            .ok_or_else(|| DiagMsg {
+                title: "const eval error".into(),
+                msg: "raise with no handler installed".into(),
+                span: block_span.clone(),
+            })?;
+        let handler_entry = self.global_handlers.remove(handler_pos);
+
+        let raise_block_idx = self.context_stack[ctx_idx].current_block;
+        let raise_block_order = fun.blocks.iter().position(|&b| b == raise_block_idx).unwrap();
+        let resume_target = if raise_block_order + 1 < fun.blocks.len() {
+            fun.blocks[raise_block_order + 1]
+        } else {
+            return Err(DiagMsg {
+                title: "const eval error".into(),
+                msg: "raise without valid resume target".into(),
+                span: block_span,
+            });
+        };
+
+        let handler_ctx_idx = handler_entry.ctx_idx;
+        let mut captured_frames = Vec::new();
+        while self.context_stack.len() > handler_ctx_idx + 1 {
+            let ctx = self.context_stack.pop().unwrap();
+            self.cleanup_handlers_for_ctx(ctx.fun_id as usize);
+            captured_frames.push(ctx);
+        }
+        captured_frames.reverse();
+
+        self.global_handlers.retain(|h| h.ctx_idx <= handler_ctx_idx);
+
+        let continuation = Continuation {
+            frames: captured_frames,
+            resume_target,
+            dest: dest.clone(),
+        };
+
+        let handler_block_obj = &self.mir.blocks[handler_entry.handler_block];
+        {
+            let mut handler_frame = self.context_stack[handler_ctx_idx].frame.borrow_mut();
+            for (i, &param_local) in handler_block_obj.block_params.iter().enumerate() {
+                let val = raised_vals.get(i).cloned().unwrap_or(Value::Unit);
+                handler_frame.locals[param_local] = val;
+            }
+            for (i, &local_id) in handler_entry.args_dest.iter().enumerate() {
+                let val = raised_vals.get(i).cloned().unwrap_or(Value::Unit);
+                handler_frame.locals[local_id] = val;
+            }
+        }
+
+        self.suspended_raise = Some(SuspendedRaise {
+            continuation,
+            handler_ctx_idx,
+        });
+
+        self.context_stack[handler_ctx_idx].current_block = handler_entry.handler_block;
+        Ok(())
     }
 
     fn run_stack(&mut self) -> Result<Value, DiagMsg> {
@@ -424,7 +581,6 @@ impl MirConstEval {
                             let frame_ref = frame_clone.borrow();
                             let val = self.eval_rvalue(rvalue, &*frame_ref, span.clone())?;
                             drop(frame_ref);
-
                             let mut frame_mut = self.context_stack[ctx_idx].frame.borrow_mut();
                             self.write_place(place, val, &mut *frame_mut, span.clone())?;
                         }
@@ -448,9 +604,6 @@ impl MirConstEval {
                     };
 
                     if self.context_stack[ctx_idx].caller_ctx_idx.is_none() {
-                        let const_ret = Self::value_to_const(&ret, fun.signature.return_ty,
-                                                             &self.type_ctx.type_pool, block_span)?;
-                        self.const_cache.insert(fun_id, const_ret);
                         self.cleanup_handlers_for_ctx(ctx_idx);
                         self.context_stack.pop();
                         return Ok(ret);
@@ -459,24 +612,52 @@ impl MirConstEval {
                     let caller_idx = self.context_stack[ctx_idx].caller_ctx_idx.unwrap();
                     let ret_dest = self.context_stack[ctx_idx].ret_dest.clone();
                     let ret_target = self.context_stack[ctx_idx].ret_target;
+                    let call_block_id = self.context_stack[ctx_idx].call_block;
 
                     self.cleanup_handlers_for_ctx(ctx_idx);
                     self.context_stack.pop();
 
-                    if let Some(dest) = ret_dest {
+                    if let Some(dest) = &ret_dest {
                         match dest {
                             Place::Local(local) => {
                                 let mut caller_frame = self.context_stack[caller_idx].frame.borrow_mut();
-                                caller_frame.locals[local] = ret;
+                                caller_frame.locals[*local] = ret.clone();
                             }
-                            _ => return Err(DiagMsg { title: "const eval error".into(), msg: "return dest must be local".into(), span: block_span }),
+                            _ => return Err(DiagMsg {
+                                title: "const eval error".into(),
+                                msg: "return dest must be local".into(),
+                                span: block_span,
+                            }),
+                        }
+                    }
+
+                    if let (Some(call_block), Some(dest), Some(target)) = (call_block_id, &ret_dest, ret_target) {
+                        let callee_ret_ty = fun.signature.return_ty;
+                        let const_val = Self::value_to_const(&ret, callee_ret_ty, &self.type_ctx.type_pool, block_span.clone())?;
+                        if let Place::Local(local) = dest {
+                            let block = &mut self.mir.blocks[call_block];
+                            block.statements.push(MirStmt {
+                                kind: MirStmtKind::Let {
+                                    local: *local,
+                                    rvalue: Rvalue::Constant(const_val),
+                                },
+                                span: block.span.clone(),
+                            });
+                            block.terminator = TerminatorKind::Goto {
+                                target,
+                                block_args: vec![],
+                            };
                         }
                     }
 
                     if let Some(target) = ret_target {
                         self.context_stack[caller_idx].current_block = target;
                     } else {
-                        return Err(DiagMsg { title: "const eval error".into(), msg: "return from divergent call".into(), span: block_span });
+                        return Err(DiagMsg {
+                            title: "const eval error".into(),
+                            msg: "return from divergent call".into(),
+                            span: block_span,
+                        });
                     }
                 }
                 TerminatorKind::Goto { target, block_args } => {
@@ -516,7 +697,11 @@ impl MirConstEval {
                     let callee_id = *func;
                     let callee = &self.mir.functions[callee_id];
                     if !callee.is_consteval {
-                        return Err(DiagMsg { title: "const eval error".into(), msg: "non-consteval call not allowed".into(), span: block_span });
+                        return Err(DiagMsg {
+                            title: "const eval error".into(),
+                            msg: "non-consteval call not allowed".into(),
+                            span: block_span,
+                        });
                     }
 
                     let frame_clone = self.context_stack[ctx_idx].frame.clone();
@@ -530,13 +715,18 @@ impl MirConstEval {
                     let caller_ctx_idx = ctx_idx;
                     let ret_dest = dest.clone();
                     let ret_target = *target;
-                    self.push_context(callee_id, call_args, Some(caller_ctx_idx), Some(ret_dest), ret_target)?;
+                    let call_block = self.context_stack[ctx_idx].current_block;
+                    self.push_context(callee_id, call_args, Some(caller_ctx_idx), Some(ret_dest), ret_target, Some(call_block))?;
                 }
                 TerminatorKind::InstallHandler { handler_block, next, args_dest, control_id } => {
                     let handler_term = &self.mir.blocks[*handler_block].terminator;
                     let merge_block = match handler_term {
                         TerminatorKind::Goto { target, .. } | TerminatorKind::Resume { target, .. } => *target,
-                        _ => return Err(DiagMsg { title: "const eval error".into(), msg: "handler must end with goto/resume".into(), span: block_span }),
+                        _ => return Err(DiagMsg {
+                            title: "const eval error".into(),
+                            msg: "handler must end with goto/resume".into(),
+                            span: block_span,
+                        }),
                     };
 
                     self.global_handlers.push(HandlerEntry {
@@ -550,14 +740,7 @@ impl MirConstEval {
                     self.context_stack[ctx_idx].current_block = *next;
                 }
                 TerminatorKind::Raise { control_name, args, dest } => {
-                    self.handle_raise(
-                        control_name,
-                        args,
-                        dest,
-                        block_span.clone(),
-                        ctx_idx,
-                        &fun,
-                    )?;
+                    self.handle_raise(control_name, args, dest, block_span.clone(), ctx_idx, &fun)?;
                 }
                 TerminatorKind::Resume { place, target } => {
                     let susp = self.suspended_raise.take().ok_or_else(|| DiagMsg {
@@ -594,80 +777,78 @@ impl MirConstEval {
                     self.context_stack[top_idx].current_block = resume_target;
                     self.context_stack[ctx_idx].current_block = *target;
                 }
-                TerminatorKind::CallByPtr { .. } => {}
-                TerminatorKind::Unreachable => {}
+                TerminatorKind::CallByPtr { .. } => {
+                    return Err(DiagMsg {
+                        title: "const eval error".into(),
+                        msg: "call by pointer not supported in const eval".into(),
+                        span: block_span,
+                    });
+                }
+                TerminatorKind::Unreachable => {
+                    return Err(DiagMsg {
+                        title: "const eval error".into(),
+                        msg: "reached unreachable code".into(),
+                        span: block_span,
+                    });
+                }
             }
         }
     }
 
-    fn handle_raise(
-        &mut self,
-        control_name: &ControlId,
-        args: &[Rvalue],
-        dest: &Place,
-        block_span: Span,
-        ctx_idx: usize,
-        fun: &MirFun,
-    ) -> Result<(), DiagMsg> {
-        let frame_clone = self.context_stack[ctx_idx].frame.clone();
-        let frame_ref = frame_clone.borrow();
-        let raised_vals: Vec<Value> = args.iter()
-            .map(|a| self.eval_rvalue(a, &*frame_ref, block_span.clone()))
-            .collect::<Result<_, _>>()?;
-        drop(frame_ref);
-
-        let handler_pos = self.global_handlers.iter().rposition(|h| h.control_id == *control_name)
-            .ok_or_else(|| DiagMsg { title: "const eval error".into(), msg: "raise with no handler installed".into(), span: block_span.clone() })?;
-        let handler_entry = self.global_handlers.remove(handler_pos);
-
-        let raise_block_idx = self.context_stack[ctx_idx].current_block;
-        let raise_block_order = fun.blocks.iter().position(|&b| b == raise_block_idx).unwrap();
-        let resume_target = if raise_block_order + 1 < fun.blocks.len() {
-            fun.blocks[raise_block_order + 1]
-        } else {
-            return Err(DiagMsg { title: "const eval error".into(), msg: "raise without valid resume target".into(), span: block_span });
-        };
-
-        let handler_ctx_idx = handler_entry.ctx_idx;
-        let mut captured_frames = Vec::new();
-        while self.context_stack.len() > handler_ctx_idx + 1 {
-            let ctx = self.context_stack.pop().unwrap();
-            self.cleanup_handlers_for_ctx(ctx.fun_id as usize);
-            captured_frames.push(ctx);
-        }
-        captured_frames.reverse();
-
-        self.global_handlers.retain(|h| h.ctx_idx <= handler_ctx_idx);
-
-        let continuation = Continuation {
-            frames: captured_frames,
-            resume_target,
-            dest: dest.clone(),
-        };
-
-        let handler_block_obj = &self.mir.blocks[handler_entry.handler_block];
-        {
-            let mut handler_frame = self.context_stack[handler_ctx_idx].frame.borrow_mut();
-            for (i, &param_local) in handler_block_obj.block_params.iter().enumerate() {
-                let val = raised_vals.get(i).cloned().unwrap_or(Value::Unit);
-                handler_frame.locals[param_local] = val;
-            }
-            for (i, &local_id) in handler_entry.args_dest.iter().enumerate() {
-                let val = raised_vals.get(i).cloned().unwrap_or(Value::Unit);
-                handler_frame.locals[local_id] = val;
+    fn build_local_const_map(fun: &MirFun, blocks: &[BasicBlock]) -> HashMap<LocalId, Const> {
+        let mut map = HashMap::new();
+        for &block_id in &fun.blocks {
+            let block = &blocks[block_id];
+            for stmt in &block.statements {
+                if let MirStmtKind::Let { local, rvalue } = &stmt.kind {
+                    if let Rvalue::Constant(c) = rvalue {
+                        map.insert(*local, c.clone());
+                    } else {
+                        map.remove(local);
+                    }
+                }
             }
         }
+        map
+    }
 
-        self.suspended_raise = Some(SuspendedRaise {
-            continuation,
-            handler_ctx_idx,
-        });
+    fn try_extract_const(
+        rvalue: &Rvalue,
+        local_const_map: &HashMap<LocalId, Const>,
+    ) -> Option<Const> {
+        match rvalue {
+            Rvalue::Constant(c) => Some(c.clone()),
+            Rvalue::Move(Place::Local(id)) | Rvalue::Copy(Place::Local(id)) => {
+                local_const_map.get(id).cloned()
+            }
+            _ => None,
+        }
+    }
 
-        self.context_stack[handler_ctx_idx].current_block = handler_entry.handler_block;
-        Ok(())
+    fn reachable_functions(&self, main_id: FunId) -> HashSet<FunId> {
+        let mut reachable = HashSet::new();
+        let mut queue = VecDeque::new();
+        reachable.insert(main_id);
+        queue.push_back(main_id);
+
+        while let Some(fid) = queue.pop_front() {
+            let fun = &self.mir.functions[fid];
+            for &block_id in &fun.blocks {
+                let block = &self.mir.blocks[block_id];
+                match &block.terminator {
+                    TerminatorKind::Call { func, .. } => {
+                        if !reachable.contains(func) {
+                            reachable.insert(*func);
+                            queue.push_back(*func);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        reachable
     }
 }
-
 impl MirConstEvalApi for MirConstEval {
     fn new(mir: MirCrate, type_ctx: TypeCtx) -> Self {
         MirConstEval {
@@ -689,88 +870,65 @@ impl MirConstEvalApi for MirConstEval {
             }
         }
 
-        loop {
-            let mut const_calls: Vec<(FunId, BasicBlockId, Place, Option<BasicBlockId>, Vec<Value>)> = Vec::new();
+        let main_id = self.mir.functions.iter()
+            .position(|f| f.name == "main")
+            .unwrap();
 
-            for fid in 0..self.mir.functions.len() {
-                let fun = &self.mir.functions[fid];
+        let reachable = self.reachable_functions(main_id);
 
-                // 根据当前 MIR 语句重新构建 local 到常量映射
-                let mut local_const_init: HashMap<LocalId, &Const> = HashMap::new();
-                for &bid in &fun.blocks {
-                    let block = &self.mir.blocks[bid];
-                    for stmt in &block.statements {
-                        if let MirStmtKind::Let { local, rvalue } = &stmt.kind {
-                            if let Rvalue::Constant(c) = rvalue {
-                                local_const_init.insert(*local, c);
-                            } else {
-                                local_const_init.remove(local);
-                            }
+        let mut pending: Vec<(FunId, BasicBlockId, FunId, Vec<Const>, Place, Option<BasicBlockId>)> = Vec::new();
+
+        for &fid in &reachable {
+            let fun = &self.mir.functions[fid];
+            let local_const_map = Self::build_local_const_map(fun, &self.mir.blocks);
+
+            for &block_id in &fun.blocks {
+                let block = &self.mir.blocks[block_id];
+                if let TerminatorKind::Call { func, args, dest, target } = &block.terminator {
+                    let callee_id = *func;
+                    if !self.mir.functions[callee_id].is_consteval {
+                        continue;
+                    }
+                    let mut const_args = Vec::new();
+                    let mut all_const = true;
+                    for a in args {
+                        if let Some(c) = Self::try_extract_const(a, &local_const_map) {
+                            const_args.push(c);
+                        } else {
+                            all_const = false;
+                            break;
                         }
                     }
-                }
-
-                for &block_id in &fun.blocks {
-                    let block = &self.mir.blocks[block_id];
-                    if let TerminatorKind::Call { func, args, dest, target } = &block.terminator {
-                        if !self.mir.functions[*func].is_consteval {
-                            continue;
-                        }
-                        let callee = &self.mir.functions[*func];
-                        let has_raise = callee.blocks.iter().any(|&bid| {
-                            matches!(self.mir.blocks[bid].terminator, TerminatorKind::Raise { .. })
-                        });
-                        if has_raise {
-                            continue;
-                        }
-
-                        let mut const_args = Vec::new();
-                        let mut all_const = true;
-                        for a in args {
-                            match a {
-                                Rvalue::Constant(c) => const_args.push(Self::const_to_value(c)),
-                                Rvalue::Move(Place::Local(id)) | Rvalue::Copy(Place::Local(id)) => {
-                                    if let Some(c) = local_const_init.get(id) {
-                                        const_args.push(Self::const_to_value(c));
-                                    } else {
-                                        all_const = false;
-                                        break;
-                                    }
-                                }
-                                _ => {
-                                    all_const = false;
-                                    break;
-                                }
-                            }
-                        }
-                        if all_const {
-                            const_calls.push((*func, block_id, dest.clone(), *target, const_args));
-                        }
+                    if all_const {
+                        pending.push((fid, block_id, callee_id, const_args, dest.clone(), *target));
                     }
                 }
             }
+        }
 
-            if const_calls.is_empty() {
-                break;
-            }
+        for (caller_fun_id, block_id, callee_id, const_args, dest, target) in pending {
+            self.context_stack.clear();
+            self.global_handlers.clear();
+            self.suspended_raise = None;
 
-            let mut replacements: Vec<(BasicBlockId, Place, Const, Option<BasicBlockId>)> = Vec::new();
-            for (func_id, block_id, dest, target, const_args) in const_calls {
-                self.context_stack.clear();
-                self.global_handlers.clear();
-                self.suspended_raise = None;
+            let args_as_values: Vec<Value> = const_args.iter().map(|c| Self::const_to_value(c)).collect();
+            self.push_context(
+                callee_id,
+                args_as_values,
+                None,
+                Some(dest.clone()),
+                target,
+                Some(block_id),
+            )?;
 
-                self.push_context(func_id, const_args, None, None, None)?;
-                let result = self.run_stack()?;
-                let ret_ty = self.mir.functions[func_id].signature.return_ty;
-                let span = self.mir.blocks[block_id].span.clone();
-                let const_result = Self::value_to_const(&result, ret_ty, &self.type_ctx.type_pool, span)?;
-                replacements.push((block_id, dest, const_result, target));
-            }
+            let result = self.run_stack()?;
 
-            for (block_id, dest, const_val, target) in replacements {
-                let block = &mut self.mir.blocks[block_id];
+            if self.context_stack.is_empty() {
+                let ret_ty = self.mir.functions[callee_id].signature.return_ty;
+                let const_val = Self::value_to_const(
+                    &result, ret_ty, &self.type_ctx.type_pool, self.mir.functions[callee_id].span.clone())?;
                 if let Place::Local(local) = dest {
+                    let block = &mut self.mir.blocks[block_id];
                     block.statements.push(MirStmt {
                         kind: MirStmtKind::Let {
                             local,
@@ -778,15 +936,12 @@ impl MirConstEvalApi for MirConstEval {
                         },
                         span: block.span.clone(),
                     });
+                    block.terminator = if let Some(t) = target {
+                        TerminatorKind::Goto { target: t, block_args: vec![] }
+                    } else {
+                        TerminatorKind::Unreachable
+                    };
                 }
-                block.terminator = if let Some(t) = target {
-                    TerminatorKind::Goto {
-                        target: t,
-                        block_args: vec![],
-                    }
-                } else {
-                    TerminatorKind::Unreachable
-                };
             }
         }
 

@@ -1,6 +1,7 @@
 use crate::source::{SourceId, SourcePool, Span};
 use crate::token::{LiteToken, Token, TokenType};
 use serde::Deserialize;
+use std::fmt::Write;
 use std::collections::HashMap;
 use std::fmt;
 use thiserror::Error;
@@ -8,7 +9,6 @@ use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MsgKind {
-    // 词法错误
     LexerUnexpectedEof,
     LexerInvalidString,
     LexerInvalidIndent,
@@ -665,161 +665,84 @@ impl Default for DiagColorConfig {
     }
 }
 
-pub struct DiagEmitter<'a> {
-    source_provider: &'a dyn SourceProvider,
-    token_cache: &'a TokenCache,
-    localizer: &'a dyn Localizer,
-    colors: DiagColorConfig,
+pub struct SourceMap {
+    pool: SourcePool,
+    line_starts: HashMap<SourceId, Vec<usize>>,
 }
 
-impl<'a> DiagEmitter<'a> {
-    pub fn new(
-        source_provider: &'a dyn SourceProvider,
-        token_cache: &'a TokenCache,
-        localizer: &'a dyn Localizer,
-        colors: DiagColorConfig,
-    ) -> Self {
-        Self {
-            source_provider,
-            token_cache,
-            localizer,
-            colors,
+impl SourceMap {
+    pub fn new(pool: SourcePool) -> Self {
+        let mut line_starts = HashMap::new();
+        for (id, source) in pool.0.iter().enumerate() {
+            let mut starts = vec![0usize];
+            for (i, c) in source.file_content.char_indices() {
+                if c == '\n' {
+                    starts.push(i + 1);
+                }
+            }
+            line_starts.insert(id, starts);
         }
+        Self { pool, line_starts }
     }
 
-    pub fn render(&self, collector: &DiagCollector) -> String {
-        let mut output = String::new();
-        for warn in &collector.warnings {
-            self.render_warning(warn, &mut output);
-            output.push('\n');
-        }
-        for err in &collector.errors {
-            self.render_error(err, &mut output);
-            output.push('\n');
-        }
-        output
+    pub fn get_line_info(&self, source_id: SourceId, offset: usize) -> Option<(usize, String, usize)> {
+        let source = self.pool.0.get(source_id)?;
+        let line_starts = self.line_starts.get(&source_id)?;
+        let line_idx = line_starts.binary_search(&offset).unwrap_or_else(|e| e - 1);
+        let line_start = line_starts[line_idx];
+        let line_end = line_starts
+            .get(line_idx + 1)
+            .copied()
+            .unwrap_or(source.source_len);
+        let line_content = source.file_content[line_start..line_end].to_string();
+        let col = offset - line_start;
+        Some((line_idx + 1, line_content, col))
     }
 
-    fn render_error(&self, err: &DiagError, out: &mut String) {
-        if let Some(stack) = &err.define_stack {
-            self.render_define_stack(stack, out);
-        }
-
-        if let Some(ctx) = &err.context {
-            self.render_context(ctx, out);
-        }
-
-        self.render_error_item(&err.item, out);
-
-        if let Some(sug) = &err.suggestions {
-            self.render_suggestion(sug, out);
-        }
+    pub fn source(&self, source_id: SourceId) -> Option<&str> {
+        self.pool.0.get(source_id).map(|s| s.file_content.as_str())
     }
 
-    fn render_warning(&self, warn: &DiagWarning, out: &mut String) {
-        writeln!(out, "{}warning:{} {}", self.colors.warning_title, self.colors.reset, warn.message.render(self.localizer)).unwrap();
-        self.render_source_line(warn.span, self.colors.warning_title, out);
+    pub fn pool(&self) -> &SourcePool {
+        &self.pool
     }
 
-    fn render_define_stack(&self, stack: &[DefineKind], out: &mut String) {
-        writeln!(out, "{}From:{}", self.colors.note, self.colors.reset).unwrap();
-        for (i, item) in stack.iter().enumerate() {
-            let prefix = if i == 0 { "--" } else { "   \\" };
-            match item {
-                DefineKind::Module(name) => writeln!(out, "{} module {}", prefix, name).unwrap(),
-                DefineKind::Function(name) => writeln!(out, "{} - fun {}", prefix, name).unwrap(),
-                DefineKind::Struct(name) => writeln!(out, "{} struct {}", prefix, name).unwrap(),
-                DefineKind::ADT(name, _) => writeln!(out, "{} ADT {}", prefix, name).unwrap(),
+    pub fn pool_mut(&mut self) -> &mut SourcePool {
+        &mut self.pool
+    }
+
+    pub fn add_source(&mut self, path: String, content: String) -> SourceId {
+        let id = self.pool.add_source(path, content);
+        let source = &self.pool.0[id];
+        let mut starts = vec![0usize];
+        for (i, c) in source.file_content.char_indices() {
+            if c == '\n' {
+                starts.push(i + 1);
             }
         }
-        out.push('\n');
-    }
-
-    fn render_context(&self, ctx: &Context, out: &mut String) {
-        let line_info = self.source_provider.get_line_info(ctx.span.source_id, ctx.span.start_off);
-        if let Some((line_no, line_content, col)) = line_info {
-            writeln!(
-                out,
-                "{}  {}| {}{}",
-                self.colors.note,
-                line_no,
-                line_content.trim_end(),
-                self.colors.reset
-            ).unwrap();
-            let indent = " ".repeat(col + 4);
-            writeln!(out, "{}| {}^--- {}", indent, self.colors.note, ctx.message.render(self.localizer)).unwrap();
-        }
-    }
-
-    fn render_error_item(&self, item: &DiagErrorItem, out: &mut String) {
-        let span = item.span;
-        let msg = item.message.render(self.localizer);
-        self.render_source_line(span, self.colors.error_title, out);
-        writeln!(
-            out,
-            "{}{}:{} {}",
-            self.colors.error_title,
-            "error",
-            self.colors.reset,
-            msg
-        ).unwrap();
-    }
-
-    fn render_suggestion(&self, sug: &Suggestion, out: &mut String) {
-        writeln!(
-            out,
-            "{}Help:{} {}",
-            self.colors.help,
-            self.colors.reset,
-            sug.message.render(self.localizer)
-        ).unwrap();
-        self.render_source_line(sug.span, self.colors.help, out);
-    }
-
-    fn render_source_line(&self, span: Span, color: &str, out: &mut String) {
-        let (line_no, line_content, col) = match self
-            .source_provider
-            .get_line_info(span.source_id, span.start_off)
-        {
-            Some(info) => info,
-            None => return,
-        };
-        let prefix = format!("{} {}| ", color, line_no);
-        write!(out, "{}", prefix).unwrap();
-        if let Some(tokens) = self.token_cache.get_tokens_in_span(&span) {
-            let start = span.start_off;
-            let end = span.end_off;
-            let before = &line_content[..col];
-            let highlighted = &line_content[col..col + (end - start)];
-            let after = &line_content[col + (end - start)..];
-            write!(out, "{}{}{}{}{}\n", before, self.colors.highlight, highlighted, self.colors.reset, after).unwrap();
-        } else {
-            writeln!(out, "{}", line_content.trim_end()).unwrap();
-        }
-        let indent = " ".repeat(prefix.len() + col);
-        let carets = "^".repeat(span.len().max(1));
-        writeln!(out, "{}{}{}{}", indent, self.colors.highlight, carets, self.colors.reset).unwrap();
+        self.line_starts.insert(id, starts);
+        id
     }
 }
 
 
-pub struct DiagCtx<'a> {
+pub struct DiagCtx {
     pub collector: DiagCollector,
-    pub source_provider: &'a dyn SourceProvider,
+    pub source_map: SourceMap,
     pub token_cache: TokenCache,
-    pub localizer: &'a dyn Localizer,
+    pub localizer: Box<dyn Localizer>,
     pub colors: DiagColorConfig,
 }
 
-impl<'a> DiagCtx<'a> {
+impl DiagCtx {
     pub fn new(
-        source_provider: &'a dyn SourceProvider,
-        localizer: &'a dyn Localizer,
+        source_map: SourceMap,
+        localizer: Box<dyn Localizer>,
         colors: DiagColorConfig,
     ) -> Self {
         Self {
             collector: DiagCollector::new(),
-            source_provider,
+            source_map,
             token_cache: TokenCache::new(),
             localizer,
             colors,
@@ -838,18 +761,123 @@ impl<'a> DiagCtx<'a> {
         self.token_cache.store_tokens(source_id, tokens);
     }
 
-    pub fn emit_all(&self) -> String {
-        let emitter = DiagEmitter::new(
-            self.source_provider,
-            &self.token_cache,
-            self.localizer,
-            self.colors.clone(),
-        );
-        emitter.render(&self.collector)
-    }
-
     pub fn has_errors(&self) -> bool {
         !self.collector.errors.is_empty()
+    }
+
+    pub fn emit_all(&self) -> String {
+        let emitter = DiagEmitter::new(self);
+        emitter.render(&self.collector)
+    }
+}
+
+pub struct DiagEmitter<'a> {
+    source_map: &'a SourceMap,
+    token_cache: &'a TokenCache,
+    localizer: &'a dyn Localizer,
+    colors: &'a DiagColorConfig,
+}
+
+impl<'a> DiagEmitter<'a> {
+    fn new(ctx: &'a DiagCtx) -> Self {
+        DiagEmitter {
+            source_map: &ctx.source_map,
+            token_cache: &ctx.token_cache,
+            localizer: ctx.localizer.as_ref(),
+            colors: &ctx.colors,
+        }
+    }
+
+    pub fn render(&self, collector: &DiagCollector) -> String {
+        let mut output = String::new();
+        for warn in &collector.warnings {
+            self.render_warning(warn, &mut output);
+            output.push('\n');
+        }
+        for err in &collector.errors {
+            self.render_error(err, &mut output);
+            output.push('\n');
+        }
+        output
+    }
+
+    // 以下方法保持不变，只需将 self.source_provider 替换为 self.source_map
+    fn render_warning(&self, warn: &DiagWarning, out: &mut String) {
+        writeln!(out, "{}warning:{} {}", self.colors.warning_title, self.colors.reset,
+                 warn.message.render(self.localizer)).unwrap();
+        self.render_source_line(warn.span.clone(), self.colors.warning_title, out);
+    }
+
+    fn render_error(&self, err: &DiagError, out: &mut String) {
+        if let Some(stack) = &err.define_stack {
+            self.render_define_stack(stack, out);
+        }
+        if let Some(ctx) = &err.context {
+            self.render_context(ctx, out);
+        }
+        self.render_error_item(&err.item, out);
+        if let Some(sug) = &err.suggestions {
+            self.render_suggestion(sug, out);
+        }
+    }
+
+    fn render_define_stack(&self, stack: &[DefineKind], out: &mut String) {
+        writeln!(out, "{}From:{}", self.colors.note, self.colors.reset).unwrap();
+        for (i, item) in stack.iter().enumerate() {
+            let prefix = if i == 0 { "--" } else { "   \\" };
+            match item {
+                DefineKind::Module(name) => writeln!(out, "{} module {}", prefix, name).unwrap(),
+                DefineKind::Function(name) => writeln!(out, "{} - fun {}", prefix, name).unwrap(),
+                DefineKind::Struct(name) => writeln!(out, "{} struct {}", prefix, name).unwrap(),
+                DefineKind::ADT(name, _) => writeln!(out, "{} ADT {}", prefix, name).unwrap(),
+            }
+        }
+        out.push('\n');
+    }
+
+    fn render_context(&self, ctx: &Context, out: &mut String) {
+        if let Some((line_no, line_content, col)) = self.source_map.get_line_info(ctx.span.source_id, ctx.span.start_off) {
+            let prefix = format!("  {}| ", line_no);
+            writeln!(out, "{}{}{}{}", self.colors.note, prefix, line_content.trim_end(), self.colors.reset).unwrap();
+            // 缩进 = 前缀可见宽度 + 列前可见字符数，再减去 caret 行自带的 "| "
+            let before_width = line_content[..col].chars().count();
+            let indent = " ".repeat(prefix.len() + before_width - 2);
+            writeln!(out, "{}| {}^--- {}", indent, self.colors.note, ctx.message.render(self.localizer)).unwrap();
+        }
+    }
+
+    fn render_error_item(&self, item: &DiagErrorItem, out: &mut String) {
+        let msg = item.message.render(self.localizer);
+        self.render_source_line(item.span.clone(), self.colors.error_title, out);
+        writeln!(out, "{}{}:{} {}", self.colors.error_title, "error", self.colors.reset, msg).unwrap();
+    }
+
+    fn render_suggestion(&self, sug: &Suggestion, out: &mut String) {
+        writeln!(out, "{}Help:{} {}", self.colors.help, self.colors.reset, sug.message.render(self.localizer)).unwrap();
+        self.render_source_line(sug.span.clone(), self.colors.help, out);
+    }
+
+    fn render_source_line(&self, span: Span, color: &str, out: &mut String) {
+        if let Some((line_no, line_content, col)) = self.source_map.get_line_info(span.source_id, span.start_off) {
+            let prefix = format!("{} {}| ", color, line_no);
+            write!(out, "{}", prefix).unwrap();
+            // 前缀含 ANSI 颜色码，缩进需按可见宽度计算，且列按可见字符数而非字节数对齐
+            let prefix_width = prefix.len() - color.len();
+            let before_width = line_content[..col].chars().count();
+            if let Some(tokens) = self.token_cache.get_tokens_in_span(&span) {
+                let start = span.start_off;
+                let end = span.end_off;
+                let before = &line_content[..col];
+                let highlighted = &line_content[col..col + (end - start)];
+                let after = &line_content[col + (end - start)..];
+                write!(out, "{}{}{}{}{}\n", before, self.colors.highlight, highlighted, self.colors.reset, after).unwrap();
+            } else {
+                writeln!(out, "{}", line_content.trim_end()).unwrap();
+            }
+            let indent = " ".repeat(prefix_width + before_width);
+            let carets = "^".repeat(span.len().max(1));
+            writeln!(out, "{}{}{}{}", indent, self.colors.highlight, carets, self.colors.reset).unwrap();
+        }
     }
 }
 
@@ -989,5 +1017,261 @@ pub fn get_message_kind_for_error(error_kind: &ErrorKind) -> Option<(MsgKind, Ms
         ErrorKind::Unreachable => Some((MsgKind::Unreachable, MsgKind::HelpCheckSyntax)),
         ErrorKind::Todo => Some((MsgKind::Todo, MsgKind::HelpCheckSyntax)),
         ErrorKind::Deprecated => Some((MsgKind::Deprecated, MsgKind::HelpCheckSyntax)),
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TomlLocalizer {
+    current: HashMap<String, String>,
+    fallback: HashMap<String, String>,
+}
+
+impl TomlLocalizer {
+    pub fn new(fallback_toml: &str, current_toml: &str) -> Result<Self, toml::de::Error> {
+        let fallback: HashMap<String, String> = toml::from_str(fallback_toml)?;
+        let current: HashMap<String, String> = toml::from_str(current_toml)?;
+        Ok(Self { current, fallback })
+    }
+
+    fn get_template(&self, kind: MsgKind) -> &str {
+        let key = format!("{:?}", kind);
+        self.current
+            .get(&key)
+            .or_else(|| self.fallback.get(&key))
+            .map(|s| s.as_str())
+            .unwrap_or("(missing message)")
+    }
+}
+
+impl Localizer for TomlLocalizer {
+    fn translate(&self, kind: MsgKind, args: &[String]) -> String {
+        let template = self.get_template(kind);
+        let mut result = template.to_string();
+        for (i, arg) in args.iter().enumerate() {
+            let placeholder = format!("{{{}}}", i);
+            result = result.replace(&placeholder, arg);
+        }
+        result
+    }
+}
+
+pub const DEFAULT_EN_TOML: &str = r#"
+LexerUnexpectedEof = "unexpected end of file"
+LexerInvalidString = "invalid string literal"
+LexerInvalidIndent = "invalid indentation"
+LexerInvalidChar = "invalid char: `{0}`"
+
+TokenPassInvalidPreprocessorParameterDeclare = "invalid preprocessor parameter declaration"
+TokenPassInvalidPreprocessorArgumentList = "invalid preprocessor argument list"
+TokenPassUserPreprocessorPanic = "user preprocessor panic: {0}"
+TokenPassInvalidIdentToString = "invalid identifier to string conversion"
+TokenPassInvalidIdentConcat = "invalid identifier concatenation"
+TokenPassInvalidPreprocessorSyntax = "invalid preprocessor syntax"
+TokenPassInvalidMacroExpand = "invalid macro expansion"
+
+ParserTokenExpect = "expected {0}, found {1}"
+ParserInvalidTopDeclaration = "invalid top-level declaration"
+ParserInvalidImportList = "invalid import list"
+ParserInvalidOnlyList = "invalid only list"
+ParserInvalidUseDeclaration = "invalid use declaration"
+ParserFunctionDeclarationMissingParameterList = "function declaration missing parameter list"
+ParserInvalidGenericList = "invalid generic list"
+ParserInvalidFunctionParameterList = "invalid function parameter list"
+ParserInvalidFunctionBody = "invalid function body"
+ParserInvalidGenericParameterList = "invalid generic parameter list"
+ParserInvalidWhereBody = "invalid where body"
+ParserWhereBodyGenericMissingMatchGenericParameterList = "where clause generic mismatch"
+ParserInvalidTypeDeclaration = "invalid type declaration"
+ParserInvalidTupleLiteral = "invalid tuple literal"
+ParserInvalidExpression = "invalid expression"
+ParserInvalidOperator = "invalid operator"
+ParserInvalidCallArgumentList = "invalid call argument list"
+ParserInvalidTupleElement = "invalid tuple element"
+ParserInvalidFunctionType = "invalid function type"
+ParserInvalidStructInit = "invalid struct init"
+ParserInvalidPattern = "invalid pattern"
+ParserInvalidCatch = "invalid catch clause"
+ParserInvalidTypeOf = "invalid typeof expression"
+
+NamePassUndefinedName = "undefined name: `{0}`"
+NamePassDuplicateDefinition = "name `{0}` already defined"
+NamePassUndefinedModule = "undefined module: `{0}`"
+NamePassInvalidMemberAccess = "invalid member access"
+NamePassInvalidADTConstructor = "invalid ADT constructor"
+
+TypeCheckerDuplicateType = "duplicate type"
+TypeCheckerInfiniteType = "infinite type"
+TypeCheckerTypeMismatch = "type mismatch: expected `{0}`, found `{1}`"
+TypeCheckerGenericArityMismatch = "generic arity mismatch"
+TypeCheckerArityMismatch = "arity mismatch"
+TypeCheckerUndefinedVariable = "undefined variable: `{0}`"
+TypeCheckerTypeNotChecked = "type not checked yet"
+TypeCheckerFieldNotFound = "field not found: `{0}`"
+TypeCheckerInternalError = "internal type error"
+TypeCheckerUnknownField = "unknown field: `{0}`"
+TypeCheckerMissingTypeAnnotation = "missing type annotation"
+TypeCheckerUndefinedType = "undefined type: `{0}`"
+TypeCheckerRecursiveTypeAlias = "recursive type alias"
+TypeCheckerMissingResume = "missing resume in handler"
+TypeCheckerInvalidControlType = "invalid control type"
+TypeCheckerUnreachablePattern = "unreachable pattern"
+TypeCheckerNonExhaustiveMatch = "non-exhaustive match"
+TypeCheckerMultipleResume = "multiple resume statements in handler"
+
+HirLowerEmptyPath = "empty path"
+HirLowerPathNotFound = "path not found"
+HirLowerModuleScopeNotFound = "module scope not found"
+HirLowerFieldNotFound = "field not found: `{0}`"
+HirLowerConstructorNotFound = "constructor not found: `{0}`"
+HirLowerControlNotFound = "control not found: `{0}`"
+HirLowerInvalidPath = "invalid path"
+HirLowerGenericNotFound = "generic parameter not found: `{0}`"
+HirLowerBindingNotFound = "binding not found: `{0}`"
+HirLowerParamNotFound = "parameter not found: `{0}`"
+HirLowerMethodNotFound = "method not found: `{0}`"
+HirLowerCtorNotFound = "constructor definition not found: `{0}`"
+HirLowerNameNotFound = "name not found: `{0}`"
+HirLowerLetNameNotFound = "let name not found: `{0}`"
+HirLowerArityMismatch = "arity mismatch"
+HirLowerSymbolNotFound = "symbol not found"
+HirLowerMissingArguments = "missing arguments"
+HirLowerTooManyArguments = "too many arguments"
+HirLowerUnexpectedKeywordArg = "unexpected keyword argument"
+HirLowerDuplicateKeywordArg = "duplicate keyword argument"
+HirLowerCannotResolveFunction = "cannot resolve function for named arguments"
+HirLowerArgumentConflict = "argument conflict"
+HirLowerInvalidPipeLineTarget = "invalid pipeline target"
+
+MirLowerGeneric = "MIR lowering error"
+MirConstEvalFailed = "constant evaluation failed"
+MirLifetimeGeneric = "lifetime error"
+MirMonoGeneric = "monomorphization error"
+
+CodegenGeneric = "code generation error"
+
+MiscIo = "I/O error"
+MiscInternal = "internal error"
+Unreachable = "reached unreachable code"
+Todo = "not yet implemented"
+Deprecated = "deprecated feature"
+
+HelpCheckSyntax = "check the syntax and try again"
+ContextMovedHere = "value moved here"
+HelpUseClone = "consider using `.clone()`"
+WarningUnusedVariable = "unused variable: `{0}`"
+WarningDeprecated = "deprecated"
+WarningUnreachableCode = "unreachable code"
+DefineStackFrom = "from"
+DefineModule = "module"
+DefineFunction = "function"
+DefineStruct = "struct"
+DefineAdt = "ADT"
+"#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct TestLocalizer;
+
+    impl Localizer for TestLocalizer {
+        fn translate(&self, _kind: MsgKind, _args: &[String]) -> String {
+            "test message".to_string()
+        }
+    }
+
+    fn strip_ansi(s: &str) -> String {
+        let mut out = String::new();
+        let mut chars = s.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '\x1b' {
+                for c in chars.by_ref() {
+                    if c.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    fn render(content: &str, span: Span, ctx: Option<Context>) -> String {
+        let mut pool = SourcePool(Vec::new());
+        let id = pool.add_source("test.leaf".to_string(), content.to_string());
+        assert_eq!(id, span.source_id);
+        let map = SourceMap::new(pool);
+        let mut diag = DiagCtx::new(map, Box::new(TestLocalizer), DiagColorConfig::default());
+        let err = DiagError::new(
+            ErrorKind::CompileTimeError(CompileTimeErrorKind::LexerError(
+                LexerErrorKind::InvalidChar('~'),
+            )),
+            span,
+            LocalizedMessage::new(MsgKind::LexerInvalidChar, ["~"]),
+        );
+        let err = match ctx {
+            Some(ctx) => err.with_context(ctx),
+            None => err,
+        };
+        diag.collector.errors.push(err);
+        diag.emit_all()
+    }
+
+    fn caret_column(content: &str, span: Span, ctx: Option<Context>) -> (usize, usize) {
+        let report = render(content, span.clone(), ctx);
+        let lines: Vec<String> = report.lines().map(strip_ansi).collect();
+        let (_line_no, line_content, col) = {
+            let mut pool = SourcePool(Vec::new());
+            pool.add_source("test.leaf".to_string(), content.to_string());
+            SourceMap::new(pool)
+                .get_line_info(span.source_id, span.start_off)
+                .unwrap()
+        };
+        let content = line_content.trim_end();
+        let source_idx = lines
+            .iter()
+            .position(|l| l.contains('|') && l.contains(content))
+            .expect("source line not rendered");
+        let content_start = lines[source_idx].find(content).unwrap();
+        let target_col = content_start + line_content[..col].chars().count();
+        let caret_idx = lines
+            .iter()
+            .skip(source_idx + 1)
+            .find(|l| l.contains('^'))
+            .expect("caret line not rendered");
+        (caret_idx.find('^').unwrap(), target_col)
+    }
+
+    #[test]
+    fn caret_aligns_after_ansi_prefix() {
+        let content = "let x = 1\n    a~`\n";
+        let start = "let x = 1\n".len() + 4 + 1;
+        let span = Span { source_id: 0, start_off: start, end_off: start + 1 };
+        let (caret_col, target_col) = caret_column(content, span, None);
+        assert_eq!(caret_col, target_col, "caret drifted from offending char");
+    }
+
+    #[test]
+    fn caret_aligns_with_multibyte_prefix() {
+        let content = "变量~字\n";
+        let start = "变量".len();
+        let span = Span { source_id: 0, start_off: start, end_off: start + 1 };
+        let (caret_col, target_col) = caret_column(content, span, None);
+        assert_eq!(caret_col, target_col, "caret drifted with multibyte chars before it");
+    }
+
+    #[test]
+    fn context_caret_aligns() {
+        let content = "    变量~\n";
+        let start = 5 + "变量".len();
+        let span = Span { source_id: 0, start_off: start, end_off: start + 1 };
+        let ctx = Context::new(
+            ContextKind::Context { tokens: Vec::new() },
+            LocalizedMessage::new(MsgKind::ContextLabel, ["x"]),
+            span.clone(),
+        );
+        let (caret_col, target_col) = caret_column(content, span, Some(ctx));
+        assert_eq!(caret_col, target_col, "context caret drifted");
     }
 }
