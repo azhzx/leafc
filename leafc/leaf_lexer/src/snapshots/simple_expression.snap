@@ -1,0 +1,15 @@
+---
+source: leaf/leaf_lexer/src/test.rs
+expression: snapshot
+---
+KwLet 'let'
+Ident 'x'
+Eq '='
+Int '10'
+Plus '+'
+Int '20'
+Star '*'
+Int '3'
+NewLine '
+'
+Eof ''

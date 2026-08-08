@@ -1,0 +1,338 @@
+use crate::id::{CrateId, HirDeclId, HirExprId, SymId};
+use crate::source::Span;
+use crate::type_ctx::TypeNode;
+
+#[derive(Debug, Clone)]
+pub struct HirCrate {
+    pub id: CrateId,
+    pub main_fun: Option<HirDeclId>,
+    pub hir_expr_pool: Vec<HirExpr>,
+    pub hir_decl_pool: Vec<HirDecl>,
+    pub exports: Vec<HirDeclId>,
+}
+
+#[derive(Debug, Clone)]
+pub struct HirName {
+    pub name: String,
+    pub sym_id: SymId,
+}
+
+#[derive(Debug, Clone)]
+pub enum HirTypeName {
+    Named {
+        path: HirName,
+        generics: Vec<HirTypeName>,
+    },
+    Ref(Box<HirTypeName>),
+    MutRef(Box<HirTypeName>),
+    Share(Box<HirTypeName>),
+    Tuple(Vec<HirTypeName>),
+    Fun {
+        params: Vec<HirTypeName>,
+        return_type: Box<HirTypeName>,
+    },
+    Impl(Box<HirTypeName>),
+    Typeof(HirExprId),
+    Wildcard,
+}
+
+#[derive(Debug, Clone)]
+pub struct HirGenericParam {
+    pub name: HirName,
+    pub constraints: Vec<HirTypeName>,
+}
+
+#[derive(Debug, Clone)]
+pub struct HirDecl {
+    pub ident: String,
+    pub kind: HirDeclKind,
+    pub is_pub_external: bool, // public, private在NamePass已被处理, 只剩pub(external)
+    pub hir_id: HirDeclId,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub enum HirDeclKind {
+    Fun {
+        generic_params: Vec<HirGenericParam>,
+        params: Vec<HirParam>,
+        return_type: Option<HirTypeName>,
+        body: Vec<HirExprId>,
+        is_consteval: bool,
+    },
+    Struct {
+        generic_params: Vec<HirGenericParam>,
+        fields: Vec<HirFieldDef>,
+        implemented_abstracts: Vec<HirTypeName>,
+    },
+    TypeAlias {
+        generic_params: Vec<HirGenericParam>,
+        alias_for: HirTypeName,
+    },
+    ADT {
+        generic_params: Vec<HirGenericParam>,
+        ctors: Vec<HirCtorDef>,
+        implemented_abstracts: Vec<HirTypeName>,
+    },
+    Abstract {
+        generic_params: Vec<HirGenericParam>,
+        methods: Vec<HirMethodDecl>,
+        super_abstracts: Vec<HirTypeName>,
+    },
+    TypeDecl,
+    CType,
+    External {
+        sym_name: String,
+        params: Vec<HirParam>,
+        return_type: HirTypeName,
+        is_variadic: bool,
+    },
+    Effect {
+        controls: Vec<(HirName, Vec<HirParam>, Option<HirTypeName>)>,
+    },
+    Const {
+        type_ann: Option<HirTypeName>,
+        expr: HirExprId,
+    },
+    Global {
+        type_ann: Option<HirTypeName>,
+        expr: HirExprId,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct HirFieldDef {
+    pub name: HirName,
+    pub type_ann: HirTypeName,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct HirParam {
+    pub name: HirName,
+    pub type_ann: Option<HirTypeName>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct HirMethodDecl {
+    pub name: HirName,
+    pub generic_params: Vec<HirGenericParam>,
+    pub params: Vec<HirParam>,
+    pub return_type: Option<HirTypeName>,
+    pub is_pub_external: bool,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct HirCtorDef {
+    pub name: HirName,
+    pub generic_params: Vec<HirGenericParam>,
+    pub from_type: Option<HirTypeName>,
+    pub return_type: Option<HirTypeName>,
+    pub is_pub_external: bool,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct HirStructPatternField {
+    pub field_name: HirName,
+    pub pattern: HirPattern,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub enum HirPattern {
+    Wildcard,
+    Literal(HirLit),
+    Binding(HirName),
+    Constructor {
+        type_name: HirTypeName,
+        args: Vec<HirPattern>,
+        span: Span,
+    },
+    Or {
+        left: Box<HirPattern>,
+        right: Box<HirPattern>,
+        span: Span,
+    },
+    Rest,
+    Tuple {
+        elements: Vec<HirPattern>,
+        span: Span,
+    },
+    Struct {
+        path: HirName,
+        fields: Vec<HirStructPatternField>,
+        rest: bool,
+        span: Span,
+    },
+    Alias {
+        pattern: Box<HirPattern>,
+        name: HirName,
+        span: Span,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct HirMatchArm {
+    pub pattern: HirPattern,
+    pub guard: Option<HirExprId>,
+    pub body: HirExprId,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub enum HirCatchParam {
+    Binding(HirName),
+    Rest,
+}
+
+#[derive(Debug, Clone)]
+pub struct HirCatchClause {
+    pub control_path: HirName,
+    pub params: Vec<HirCatchParam>,
+    pub body: HirExprId,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct HirExpr {
+    pub kind: HirExprKind,
+    pub hir_id: HirExprId,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub enum HirExprKind {
+    Lit(HirLit),
+    Ident(HirName),
+    Binary {
+        left: HirExprId,
+        right: HirExprId,
+        op: HirBinOp,
+    },
+    Unary {
+        op: HirUnaryOp,
+        right: HirExprId,
+    },
+    Move {
+        target: HirExprId,
+    },
+    Copy {
+        target: HirExprId,
+    },
+    Ref {
+        target: HirExprId,
+    },
+    MutRef {
+        target: HirExprId,
+    },
+    Share {
+        target: HirExprId,
+    },
+    Call {
+        callee: HirExprId,
+        args: Vec<HirExprId>,
+    },
+    BuildVariant {
+        variant_name: HirName,
+        target: HirExprId,
+    },
+    UnsafeExternalCall {
+        callee: HirExprId,
+        args: Vec<HirExprId>,
+    },
+    FieldAccess {
+        obj: HirExprId,
+        field: String,
+    },
+    TupleIndex {
+        expr: HirExprId,
+        index: usize,
+    },
+    TypeCast {
+        expr: HirExprId,
+        type_ann: HirTypeName,
+    },
+    Block {
+        stmts: Vec<HirExprId>,
+    },
+    Let {
+        name: HirName,
+        type_ann: Option<HirTypeName>,
+        init: HirExprId,
+        mutable: bool,
+    },
+    If {
+        cond: HirExprId,
+        then: HirExprId,
+        elifs: Vec<(HirExprId, HirExprId)>,
+        else_opt: Option<HirExprId>,
+    },
+    Tuple {
+        elements: Vec<HirExprId>,
+    },
+    Return {
+        expr: Option<HirExprId>,
+    },
+    Ellipsis,
+    Raise {
+        control_name: HirName,
+        args: Vec<HirExprId>,
+    },
+    With {
+        handler: HirExprId,
+        clauses: Vec<HirCatchClause>,
+    },
+    /// resume expr
+    Resume {
+        expr: HirExprId,
+    },
+    Match {
+        scrutinee: HirExprId,
+        arms: Vec<HirMatchArm>,
+    },
+    Is {
+        expr: HirExprId,
+        pattern: HirPattern,
+    },
+    MakeStruct {
+        path: HirExprId,
+        fields: Vec<(String, HirExprId)>,
+    },
+    ConstEval {
+        expr: HirExprId,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum HirLit {
+    Decimal(String),
+    Int(String),
+    Str(String),
+    Bool(bool),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HirBinOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    And,
+    Or,
+    Eq,
+    Neq,
+    Lt,
+    Gt,
+    Le,
+    Ge,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HirUnaryOp {
+    Not,
+    Neg,
+}

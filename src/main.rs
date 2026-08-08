@@ -1,8 +1,8 @@
-use leafc_compiler::NativeCompiler;
+use leaf_compiler::MainDispatcher;
 
 fn main() {
     let crate_path: std::path::PathBuf = "demo_leaf_crate".parse().unwrap();
-    let mut compiler = NativeCompiler::new(crate_path.clone()).unwrap();
+    let mut compiler = MainDispatcher::new(crate_path.clone()).unwrap();
 
     compiler
         .set_crate_path("demo_leaf_crate")

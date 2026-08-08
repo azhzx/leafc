@@ -1,9 +1,0 @@
-[package]
-name = "leafc_lexer"
-version = "0.1.0"
-edition = "2024"
-
-[dependencies]
-leafc_coreapi = { path = "../leafc_coreapi" }
-unicode-xid = "0.2"
-insta = "1.48.0"

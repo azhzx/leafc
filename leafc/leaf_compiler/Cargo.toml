@@ -1,0 +1,28 @@
+[package]
+name = "leaf_compiler"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+leaf_coreapi = { path = "../leaf_coreapi" }
+leaf_lexer = { path = "../leaf_lexer" }
+leaf_preprocessor = { path = "../leaf_preprocessor" }
+leaf_parser = { path = "../leaf_parser" }
+leaf_name_pass = { path = "../leaf_name_pass" }
+leaf_hir_lower = { path = "../leaf_hir_lower" }
+leaf_type_checker = { path = "../leaf_type_checker" }
+leaf_mir_lower = { path = "../leaf_mir_lower" }
+leaf_mir_consteval = { path = "../leaf_mir_consteval" }
+leaf_mir_lifetime_checker = { path = "../leaf_mir_lifetime_checker" }
+leaf_mir_mono = { path = "../leaf_mir_mono" }
+leaf_c_codegen = { path = "../leaf_c_codegen" }
+
+intervaltree = {  version = "0.2.7" }
+serde_json = "1.0.151"
+serde = { version = "1.0.228", features = ["derive"] }
+insta = "1.48.0"
+indexmap = "2.14.0"
+dashmap = "7.0.0-rc2"
+rayon = "1.12.0"
+salsa = "0.28.2"
+tracing = "0.1.44"
