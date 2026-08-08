@@ -4,10 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-leaf_coreapi = { path = "leafc/leaf_coreapi" }
-leaf_compiler = { path = "leafc/leaf_compiler" }
-leaf_lexer = { path = "leafc/leaf_lexer" }
-leaf_parser = { path = "leafc/leaf_parser" }
-leaf_name_pass = { path = "leafc/leaf_name_pass" }
-leaf_hir_lower = { path = "leafc/leaf_hir_lower" }
-leaf_preprocessor = { path = "leafc/leaf_preprocessor" }
+leaf_coreapi = { path = "leaf/leaf_coreapi" }
+leaf_compiler = { path = "leaf/leaf_compiler" }
+leaf_lexer = { path = "leaf/leaf_lexer" }
+leaf_parser = { path = "leaf/leaf_parser" }
+leaf_name_pass = { path = "leaf/leaf_name_pass" }
+leaf_hir_lower = { path = "leaf/leaf_hir_lower" }
+leaf_preprocessor = { path = "leaf/leaf_preprocessor" }
