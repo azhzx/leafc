@@ -8,3 +8,4 @@ leaf_lexer = { path = "../leaf_lexer" }
 leaf_preprocessor = { path = "../leaf_preprocessor" }
 leaf_coreapi = { path = "../leaf_coreapi" }
 intervaltree = "0.2.7"
+rowan = "0.16.1"

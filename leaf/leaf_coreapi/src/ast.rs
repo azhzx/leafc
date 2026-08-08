@@ -2,8 +2,210 @@ use crate::operators::Operator;
 use crate::source::Span;
 use std::sync::Arc;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct TextLen(pub usize);
+// ===----------------------------
+// rowan infrastructure
+// ===----------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(u16)]
+pub enum SyntaxKind {
+    Ident = 0,
+    Int,
+    Float,
+    String,
+    NewLine,
+    Indent,
+    Dedent,
+    KwFun,
+    KwType,
+    KwImpl,
+    KwWhere,
+    KwIf,
+    KwThen,
+    KwElse,
+    KwElif,
+    KwLet,
+    KwMut,
+    KwReturn,
+    KwWhen,
+    KwRaise,
+    KwWith,
+    KwCatch,
+    KwResume,
+    KwConst,
+    KwGlobal,
+    KwEffect,
+    KwExternal,
+    KwCType,
+    KwAbst,
+    KwUse,
+    KwOnly,
+    KwPub,
+    KwRef,
+    KwShare,
+    KwMove,
+    KwCopy,
+    KwBinding,
+    KwIs,
+    KwAs,
+    KwDo,
+    KwUnsafeCallExternal,
+    KwTypeOf,
+    KwOf,
+    Lparen,
+    Rparen,
+    Lbrace,
+    Rbrace,
+    Lbracket,
+    Rbracket,
+    Comma,
+    Dot,
+    DotDot,
+    DotDotDot,
+    Colon,
+    Semicolon,
+    Eq,
+    Arrow,
+    FatArrow,
+    Pipe,
+    PipeLine,
+    Plus,
+    Minus,
+    Star,
+    Slash,
+    Percent,
+    Caret,
+    Not,
+    Or,
+    And,
+    EqEq,
+    Ne,
+    Lt,
+    Gt,
+    Le,
+    Ge,
+    At,
+    Hash,
+    SourceFile,
+    Require,
+    Param,
+    Field,
+    GenericVar,
+    MethodDecl,
+    Annotation,
+    Ctor,
+    Decl,
+    ConstDecl,
+    GlobalDecl,
+    EffectDecl,
+    AbstractDecl,
+    TypeDecl,
+    TypeAlias,
+    TypeStruct,
+    AdtDecl,
+    FunDecl,
+    FunDef,
+    ExternalDecl,
+    CTypeDecl,
+    Pattern,
+    WildcardPat,
+    LiteralPat,
+    BindingPat,
+    ConstructorPat,
+    OrPat,
+    RestPat,
+    TuplePat,
+    StructPat,
+    AliasPat,
+    StructPatternField,
+    Expr,
+    AtomExpr,
+    BinaryExpr,
+    UnaryExpr,
+    MoveExpr,
+    CopyExpr,
+    RefExpr,
+    MutRefExpr,
+    ShareExpr,
+    CallExpr,
+    UnsafeExternalCallExpr,
+    StaticPathExpr,
+    MemberAccessExpr,
+    MakeStructExpr,
+    TypeCastExpr,
+    DoExpr,
+    LetExpr,
+    IfExpr,
+    ReturnExpr,
+    MatchExpr,
+    IsExpr,
+    RaiseExpr,
+    WithExpr,
+    ResumeExpr,
+    TupleIndexExpr,
+    PipeLineExpr,
+    ConstEvalExpr,
+    TypeName,
+    NamedType,
+    RefType,
+    MutRefType,
+    ShareType,
+    TupleType,
+    FunType,
+    ImplType,
+    TypeofType,
+    WildcardType,
+    TupleElement,
+    Path,
+    WhereClause,
+    WhereConstraint,
+    StructFieldInit,
+    CallArg,
+    MatchArm,
+    EffectControl,
+    CatchClause,
+    CatchParam,
+    ElseIf,
+    Error,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum LeafLanguage {}
+impl rowan::Language for LeafLanguage {
+    type Kind = SyntaxKind;
+    fn kind_from_raw(raw: rowan::SyntaxKind) -> Self::Kind {
+        unsafe { std::mem::transmute(raw) }
+    }
+    fn kind_to_raw(kind: Self::Kind) -> rowan::SyntaxKind {
+        rowan::SyntaxKind(kind as u16)
+    }
+}
+
+pub type SyntaxNode = rowan::SyntaxNode<LeafLanguage>;
+pub type GreenNode = rowan::GreenNode;
+pub type GreenNodeBuilder<'a> = rowan::GreenNodeBuilder<'a>;
+pub type SyntaxToken = rowan::SyntaxToken<LeafLanguage>;
+pub type SyntaxElement = rowan::SyntaxElement<LeafLanguage>;
+
+// ===----------------------------
+// Helper trait
+// ===----------------------------
+
+pub trait AstNode: Sized {
+    fn can_cast(kind: SyntaxKind) -> bool;
+    fn cast(node: SyntaxNode) -> Option<Self>;
+    fn syntax(&self) -> &SyntaxNode;
+    fn clone_for_update(&self) -> Self;
+    fn wrap(node: SyntaxNode) -> Self;
+    fn cast_element(element: SyntaxElement) -> Option<Self> {
+        element.into_node().and_then(Self::cast)
+    }
+}
+
+
+fn cast_ident(element: SyntaxElement) -> Option<IdentName> {
+    element.into_node().and_then(IdentName::cast)
+}
 
 // ===----------------------------
 // Crate
@@ -20,17 +222,33 @@ pub struct CrateAst {
 // ===----------------------------
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct GreenFileUnit {
-    pub name: GreenChild<IdentName>,
-    pub top_decls: Vec<GreenChild<GreenDecl>>,
-    pub file_unit_requires: Vec<GreenChild<GreenRequire>>,
-    pub text_len: TextLen,
-}
-
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct FileRedUnit {
     pub span: Span,
-    pub green: Arc<GreenFileUnit>,
+    pub green: Arc<GreenNode>,
+}
+
+impl FileRedUnit {
+    pub fn syntax(&self) -> SyntaxNode {
+        SyntaxNode::new_root(self.green.as_ref().clone())
+    }
+
+    pub fn name(&self) -> Option<IdentName> {
+        self.syntax()
+            .children_with_tokens()
+            .find_map(cast_ident)
+    }
+
+    pub fn top_decls(&self) -> impl Iterator<Item = DeclRedNode> {
+        self.syntax()
+            .children()
+            .filter_map(DeclRedNode::cast)
+    }
+
+    pub fn requires(&self) -> impl Iterator<Item = RequireRedNode> {
+        self.syntax()
+            .children()
+            .filter_map(RequireRedNode::cast)
+    }
 }
 
 // ===----------------------------
@@ -38,18 +256,66 @@ pub struct FileRedUnit {
 // ===----------------------------
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct GreenRequire {
-    pub path: Vec<GreenChild<IdentName>>,
-    pub only: Vec<GreenChild<IdentName>>,
-    pub is_open: bool, // 将被导入模块的顶层声明塞入当前模块的中(不递归展开)
-    pub text_len: TextLen,
+pub struct RequireRedNode {
+    syntax: SyntaxNode,
 }
 
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct RequireRedNode {
-    pub span: Span,
-    pub green: Arc<GreenRequire>,
+impl RequireRedNode {
+    pub fn cast(node: SyntaxNode) -> Option<Self> {
+        if node.kind() == SyntaxKind::Require {
+            Some(Self { syntax: node })
+        } else {
+            None
+        }
+    }
+
+    pub fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+
+    pub fn path(&self) -> impl Iterator<Item = IdentName> {
+        self.syntax
+            .children_with_tokens()
+            .filter_map(cast_ident)
+    }
+
+    pub fn only(&self) -> Vec<IdentName> {
+        self.syntax
+            .children_with_tokens()
+            .filter_map(cast_ident)
+            .collect()
+    }
+
+    pub fn is_open(&self) -> bool {
+        self.syntax
+            .children_with_tokens()
+            .any(|t| t.kind() == SyntaxKind::Star)
+    }
 }
+
+impl AstNode for RequireRedNode {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::Require
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        RequireRedNode::cast(node)
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+    fn clone_for_update(&self) -> Self {
+        RequireRedNode {
+            syntax: self.syntax.clone_for_update(),
+        }
+    }
+    fn wrap(node: SyntaxNode) -> Self {
+        RequireRedNode { syntax: node }
+    }
+}
+
+// ===----------------------------
+// Visibility
+// ===----------------------------
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Visibility {
@@ -58,403 +324,336 @@ pub enum Visibility {
     PublicExternal,
 }
 
-/// warp a green node
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct GreenChild<T> {
-    pub relative_start: usize,
-    pub node: Arc<T>,
-}
-
 // ===----------------------------
-// Name
+// IdentName
 // ===----------------------------
-
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub enum TypeName {
-    Named {
-        path: GreenChild<GreenPureStaticPath>,
-        generics: Vec<TypeName>,
-        text_len: TextLen,
-    },
-    Ref {
-        inner: GreenChild<TypeName>,
-        text_len: TextLen,
-    },
-    MutRef {
-        inner: GreenChild<TypeName>,
-        text_len: TextLen,
-    },
-    Share {
-        inner: GreenChild<TypeName>,
-        text_len: TextLen,
-    },
-    Tuple {
-        elements: Vec<GreenTupleElement>,
-        text_len: TextLen,
-    },
-    Fun {
-        params: Vec<GreenChild<TypeName>>,
-        return_type: GreenChild<TypeName>,
-        text_len: TextLen,
-    },
-    Impl {
-        trait_type: GreenChild<TypeName>,
-        text_len: TextLen,
-    },
-    Typeof {
-        expr: GreenChild<GreenExpr>,
-        text_len: TextLen,
-    },
-    Wildcard {
-        text_len: TextLen,
-    },
-}
-
-/// 元组
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct GreenTupleElement {
-    pub ty: GreenChild<TypeName>,
-    pub repeat: Option<usize>,
-    pub text_len: TextLen,
-}
-
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct TypeNameRedNode {
-    pub span: Span,
-    pub green: Arc<TypeName>,
-}
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct IdentName {
-    pub name: String,
+    syntax: SyntaxNode,
 }
 
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct IdentNameRedNode {
-    pub span: Span,
-    pub ident: IdentName,
+impl IdentName {
+    pub fn cast(node: SyntaxNode) -> Option<Self> {
+        if node.kind() == SyntaxKind::Ident {
+            Some(Self { syntax: node })
+        } else {
+            None
+        }
+    }
+
+    pub fn name(&self) -> String {
+        self.syntax.text().to_string()
+    }
+}
+
+impl AstNode for IdentName {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::Ident
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        IdentName::cast(node)
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+    fn clone_for_update(&self) -> Self {
+        IdentName {
+            syntax: self.syntax.clone_for_update(),
+        }
+    }
+    fn wrap(node: SyntaxNode) -> Self {
+        IdentName { syntax: node }
+    }
 }
 
 // ===----------------------------
-// Operator
+// Operator helper
 // ===----------------------------
 
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct OperatorRedNode {
-    pub span: Span,
-    pub op: Operator,
+pub fn syntax_kind_to_operator(kind: SyntaxKind) -> Option<Operator> {
+    match kind {
+        SyntaxKind::Plus => Some(Operator::Add),
+        SyntaxKind::Minus => Some(Operator::Sub),
+        SyntaxKind::Star => Some(Operator::Mul),
+        SyntaxKind::Slash => Some(Operator::Div),
+        SyntaxKind::Percent => Some(Operator::Mod),
+        SyntaxKind::EqEq => Some(Operator::Eq),
+        SyntaxKind::Ne => Some(Operator::Neq),
+        SyntaxKind::Lt => Some(Operator::Lt),
+        SyntaxKind::Gt => Some(Operator::Gt),
+        SyntaxKind::Le => Some(Operator::Le),
+        SyntaxKind::Ge => Some(Operator::Ge),
+        SyntaxKind::And => Some(Operator::And),
+        SyntaxKind::Or => Some(Operator::Or),
+        SyntaxKind::Not => Some(Operator::Not),
+        SyntaxKind::PipeLine => Some(Operator::PipeLine),
+        _ => None,
+    }
 }
 
 // ===----------------------------
-// Static Path
+// Path
 // ===----------------------------
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct GreenPureStaticPath {
-    pub segments: Vec<GreenChild<IdentName>>,
-    pub text_len: TextLen,
+pub struct Path {
+    syntax: SyntaxNode,
+}
+
+impl Path {
+    pub fn cast(node: SyntaxNode) -> Option<Self> {
+        if node.kind() == SyntaxKind::Path {
+            Some(Self { syntax: node })
+        } else {
+            None
+        }
+    }
+
+    pub fn segments(&self) -> impl Iterator<Item = IdentName> {
+        self.syntax
+            .children_with_tokens()
+            .filter_map(cast_ident)
+    }
+}
+
+impl AstNode for Path {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::Path
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        Path::cast(node)
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+    fn clone_for_update(&self) -> Self {
+        Path {
+            syntax: self.syntax.clone_for_update(),
+        }
+    }
+    fn wrap(node: SyntaxNode) -> Self {
+        Path { syntax: node }
+    }
 }
 
 // ===----------------------------
 // Where
 // ===----------------------------
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct GreenWhereClause {
-    pub constraints: Vec<GreenChild<GreenWhereConstraint>>,
-    pub text_len: TextLen,
-}
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct GreenWhereConstraint {
-    pub name: GreenChild<IdentName>,
-    pub bounds: Vec<GreenChild<TypeName>>,
-    pub text_len: TextLen,
+pub struct WhereClause {
+    syntax: SyntaxNode,
 }
 
-// ===----------------------------
-// Init Struct Fields
-// ===----------------------------
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct GreenStructFieldInit {
-    pub name: GreenChild<IdentName>,
-    pub value: GreenChild<GreenExpr>,
-    pub text_len: TextLen,
-}
-
-// ===----------------------------
-// Call argument
-// ===----------------------------
-
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct GreenCallArg {
-    pub name: Option<GreenChild<IdentName>>,
-    pub value: GreenChild<GreenExpr>,
-    pub text_len: TextLen,
-}
-
-// ===----------------------------
-// Pattern
-// ===----------------------------
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct GreenStructPatternField {
-    pub field_name: IdentName,
-    pub pattern: GreenChild<GreenPattern>,
-    pub text_len: TextLen,
-}
-
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub enum GreenPattern {
-    Wildcard,
-    Literal(AtomExprNode),
-    Binding(IdentName),
-    Constructor {
-        type_name: GreenChild<TypeName>,
-        args: Vec<GreenChild<GreenPattern>>,
-        text_len: TextLen,
-    },
-    Or {
-        left: GreenChild<GreenPattern>,
-        right: GreenChild<GreenPattern>,
-        text_len: TextLen,
-    },
-    Rest,
-    Tuple {
-        elements: Vec<GreenChild<GreenPattern>>,
-        text_len: TextLen,
-    },
-    Struct {
-        path: GreenChild<GreenPureStaticPath>,
-        fields: Vec<GreenStructPatternField>,
-        rest: bool,
-        text_len: TextLen,
-    },
-    Alias {
-        pattern: GreenChild<GreenPattern>,
-        name: IdentName,
-        text_len: TextLen,
-    },
-}
-
-// ===----------------------------
-// Match
-// ===----------------------------
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct GreenMatchArm {
-    pub pattern: GreenChild<GreenPattern>,
-    pub guard: Option<GreenChild<GreenExpr>>,
-    pub body: GreenChild<GreenExpr>,
-    pub text_len: TextLen,
-}
-
-// ===----------------------------
-// Effect
-// ===----------------------------
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct GreenEffectControl {
-    pub name: GreenChild<IdentName>,
-    pub params: Vec<GreenChild<GreenParam>>,
-    pub return_type: GreenChild<TypeName>,
-    pub text_len: TextLen,
-}
-
-// ===----------------------------
-// Catch clause (for 'with expression')
-// ===----------------------------
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub enum GreenCatchParam {
-    Binding { name: IdentName },
-    Rest,
-}
-
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct GreenCatchClause {
-    pub control_static_path: GreenChild<GreenPureStaticPath>,
-    pub params: Vec<GreenChild<GreenCatchParam>>,
-    pub body: GreenChild<GreenExpr>,
-    pub text_len: TextLen,
-}
-
-// ===----------------------------
-// Expr
-// ===----------------------------
-
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub enum AtomExprNode {
-    Decimal {
-        dec: String,
-        text_len: TextLen,
-    },
-    Int {
-        int: String,
-        text_len: TextLen,
-    },
-    Str {
-        string: String,
-        text_len: TextLen,
-    },
-    Name {
-        name: String,
-        text_len: TextLen,
-    },
-    Tuple {
-        exprs: Vec<GreenChild<GreenExpr>>,
-        text_len: TextLen,
-    },
-    Ellipsis {
-        text_len: TextLen,
-    },
-}
-
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct ExprRedNode {
-    pub span: Span,
-    pub inner: Arc<GreenExpr>,
-}
-
-impl ExprRedNode {
-    pub fn child_to_red(&self, child: &GreenChild<GreenExpr>) -> ExprRedNode {
-        let start = self.span.start_off + child.relative_start;
-        let len = child.node.text_len;
-        ExprRedNode {
-            span: Span {
-                source_id: self.span.source_id,
-                start_off: start,
-                end_off: start + len.0,
-            },
-            inner: Arc::clone(&child.node),
+impl WhereClause {
+    pub fn cast(node: SyntaxNode) -> Option<Self> {
+        if node.kind() == SyntaxKind::WhereClause {
+            Some(Self { syntax: node })
+        } else {
+            None
         }
+    }
+    pub fn constraints(&self) -> impl Iterator<Item = WhereConstraint> {
+        self.syntax.children().filter_map(WhereConstraint::cast)
+    }
+}
+impl AstNode for WhereClause {
+    fn can_cast(kind: SyntaxKind) -> bool { kind == SyntaxKind::WhereClause }
+    fn cast(node: SyntaxNode) -> Option<Self> { WhereClause::cast(node) }
+    fn syntax(&self) -> &SyntaxNode { &self.syntax }
+    fn clone_for_update(&self) -> Self { WhereClause { syntax: self.syntax.clone_for_update() } }
+    fn wrap(node: SyntaxNode) -> Self { WhereClause { syntax: node } }
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct WhereConstraint {
+    syntax: SyntaxNode,
+}
+
+impl WhereConstraint {
+    pub fn cast(node: SyntaxNode) -> Option<Self> {
+        if node.kind() == SyntaxKind::WhereConstraint {
+            Some(Self { syntax: node })
+        } else {
+            None
+        }
+    }
+    pub fn name(&self) -> Option<IdentName> {
+        self.syntax.children_with_tokens().find_map(cast_ident)
+    }
+    pub fn bounds(&self) -> impl Iterator<Item = TypeName> {
+        self.syntax.children().filter_map(TypeName::cast)
+    }
+}
+impl AstNode for WhereConstraint {
+    fn can_cast(kind: SyntaxKind) -> bool { kind == SyntaxKind::WhereConstraint }
+    fn cast(node: SyntaxNode) -> Option<Self> { WhereConstraint::cast(node) }
+    fn syntax(&self) -> &SyntaxNode { &self.syntax }
+    fn clone_for_update(&self) -> Self { WhereConstraint { syntax: self.syntax.clone_for_update() } }
+    fn wrap(node: SyntaxNode) -> Self { WhereConstraint { syntax: node } }
+}
+
+// ===----------------------------
+// TypeName (and its variants)
+// ===----------------------------
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct TypeName {
+    syntax: SyntaxNode,
+}
+
+impl TypeName {
+    pub fn cast(node: SyntaxNode) -> Option<Self> {
+        match node.kind() {
+            SyntaxKind::TypeName
+            | SyntaxKind::NamedType
+            | SyntaxKind::RefType
+            | SyntaxKind::MutRefType
+            | SyntaxKind::ShareType
+            | SyntaxKind::TupleType
+            | SyntaxKind::FunType
+            | SyntaxKind::ImplType
+            | SyntaxKind::TypeofType
+            | SyntaxKind::WildcardType => Some(Self { syntax: node }),
+            _ => None,
+        }
+    }
+
+    pub fn kind(&self) -> SyntaxKind {
+        self.syntax.kind()
+    }
+
+    pub fn named_path(&self) -> Option<Path> {
+        self.syntax.children().find_map(Path::cast)
+    }
+
+    pub fn named_generics(&self) -> Vec<TypeName> {
+        self.syntax.children().filter_map(TypeName::cast).collect()
+    }
+
+    pub fn ref_inner(&self) -> Option<TypeName> {
+        self.syntax.children().find_map(TypeName::cast)
+    }
+
+    pub fn mut_ref_inner(&self) -> Option<TypeName> {
+        self.syntax.children().find_map(TypeName::cast)
+    }
+
+    pub fn share_inner(&self) -> Option<TypeName> {
+        self.syntax.children().find_map(TypeName::cast)
+    }
+
+    pub fn tuple_elements(&self) -> Vec<TupleElement> {
+        self.syntax.children().filter_map(TupleElement::cast).collect()
+    }
+
+    pub fn fun_params(&self) -> Vec<TypeName> {
+        self.syntax.children().filter_map(TypeName::cast).collect()
+    }
+
+    pub fn fun_return(&self) -> Option<TypeName> {
+        self.syntax.children().filter_map(TypeName::cast).last()
+    }
+
+    pub fn impl_trait(&self) -> Option<TypeName> {
+        self.syntax.children().find_map(TypeName::cast)
+    }
+
+    pub fn typeof_expr(&self) -> Option<ExprRedNode> {
+        self.syntax.children().find_map(ExprRedNode::cast)
+    }
+
+    pub fn is_wildcard(&self) -> bool {
+        self.syntax.kind() == SyntaxKind::WildcardType
     }
 }
 
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct GreenExpr {
-    pub kind: GreenExprKind,
-    pub text_len: TextLen,
+impl AstNode for TypeName {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        matches!(kind,
+            SyntaxKind::TypeName
+            | SyntaxKind::NamedType
+            | SyntaxKind::RefType
+            | SyntaxKind::MutRefType
+            | SyntaxKind::ShareType
+            | SyntaxKind::TupleType
+            | SyntaxKind::FunType
+            | SyntaxKind::ImplType
+            | SyntaxKind::TypeofType
+            | SyntaxKind::WildcardType
+        )
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> { TypeName::cast(node) }
+    fn syntax(&self) -> &SyntaxNode { &self.syntax }
+    fn clone_for_update(&self) -> Self { TypeName { syntax: self.syntax.clone_for_update() } }
+    fn wrap(node: SyntaxNode) -> Self { TypeName { syntax: node } }
 }
 
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub enum GreenExprKind {
-    Atom {
-        expr: AtomExprNode,
-    },
-    Binary {
-        left: GreenChild<GreenExpr>,
-        op: GreenChild<Operator>,
-        right: GreenChild<GreenExpr>,
-    },
-    Unary {
-        op: GreenChild<Operator>,
-        right: GreenChild<GreenExpr>,
-    },
-    Move {
-        target: GreenChild<GreenExpr>,
-    },
-    Copy {
-        target: GreenChild<GreenExpr>,
-    },
-    Ref {
-        target: GreenChild<GreenExpr>,
-    },
-    MutRef {
-        target: GreenChild<GreenExpr>,
-    },
-    Share {
-        target: GreenChild<GreenExpr>,
-    },
-    Call {
-        callee: GreenChild<GreenExpr>,
-        args: Vec<GreenChild<GreenCallArg>>,
-    },
-    UnsafeExternalCall {
-        callee: GreenChild<GreenExpr>,
-        args: Vec<GreenChild<GreenExpr>>,
-    },
-    StaticPath {
-        path: GreenChild<GreenPureStaticPath>,
-    },
-    MemberAccess {
-        left: GreenChild<GreenExpr>,
-        member: GreenChild<IdentName>,
-    },
-    MakeStruct {
-        path: GreenChild<GreenExpr>,
-        fields: Vec<GreenChild<GreenStructFieldInit>>,
-    },
-    TypeCast {
-        expr: GreenChild<GreenExpr>,
-        into_type: GreenChild<TypeName>,
-    },
-    Do {
-        exprs: Vec<GreenChild<GreenExpr>>,
-    },
-    Let {
-        name: GreenChild<IdentName>,
-        expr: GreenChild<GreenExpr>,
-        type_str: Option<GreenChild<TypeName>>,
-        mutable: bool,
-    },
-    If {
-        cond: GreenChild<GreenExpr>,
-        then_expr: GreenChild<GreenExpr>,
-        elifs: Vec<GreenElseIf>,
-        else_expr: Option<GreenChild<GreenExpr>>,
-    },
-    Return {
-        expr: Option<GreenChild<GreenExpr>>,
-    },
-    Match {
-        for_match: GreenChild<GreenExpr>,
-        arms: Vec<GreenChild<GreenMatchArm>>,
-    },
-    Is {
-        expr: GreenChild<GreenExpr>,
-        pattern: GreenChild<GreenPattern>,
-    },
-    Raise {
-        effect_path: GreenChild<GreenPureStaticPath>,
-        control_name: GreenChild<IdentName>,
-        args: Vec<GreenChild<GreenExpr>>,
-    },
-    With {
-        handler_expr: GreenChild<GreenExpr>,
-        clauses: Vec<GreenChild<GreenCatchClause>>,
-    },
-    Resume {
-        expr: GreenChild<GreenExpr>,
-    },
-    TupleIndex {
-        expr: GreenChild<GreenExpr>,
-        index: usize,
-    },
-    PipeLine {
-        left: GreenChild<GreenExpr>,
-        right: GreenChild<GreenExpr>,
-    },
-    ConstEval {
-        expr: GreenChild<GreenExpr>,
-    },
-}
+// ===----------------------------
+// TupleElement
+// ===----------------------------
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct GreenElseIf {
-    pub cond: GreenChild<GreenExpr>,
-    pub body: GreenChild<GreenExpr>,
-    pub text_len: TextLen,
+pub struct TupleElement {
+    syntax: SyntaxNode,
+}
+
+impl TupleElement {
+    pub fn cast(node: SyntaxNode) -> Option<Self> {
+        if node.kind() == SyntaxKind::TupleElement {
+            Some(Self { syntax: node })
+        } else {
+            None
+        }
+    }
+    pub fn ty(&self) -> Option<TypeName> {
+        self.syntax.children().find_map(TypeName::cast)
+    }
+    pub fn repeat(&self) -> Option<usize> {
+        self.syntax.children_with_tokens()
+            .filter_map(|e| e.into_token().and_then(|t| t.text().parse().ok()))
+            .next()
+    }
+}
+impl AstNode for TupleElement {
+    fn can_cast(kind: SyntaxKind) -> bool { kind == SyntaxKind::TupleElement }
+    fn cast(node: SyntaxNode) -> Option<Self> { TupleElement::cast(node) }
+    fn syntax(&self) -> &SyntaxNode { &self.syntax }
+    fn clone_for_update(&self) -> Self { TupleElement { syntax: self.syntax.clone_for_update() } }
+    fn wrap(node: SyntaxNode) -> Self { TupleElement { syntax: node } }
 }
 
 // ===----------------------------
 // Param
 // ===----------------------------
+
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct GreenParam {
-    pub name: GreenChild<IdentName>,
-    pub type_str: GreenChild<TypeName>,
-    pub text_len: TextLen,
+pub struct Param {
+    syntax: SyntaxNode,
 }
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct ParamRedNode {
-    pub span: Span,
-    pub green: Arc<GreenParam>,
+
+impl Param {
+    pub fn cast(node: SyntaxNode) -> Option<Self> {
+        if node.kind() == SyntaxKind::Param {
+            Some(Self { syntax: node })
+        } else {
+            None
+        }
+    }
+    pub fn name(&self) -> Option<IdentName> {
+        self.syntax.children_with_tokens().find_map(cast_ident)
+    }
+    pub fn type_str(&self) -> Option<TypeName> {
+        self.syntax.children().find_map(TypeName::cast)
+    }
+}
+impl AstNode for Param {
+    fn can_cast(kind: SyntaxKind) -> bool { kind == SyntaxKind::Param }
+    fn cast(node: SyntaxNode) -> Option<Self> { Param::cast(node) }
+    fn syntax(&self) -> &SyntaxNode { &self.syntax }
+    fn clone_for_update(&self) -> Self { Param { syntax: self.syntax.clone_for_update() } }
+    fn wrap(node: SyntaxNode) -> Self { Param { syntax: node } }
 }
 
 // ===----------------------------
@@ -462,379 +661,976 @@ pub struct ParamRedNode {
 // ===----------------------------
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct FieldRedNode {
-    pub span: Span,
-    pub green: Arc<GreenField>,
+pub struct Field {
+    syntax: SyntaxNode,
 }
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct GreenField {
-    pub name: GreenChild<IdentName>,
-    pub type_str: GreenChild<TypeName>,
-    pub text_len: TextLen,
+
+impl Field {
+    pub fn cast(node: SyntaxNode) -> Option<Self> {
+        if node.kind() == SyntaxKind::Field {
+            Some(Self { syntax: node })
+        } else {
+            None
+        }
+    }
+    pub fn name(&self) -> Option<IdentName> {
+        self.syntax.children_with_tokens().find_map(cast_ident)
+    }
+    pub fn type_str(&self) -> Option<TypeName> {
+        self.syntax.children().find_map(TypeName::cast)
+    }
+}
+impl AstNode for Field {
+    fn can_cast(kind: SyntaxKind) -> bool { kind == SyntaxKind::Field }
+    fn cast(node: SyntaxNode) -> Option<Self> { Field::cast(node) }
+    fn syntax(&self) -> &SyntaxNode { &self.syntax }
+    fn clone_for_update(&self) -> Self { Field { syntax: self.syntax.clone_for_update() } }
+    fn wrap(node: SyntaxNode) -> Self { Field { syntax: node } }
 }
 
 // ===----------------------------
 // GenericVar
 // ===----------------------------
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct GenericVarRedNode {
-    pub span: Span,
-    pub green: Arc<GreenGenericVar>,
-}
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct GreenGenericVar {
-    pub name: GreenChild<IdentName>,
-    pub constraint: Vec<GreenChild<TypeName>>,
-    pub text_len: TextLen,
+pub struct GenericVar {
+    syntax: SyntaxNode,
+}
+
+impl GenericVar {
+    pub fn cast(node: SyntaxNode) -> Option<Self> {
+        if node.kind() == SyntaxKind::GenericVar {
+            Some(Self { syntax: node })
+        } else {
+            None
+        }
+    }
+    pub fn name(&self) -> Option<IdentName> {
+        self.syntax.children_with_tokens().find_map(cast_ident)
+    }
+    pub fn constraint(&self) -> Vec<TypeName> {
+        self.syntax.children().filter_map(TypeName::cast).collect()
+    }
+}
+impl AstNode for GenericVar {
+    fn can_cast(kind: SyntaxKind) -> bool { kind == SyntaxKind::GenericVar }
+    fn cast(node: SyntaxNode) -> Option<Self> { GenericVar::cast(node) }
+    fn syntax(&self) -> &SyntaxNode { &self.syntax }
+    fn clone_for_update(&self) -> Self { GenericVar { syntax: self.syntax.clone_for_update() } }
+    fn wrap(node: SyntaxNode) -> Self { GenericVar { syntax: node } }
 }
 
 // ===----------------------------
-// Method
+// MethodDecl
 // ===----------------------------
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct MethodRedNode {
-    pub span: Span,
-    pub green: Arc<GreenMethodDecl>,
-}
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct GreenMethodDecl {
-    pub name: GreenChild<IdentName>,
-    pub params: Vec<GreenChild<GreenParam>>,
-    pub return_type_str: GreenChild<TypeName>,
-    pub visibility: Visibility,
-    pub text_len: TextLen,
+pub struct MethodDecl {
+    syntax: SyntaxNode,
+}
+
+impl MethodDecl {
+    pub fn cast(node: SyntaxNode) -> Option<Self> {
+        if node.kind() == SyntaxKind::MethodDecl {
+            Some(Self { syntax: node })
+        } else {
+            None
+        }
+    }
+    pub fn name(&self) -> Option<IdentName> {
+        self.syntax.children_with_tokens().find_map(cast_ident)
+    }
+    pub fn params(&self) -> impl Iterator<Item = Param> {
+        self.syntax.children().filter_map(Param::cast)
+    }
+    pub fn return_type(&self) -> Option<TypeName> {
+        self.syntax.children().find_map(TypeName::cast)
+    }
+    pub fn visibility(&self) -> Visibility {
+        if self.syntax.children_with_tokens().any(|t| t.kind() == SyntaxKind::KwPub) {
+            Visibility::Public
+        } else {
+            Visibility::Private
+        }
+    }
+}
+impl AstNode for MethodDecl {
+    fn can_cast(kind: SyntaxKind) -> bool { kind == SyntaxKind::MethodDecl }
+    fn cast(node: SyntaxNode) -> Option<Self> { MethodDecl::cast(node) }
+    fn syntax(&self) -> &SyntaxNode { &self.syntax }
+    fn clone_for_update(&self) -> Self { MethodDecl { syntax: self.syntax.clone_for_update() } }
+    fn wrap(node: SyntaxNode) -> Self { MethodDecl { syntax: node } }
 }
 
 // ===----------------------------
 // Annotation
 // ===----------------------------
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct AnnotationRedNode {
-    pub span: Span,
-    pub green: Arc<GreenAnnotation>,
-}
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct GreenAnnotation {
-    pub name: String,
-    pub args: Vec<String>,
-    pub text_len: TextLen,
+pub struct Annotation {
+    syntax: SyntaxNode,
+}
+
+impl Annotation {
+    pub fn cast(node: SyntaxNode) -> Option<Self> {
+        if node.kind() == SyntaxKind::Annotation {
+            Some(Self { syntax: node })
+        } else {
+            None
+        }
+    }
+    pub fn name(&self) -> String {
+        self.syntax.text().to_string()
+    }
+    pub fn args(&self) -> Vec<String> {
+        self.syntax.children_with_tokens()
+            .filter_map(|e| e.into_token().map(|t| t.text().to_string()))
+            .collect()
+    }
+}
+impl AstNode for Annotation {
+    fn can_cast(kind: SyntaxKind) -> bool { kind == SyntaxKind::Annotation }
+    fn cast(node: SyntaxNode) -> Option<Self> { Annotation::cast(node) }
+    fn syntax(&self) -> &SyntaxNode { &self.syntax }
+    fn clone_for_update(&self) -> Self { Annotation { syntax: self.syntax.clone_for_update() } }
+    fn wrap(node: SyntaxNode) -> Self { Annotation { syntax: node } }
 }
 
 // ===----------------------------
 // Ctor
 // ===----------------------------
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct CtorRedNode {
-    pub span: Span,
-    pub green: Arc<GreenCtor>,
-}
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct GreenCtor {
-    pub name: GreenChild<IdentName>,
-    pub generic_vars: Vec<GreenChild<GreenGenericVar>>,
-    pub from_type_str: GreenChild<TypeName>,
-    pub return_type_str: GreenChild<TypeName>,
-    pub visibility: Visibility,
-    pub text_len: TextLen,
+pub struct Ctor {
+    syntax: SyntaxNode,
+}
+
+impl Ctor {
+    pub fn cast(node: SyntaxNode) -> Option<Self> {
+        if node.kind() == SyntaxKind::Ctor {
+            Some(Self { syntax: node })
+        } else {
+            None
+        }
+    }
+    pub fn name(&self) -> Option<IdentName> {
+        self.syntax.children_with_tokens().find_map(cast_ident)
+    }
+    pub fn generic_vars(&self) -> impl Iterator<Item = GenericVar> {
+        self.syntax.children().filter_map(GenericVar::cast)
+    }
+    pub fn from_type(&self) -> Option<TypeName> {
+        self.syntax.children().find_map(TypeName::cast)
+    }
+    pub fn return_type(&self) -> Option<TypeName> {
+        self.syntax.children().filter_map(TypeName::cast).nth(1)
+    }
+    pub fn visibility(&self) -> Visibility {
+        if self.syntax.children_with_tokens().any(|t| t.kind() == SyntaxKind::KwPub) {
+            Visibility::Public
+        } else {
+            Visibility::Private
+        }
+    }
+}
+impl AstNode for Ctor {
+    fn can_cast(kind: SyntaxKind) -> bool { kind == SyntaxKind::Ctor }
+    fn cast(node: SyntaxNode) -> Option<Self> { Ctor::cast(node) }
+    fn syntax(&self) -> &SyntaxNode { &self.syntax }
+    fn clone_for_update(&self) -> Self { Ctor { syntax: self.syntax.clone_for_update() } }
+    fn wrap(node: SyntaxNode) -> Self { Ctor { syntax: node } }
 }
 
 // ===----------------------------
-// Decl
+// DeclRedNode
 // ===----------------------------
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct DeclRedNode {
-    pub span: Span,
-    pub inner: Arc<GreenDecl>,
+    syntax: SyntaxNode,
 }
 
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct GreenDecl {
-    pub name: GreenChild<IdentName>,
-    pub visibility: Visibility,
-    pub kind: GreenDeclKind,
-    pub annotations: Vec<GreenChild<GreenAnnotation>>,
-    pub text_len: TextLen,
-}
-
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub enum GreenDeclKind {
-    Fun {
-        params: Vec<GreenChild<GreenParam>>,
-        return_type_str: GreenChild<TypeName>,
-        generic_vars: Vec<GreenChild<GreenGenericVar>>,
-        block: Vec<GreenChild<GreenExpr>>,
-        where_clause: Option<GreenChild<GreenWhereClause>>,
-        is_consteval: bool,
-    },
-    FunDecl {
-        params: Vec<GreenChild<GreenParam>>,
-        return_type_str: GreenChild<TypeName>,
-        generic_vars: Vec<GreenChild<GreenGenericVar>>,
-        where_clause: Option<GreenChild<GreenWhereClause>>,
-    },
-    TypeStruct {
-        fields: Vec<GreenChild<GreenField>>,
-        has_abst: Vec<GreenChild<IdentName>>,
-        generic_vars: Vec<GreenChild<GreenGenericVar>>,
-        where_clause: Option<GreenChild<GreenWhereClause>>,
-    },
-    TypeAlias {
-        ref_to: GreenChild<TypeName>,
-        has_abst: Vec<GreenChild<IdentName>>,
-        generic_vars: Vec<GreenChild<GreenGenericVar>>,
-        where_clause: Option<GreenChild<GreenWhereClause>>,
-    },
-    Abstract {
-        super_abst: Vec<GreenChild<IdentName>>,
-        generic_vars: Vec<GreenChild<GreenGenericVar>>,
-        methods: Vec<GreenChild<GreenMethodDecl>>,
-        where_clause: Option<GreenChild<GreenWhereClause>>,
-    },
-    ADT {
-        has_abst: Vec<GreenChild<IdentName>>,
-        generic_vars: Vec<GreenChild<GreenGenericVar>>,
-        ctors: Vec<GreenChild<GreenCtor>>,
-        where_clause: Option<GreenChild<GreenWhereClause>>,
-    },
-    Const {
-        expr: GreenChild<GreenExpr>,
-        type_str: Option<GreenChild<TypeName>>,
-    },
-    Global {
-        expr: GreenChild<GreenExpr>,
-        type_str: Option<GreenChild<TypeName>>,
-    },
-    Effect {
-        controls: Vec<GreenChild<GreenEffectControl>>,
-    },
-    TypeDecl,
-    CType,
-    External {
-        sym_name: GreenChild<IdentName>,
-        params: Vec<GreenChild<GreenParam>>,
-        return_type_str: GreenChild<TypeName>,
-        is_variadic: bool,
-    },
-}
-
-// ===----------------------------
-// Text Len
-// ===----------------------------
-
-pub trait HasTextLen {
-    fn text_len(&self) -> TextLen;
-}
-
-impl HasTextLen for GreenExpr {
-    fn text_len(&self) -> TextLen {
-        self.text_len
-    }
-}
-impl HasTextLen for GreenParam {
-    fn text_len(&self) -> TextLen {
-        self.text_len
-    }
-}
-impl HasTextLen for GreenField {
-    fn text_len(&self) -> TextLen {
-        self.text_len
-    }
-}
-impl HasTextLen for GreenGenericVar {
-    fn text_len(&self) -> TextLen {
-        self.text_len
-    }
-}
-impl HasTextLen for GreenCtor {
-    fn text_len(&self) -> TextLen {
-        self.text_len
-    }
-}
-impl HasTextLen for GreenMethodDecl {
-    fn text_len(&self) -> TextLen {
-        self.text_len
-    }
-}
-impl HasTextLen for GreenAnnotation {
-    fn text_len(&self) -> TextLen {
-        self.text_len
-    }
-}
-impl HasTextLen for GreenStructFieldInit {
-    fn text_len(&self) -> TextLen {
-        self.text_len
-    }
-}
-impl HasTextLen for GreenWhereConstraint {
-    fn text_len(&self) -> TextLen {
-        self.text_len
-    }
-}
-impl HasTextLen for GreenPureStaticPath {
-    fn text_len(&self) -> TextLen {
-        self.text_len
-    }
-}
-impl HasTextLen for GreenWhereClause {
-    fn text_len(&self) -> TextLen {
-        self.text_len
-    }
-}
-impl HasTextLen for GreenDecl {
-    fn text_len(&self) -> TextLen {
-        self.text_len
-    }
-}
-impl HasTextLen for GreenElseIf {
-    fn text_len(&self) -> TextLen {
-        self.text_len
-    }
-}
-impl HasTextLen for GreenRequire {
-    fn text_len(&self) -> TextLen {
-        self.text_len
-    }
-}
-impl HasTextLen for GreenFileUnit {
-    fn text_len(&self) -> TextLen {
-        self.text_len
-    }
-}
-impl HasTextLen for IdentName {
-    fn text_len(&self) -> TextLen {
-        TextLen(self.name.len())
-    }
-}
-impl HasTextLen for GreenMatchArm {
-    fn text_len(&self) -> TextLen {
-        self.text_len
-    }
-}
-impl HasTextLen for GreenCatchClause {
-    fn text_len(&self) -> TextLen {
-        self.text_len
-    }
-}
-impl HasTextLen for GreenEffectControl {
-    fn text_len(&self) -> TextLen {
-        self.text_len
-    }
-}
-impl HasTextLen for GreenTupleElement {
-    fn text_len(&self) -> TextLen {
-        self.text_len
-    }
-}
-
-impl HasTextLen for GreenPattern {
-    fn text_len(&self) -> TextLen {
-        match self {
-            GreenPattern::Wildcard => TextLen(1),
-            GreenPattern::Literal(lit) => lit.text_len(),
-            GreenPattern::Binding(id) => id.text_len(),
-            GreenPattern::Constructor { text_len, .. }
-            | GreenPattern::Or { text_len, .. }
-            | GreenPattern::Tuple { text_len, .. }
-            | GreenPattern::Struct { text_len, .. }
-            | GreenPattern::Alias { text_len, .. } => *text_len,
-            GreenPattern::Rest => TextLen(2), // ..
+impl DeclRedNode {
+    pub fn cast(node: SyntaxNode) -> Option<Self> {
+        match node.kind() {
+            SyntaxKind::Decl
+            | SyntaxKind::ConstDecl
+            | SyntaxKind::GlobalDecl
+            | SyntaxKind::EffectDecl
+            | SyntaxKind::AbstractDecl
+            | SyntaxKind::TypeDecl
+            | SyntaxKind::TypeAlias
+            | SyntaxKind::TypeStruct
+            | SyntaxKind::AdtDecl
+            | SyntaxKind::FunDecl
+            | SyntaxKind::FunDef
+            | SyntaxKind::ExternalDecl
+            | SyntaxKind::CTypeDecl => Some(Self { syntax: node }),
+            _ => None,
         }
     }
-}
 
-impl HasTextLen for GreenStructPatternField {
-    fn text_len(&self) -> TextLen {
-        self.text_len
+    pub fn kind(&self) -> SyntaxKind {
+        self.syntax.kind()
+    }
+
+    pub fn name(&self) -> Option<IdentName> {
+        self.syntax.children_with_tokens().find_map(cast_ident)
+    }
+
+    pub fn visibility(&self) -> Visibility {
+        if self.syntax.children_with_tokens().any(|t| t.kind() == SyntaxKind::KwPub) {
+            Visibility::Public
+        } else {
+            Visibility::Private
+        }
+    }
+
+    pub fn annotations(&self) -> impl Iterator<Item = Annotation> {
+        self.syntax.children().filter_map(Annotation::cast)
+    }
+
+    pub fn fun_params(&self) -> impl Iterator<Item = Param> {
+        self.syntax.children().filter_map(Param::cast)
+    }
+    pub fn fun_return_type(&self) -> Option<TypeName> {
+        self.syntax.children().find_map(TypeName::cast)
+    }
+    pub fn fun_generic_vars(&self) -> impl Iterator<Item = GenericVar> {
+        self.syntax.children().filter_map(GenericVar::cast)
+    }
+    pub fn fun_block(&self) -> impl Iterator<Item = ExprRedNode> {
+        self.syntax.children().filter_map(ExprRedNode::cast)
+    }
+    pub fn where_clause(&self) -> Option<WhereClause> {
+        self.syntax.children().find_map(WhereClause::cast)
+    }
+    pub fn is_consteval(&self) -> bool {
+        self.syntax.children_with_tokens().any(|t| t.kind() == SyntaxKind::KwConst)
+    }
+
+    pub fn type_struct_fields(&self) -> impl Iterator<Item = Field> {
+        self.syntax.children().filter_map(Field::cast)
+    }
+    pub fn type_alias_ref(&self) -> Option<TypeName> {
+        self.syntax.children().find_map(TypeName::cast)
+    }
+    pub fn has_abst(&self) -> impl Iterator<Item = IdentName> {
+        self.syntax.children_with_tokens().filter_map(cast_ident)
+    }
+
+    pub fn abstract_super(&self) -> impl Iterator<Item = IdentName> {
+        self.syntax.children_with_tokens().filter_map(cast_ident)
+    }
+    pub fn abstract_methods(&self) -> impl Iterator<Item = MethodDecl> {
+        self.syntax.children().filter_map(MethodDecl::cast)
+    }
+
+    pub fn adt_ctors(&self) -> impl Iterator<Item = Ctor> {
+        self.syntax.children().filter_map(Ctor::cast)
+    }
+
+    pub fn const_expr(&self) -> Option<ExprRedNode> {
+        self.syntax.children().find_map(ExprRedNode::cast)
+    }
+    pub fn const_type(&self) -> Option<TypeName> {
+        self.syntax.children().find_map(TypeName::cast)
+    }
+
+    pub fn global_expr(&self) -> Option<ExprRedNode> {
+        self.syntax.children().find_map(ExprRedNode::cast)
+    }
+    pub fn global_type(&self) -> Option<TypeName> {
+        self.syntax.children().find_map(TypeName::cast)
+    }
+
+    pub fn effect_controls(&self) -> impl Iterator<Item = EffectControl> {
+        self.syntax.children().filter_map(EffectControl::cast)
+    }
+
+    pub fn external_sym_name(&self) -> Option<IdentName> {
+        self.syntax.children_with_tokens().find_map(cast_ident)
+    }
+    pub fn external_params(&self) -> impl Iterator<Item = Param> {
+        self.syntax.children().filter_map(Param::cast)
+    }
+    pub fn external_return_type(&self) -> Option<TypeName> {
+        self.syntax.children().find_map(TypeName::cast)
+    }
+    pub fn external_is_variadic(&self) -> bool {
+        self.syntax.children_with_tokens().any(|t| t.kind() == SyntaxKind::DotDotDot)
     }
 }
 
-impl HasTextLen for GreenCatchParam {
-    fn text_len(&self) -> TextLen {
-        TextLen(match self {
-            GreenCatchParam::Binding { name } => name.text_len().0 + "binding ".len(),
-            GreenCatchParam::Rest => 2, // ".."
+impl AstNode for DeclRedNode {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        matches!(kind,
+            SyntaxKind::Decl
+            | SyntaxKind::ConstDecl
+            | SyntaxKind::GlobalDecl
+            | SyntaxKind::EffectDecl
+            | SyntaxKind::AbstractDecl
+            | SyntaxKind::TypeDecl
+            | SyntaxKind::TypeAlias
+            | SyntaxKind::TypeStruct
+            | SyntaxKind::AdtDecl
+            | SyntaxKind::FunDecl
+            | SyntaxKind::FunDef
+            | SyntaxKind::ExternalDecl
+            | SyntaxKind::CTypeDecl
+        )
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> { DeclRedNode::cast(node) }
+    fn syntax(&self) -> &SyntaxNode { &self.syntax }
+    fn clone_for_update(&self) -> Self { DeclRedNode { syntax: self.syntax.clone_for_update() } }
+    fn wrap(node: SyntaxNode) -> Self { DeclRedNode { syntax: node } }
+}
+
+// ===----------------------------
+// ExprRedNode
+// ===----------------------------
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct ExprRedNode {
+    syntax: SyntaxNode,
+}
+
+impl ExprRedNode {
+    pub fn cast(node: SyntaxNode) -> Option<Self> {
+        match node.kind() {
+            SyntaxKind::Expr
+            | SyntaxKind::AtomExpr
+            | SyntaxKind::BinaryExpr
+            | SyntaxKind::UnaryExpr
+            | SyntaxKind::MoveExpr
+            | SyntaxKind::CopyExpr
+            | SyntaxKind::RefExpr
+            | SyntaxKind::MutRefExpr
+            | SyntaxKind::ShareExpr
+            | SyntaxKind::CallExpr
+            | SyntaxKind::UnsafeExternalCallExpr
+            | SyntaxKind::StaticPathExpr
+            | SyntaxKind::MemberAccessExpr
+            | SyntaxKind::MakeStructExpr
+            | SyntaxKind::TypeCastExpr
+            | SyntaxKind::DoExpr
+            | SyntaxKind::LetExpr
+            | SyntaxKind::IfExpr
+            | SyntaxKind::ReturnExpr
+            | SyntaxKind::MatchExpr
+            | SyntaxKind::IsExpr
+            | SyntaxKind::RaiseExpr
+            | SyntaxKind::WithExpr
+            | SyntaxKind::ResumeExpr
+            | SyntaxKind::TupleIndexExpr
+            | SyntaxKind::PipeLineExpr
+            | SyntaxKind::ConstEvalExpr => Some(Self { syntax: node }),
+            _ => None,
+        }
+    }
+
+    pub fn span(&self) -> Span {
+        let range = self.syntax.text_range();
+        Span {
+            source_id: crate::id::FileId(0),
+            start_off: usize::from(range.start()),
+            end_off: usize::from(range.end()),
+        }
+    }
+
+    pub fn inner(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+
+    pub fn kind(&self) -> SyntaxKind {
+        self.syntax.kind()
+    }
+
+    pub fn binary_left(&self) -> Option<ExprRedNode> {
+        self.syntax.children().find_map(ExprRedNode::cast)
+    }
+    pub fn binary_op(&self) -> Option<Operator> {
+        self.syntax.children_with_tokens().find_map(|e| {
+            e.into_token().and_then(|t| syntax_kind_to_operator(t.kind()))
         })
     }
+    pub fn binary_right(&self) -> Option<ExprRedNode> {
+        self.syntax.children().filter_map(ExprRedNode::cast).nth(1)
+    }
+
+    pub fn unary_op(&self) -> Option<Operator> {
+        self.syntax.children_with_tokens().find_map(|e| {
+            e.into_token().and_then(|t| syntax_kind_to_operator(t.kind()))
+        })
+    }
+    pub fn unary_expr(&self) -> Option<ExprRedNode> {
+        self.syntax.children().find_map(ExprRedNode::cast)
+    }
+
+    pub fn call_callee(&self) -> Option<ExprRedNode> {
+        self.syntax.children().find_map(ExprRedNode::cast)
+    }
+    pub fn call_args(&self) -> impl Iterator<Item = CallArg> {
+        self.syntax.children().filter_map(CallArg::cast)
+    }
+
+    pub fn member_access_left(&self) -> Option<ExprRedNode> {
+        self.syntax.children().find_map(ExprRedNode::cast)
+    }
+    pub fn member_access_member(&self) -> Option<IdentName> {
+        self.syntax.children_with_tokens().find_map(cast_ident)
+    }
+
+    pub fn make_struct_path(&self) -> Option<ExprRedNode> {
+        self.syntax.children().find_map(ExprRedNode::cast)
+    }
+    pub fn make_struct_fields(&self) -> impl Iterator<Item = StructFieldInit> {
+        self.syntax.children().filter_map(StructFieldInit::cast)
+    }
+
+    pub fn type_cast_expr(&self) -> Option<ExprRedNode> {
+        self.syntax.children().find_map(ExprRedNode::cast)
+    }
+    pub fn type_cast_type(&self) -> Option<TypeName> {
+        self.syntax.children().find_map(TypeName::cast)
+    }
+
+    pub fn do_exprs(&self) -> impl Iterator<Item = ExprRedNode> {
+        self.syntax.children().filter_map(ExprRedNode::cast)
+    }
+
+    pub fn let_name(&self) -> Option<IdentName> {
+        self.syntax.children_with_tokens().find_map(cast_ident)
+    }
+    pub fn let_value(&self) -> Option<ExprRedNode> {
+        self.syntax.children().find_map(ExprRedNode::cast)
+    }
+    pub fn let_type(&self) -> Option<TypeName> {
+        self.syntax.children().find_map(TypeName::cast)
+    }
+
+    pub fn if_cond(&self) -> Option<ExprRedNode> {
+        self.syntax.children().find_map(ExprRedNode::cast)
+    }
+    pub fn if_then(&self) -> Option<ExprRedNode> {
+        self.syntax.children().filter_map(ExprRedNode::cast).nth(1)
+    }
+    pub fn elifs(&self) -> impl Iterator<Item = ElseIf> {
+        self.syntax.children().filter_map(ElseIf::cast)
+    }
+    pub fn else_expr(&self) -> Option<ExprRedNode> {
+        self.syntax.children().filter_map(ExprRedNode::cast).last()
+    }
+
+    pub fn return_expr(&self) -> Option<ExprRedNode> {
+        self.syntax.children().find_map(ExprRedNode::cast)
+    }
+
+    pub fn match_scrutinee(&self) -> Option<ExprRedNode> {
+        self.syntax.children().find_map(ExprRedNode::cast)
+    }
+    pub fn match_arms(&self) -> impl Iterator<Item = MatchArm> {
+        self.syntax.children().filter_map(MatchArm::cast)
+    }
+
+    pub fn is_expr(&self) -> Option<ExprRedNode> {
+        self.syntax.children().find_map(ExprRedNode::cast)
+    }
+    pub fn is_pattern(&self) -> Option<Pattern> {
+        self.syntax.children().find_map(Pattern::cast)
+    }
+
+    pub fn raise_effect_path(&self) -> Option<Path> {
+        self.syntax.children().find_map(Path::cast)
+    }
+    pub fn raise_control_name(&self) -> Option<IdentName> {
+        self.syntax.children_with_tokens().find_map(cast_ident)
+    }
+    pub fn raise_args(&self) -> impl Iterator<Item = ExprRedNode> {
+        self.syntax.children().filter_map(ExprRedNode::cast)
+    }
+
+    pub fn with_handler(&self) -> Option<ExprRedNode> {
+        self.syntax.children().find_map(ExprRedNode::cast)
+    }
+    pub fn with_clauses(&self) -> impl Iterator<Item = CatchClause> {
+        self.syntax.children().filter_map(CatchClause::cast)
+    }
+
+    pub fn resume_expr(&self) -> Option<ExprRedNode> {
+        self.syntax.children().find_map(ExprRedNode::cast)
+    }
+
+    pub fn tuple_index_expr(&self) -> Option<ExprRedNode> {
+        self.syntax.children().find_map(ExprRedNode::cast)
+    }
+    pub fn tuple_index_index(&self) -> Option<usize> {
+        self.syntax.children_with_tokens()
+            .filter_map(|e| e.into_token().and_then(|t| t.text().parse().ok()))
+            .next()
+    }
+
+    pub fn pipeline_left(&self) -> Option<ExprRedNode> {
+        self.syntax.children().find_map(ExprRedNode::cast)
+    }
+    pub fn pipeline_right(&self) -> Option<ExprRedNode> {
+        self.syntax.children().filter_map(ExprRedNode::cast).nth(1)
+    }
+
+    pub fn const_eval_expr(&self) -> Option<ExprRedNode> {
+        self.syntax.children().find_map(ExprRedNode::cast)
+    }
 }
 
-impl HasTextLen for AtomExprNode {
-    fn text_len(&self) -> TextLen {
-        match self {
-            AtomExprNode::Decimal { text_len, .. } => *text_len,
-            AtomExprNode::Int { text_len, .. } => *text_len,
-            AtomExprNode::Str { text_len, .. } => *text_len,
-            AtomExprNode::Name { text_len, .. } => *text_len,
-            AtomExprNode::Tuple { text_len, .. } => *text_len,
-            AtomExprNode::Ellipsis { text_len } => *text_len,
+impl AstNode for ExprRedNode {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        matches!(kind,
+            SyntaxKind::Expr
+            | SyntaxKind::AtomExpr
+            | SyntaxKind::BinaryExpr
+            | SyntaxKind::UnaryExpr
+            | SyntaxKind::MoveExpr
+            | SyntaxKind::CopyExpr
+            | SyntaxKind::RefExpr
+            | SyntaxKind::MutRefExpr
+            | SyntaxKind::ShareExpr
+            | SyntaxKind::CallExpr
+            | SyntaxKind::UnsafeExternalCallExpr
+            | SyntaxKind::StaticPathExpr
+            | SyntaxKind::MemberAccessExpr
+            | SyntaxKind::MakeStructExpr
+            | SyntaxKind::TypeCastExpr
+            | SyntaxKind::DoExpr
+            | SyntaxKind::LetExpr
+            | SyntaxKind::IfExpr
+            | SyntaxKind::ReturnExpr
+            | SyntaxKind::MatchExpr
+            | SyntaxKind::IsExpr
+            | SyntaxKind::RaiseExpr
+            | SyntaxKind::WithExpr
+            | SyntaxKind::ResumeExpr
+            | SyntaxKind::TupleIndexExpr
+            | SyntaxKind::PipeLineExpr
+            | SyntaxKind::ConstEvalExpr
+        )
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> { ExprRedNode::cast(node) }
+    fn syntax(&self) -> &SyntaxNode { &self.syntax }
+    fn clone_for_update(&self) -> Self { ExprRedNode { syntax: self.syntax.clone_for_update() } }
+    fn wrap(node: SyntaxNode) -> Self { ExprRedNode { syntax: node } }
+}
+
+// ===----------------------------
+// StructFieldInit
+// ===----------------------------
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct StructFieldInit {
+    syntax: SyntaxNode,
+}
+
+impl StructFieldInit {
+    pub fn cast(node: SyntaxNode) -> Option<Self> {
+        if node.kind() == SyntaxKind::StructFieldInit {
+            Some(Self { syntax: node })
+        } else {
+            None
+        }
+    }
+    pub fn name(&self) -> Option<IdentName> {
+        self.syntax.children_with_tokens().find_map(cast_ident)
+    }
+    pub fn value(&self) -> Option<ExprRedNode> {
+        self.syntax.children().find_map(ExprRedNode::cast)
+    }
+}
+impl AstNode for StructFieldInit {
+    fn can_cast(kind: SyntaxKind) -> bool { kind == SyntaxKind::StructFieldInit }
+    fn cast(node: SyntaxNode) -> Option<Self> { StructFieldInit::cast(node) }
+    fn syntax(&self) -> &SyntaxNode { &self.syntax }
+    fn clone_for_update(&self) -> Self { StructFieldInit { syntax: self.syntax.clone_for_update() } }
+    fn wrap(node: SyntaxNode) -> Self { StructFieldInit { syntax: node } }
+}
+
+// ===----------------------------
+// CallArg
+// ===----------------------------
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct CallArg {
+    syntax: SyntaxNode,
+}
+
+impl CallArg {
+    pub fn cast(node: SyntaxNode) -> Option<Self> {
+        if node.kind() == SyntaxKind::CallArg {
+            Some(Self { syntax: node })
+        } else {
+            None
+        }
+    }
+    pub fn name(&self) -> Option<IdentName> {
+        self.syntax.children_with_tokens().find_map(cast_ident)
+    }
+    pub fn value(&self) -> Option<ExprRedNode> {
+        self.syntax.children().find_map(ExprRedNode::cast)
+    }
+}
+impl AstNode for CallArg {
+    fn can_cast(kind: SyntaxKind) -> bool { kind == SyntaxKind::CallArg }
+    fn cast(node: SyntaxNode) -> Option<Self> { CallArg::cast(node) }
+    fn syntax(&self) -> &SyntaxNode { &self.syntax }
+    fn clone_for_update(&self) -> Self { CallArg { syntax: self.syntax.clone_for_update() } }
+    fn wrap(node: SyntaxNode) -> Self { CallArg { syntax: node } }
+}
+
+// ===----------------------------
+// Pattern
+// ===----------------------------
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct Pattern {
+    syntax: SyntaxNode,
+}
+
+impl Pattern {
+    pub fn cast(node: SyntaxNode) -> Option<Self> {
+        match node.kind() {
+            SyntaxKind::Pattern
+            | SyntaxKind::WildcardPat
+            | SyntaxKind::LiteralPat
+            | SyntaxKind::BindingPat
+            | SyntaxKind::ConstructorPat
+            | SyntaxKind::OrPat
+            | SyntaxKind::RestPat
+            | SyntaxKind::TuplePat
+            | SyntaxKind::StructPat
+            | SyntaxKind::AliasPat => Some(Self { syntax: node }),
+            _ => None,
+        }
+    }
+
+    pub fn kind(&self) -> SyntaxKind {
+        self.syntax.kind()
+    }
+
+    pub fn wildcard(&self) -> Option<()> {
+        if self.syntax.kind() == SyntaxKind::WildcardPat { Some(()) } else { None }
+    }
+
+    pub fn literal(&self) -> Option<AtomExprNode> {
+        if self.syntax.kind() == SyntaxKind::LiteralPat {
+            self.syntax.children().find_map(AtomExprNode::cast)
+        } else {
+            None
+        }
+    }
+
+    pub fn binding(&self) -> Option<IdentName> {
+        if self.syntax.kind() == SyntaxKind::BindingPat {
+            self.syntax.children_with_tokens().find_map(cast_ident)
+        } else {
+            None
+        }
+    }
+
+    pub fn constructor(&self) -> Option<(TypeName, Vec<Pattern>)> {
+        if self.syntax.kind() == SyntaxKind::ConstructorPat {
+            let type_name = self.syntax.children().find_map(TypeName::cast)?;
+            let args = self.syntax.children().filter_map(Pattern::cast).collect();
+            Some((type_name, args))
+        } else {
+            None
+        }
+    }
+
+    pub fn or_pattern(&self) -> Option<(Pattern, Pattern)> {
+        if self.syntax.kind() == SyntaxKind::OrPat {
+            let mut children = self.syntax.children().filter_map(Pattern::cast);
+            let left = children.next()?;
+            let right = children.next()?;
+            Some((left, right))
+        } else {
+            None
+        }
+    }
+
+    pub fn rest(&self) -> bool {
+        self.syntax.kind() == SyntaxKind::RestPat
+    }
+
+    pub fn tuple_pattern(&self) -> Vec<Pattern> {
+        self.syntax.children().filter_map(Pattern::cast).collect()
+    }
+
+    pub fn struct_pattern(&self) -> Option<(Path, Vec<StructPatternField>, bool)> {
+        if self.syntax.kind() == SyntaxKind::StructPat {
+            let path = self.syntax.children().find_map(Path::cast)?;
+            let fields: Vec<_> = self.syntax.children().filter_map(StructPatternField::cast).collect();
+            let rest = self.syntax.children_with_tokens().any(|t| t.kind() == SyntaxKind::DotDot);
+            Some((path, fields, rest))
+        } else {
+            None
+        }
+    }
+
+    pub fn alias(&self) -> Option<(Pattern, IdentName)> {
+        if self.syntax.kind() == SyntaxKind::AliasPat {
+            let inner = self.syntax.children().find_map(Pattern::cast)?;
+            let name = self.syntax.children_with_tokens().find_map(cast_ident)?;
+            Some((inner, name))
+        } else {
+            None
         }
     }
 }
 
-impl HasTextLen for TypeName {
-    fn text_len(&self) -> TextLen {
-        match self {
-            TypeName::Named { text_len, .. }
-            | TypeName::Ref { text_len, .. }
-            | TypeName::MutRef { text_len, .. }
-            | TypeName::Share { text_len, .. }
-            | TypeName::Tuple { text_len, .. }
-            | TypeName::Impl { text_len, .. }
-            | TypeName::Fun { text_len, .. }
-            | TypeName::Typeof { text_len, .. }
-            | TypeName::Wildcard { text_len } => *text_len,
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct StructPatternField {
+    syntax: SyntaxNode,
+}
+impl StructPatternField {
+    pub fn cast(node: SyntaxNode) -> Option<Self> {
+        if node.kind() == SyntaxKind::StructPatternField {
+            Some(Self { syntax: node })
+        } else {
+            None
         }
     }
+    pub fn field_name(&self) -> Option<IdentName> {
+        self.syntax.children_with_tokens().find_map(cast_ident)
+    }
+    pub fn pattern(&self) -> Option<Pattern> {
+        self.syntax.children().find_map(Pattern::cast)
+    }
+}
+impl AstNode for StructPatternField {
+    fn can_cast(kind: SyntaxKind) -> bool { kind == SyntaxKind::StructPatternField }
+    fn cast(node: SyntaxNode) -> Option<Self> { StructPatternField::cast(node) }
+    fn syntax(&self) -> &SyntaxNode { &self.syntax }
+    fn clone_for_update(&self) -> Self { StructPatternField { syntax: self.syntax.clone_for_update() } }
+    fn wrap(node: SyntaxNode) -> Self { StructPatternField { syntax: node } }
 }
 
 // ===----------------------------
-// Helper Functions
+// MatchArm
 // ===----------------------------
 
-pub fn child_expr_red(parent_span: &Span, child: &GreenChild<GreenExpr>) -> ExprRedNode {
-    let start = parent_span.start_off + child.relative_start;
-    let len = child.node.text_len;
-    ExprRedNode {
-        span: Span {
-            source_id: parent_span.source_id,
-            start_off: start,
-            end_off: start + len.0,
-        },
-        inner: Arc::clone(&child.node),
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct MatchArm {
+    syntax: SyntaxNode,
+}
+impl MatchArm {
+    pub fn cast(node: SyntaxNode) -> Option<Self> {
+        if node.kind() == SyntaxKind::MatchArm {
+            Some(Self { syntax: node })
+        } else {
+            None
+        }
+    }
+    pub fn pattern(&self) -> Option<Pattern> {
+        self.syntax.children().find_map(Pattern::cast)
+    }
+    pub fn guard(&self) -> Option<ExprRedNode> {
+        self.syntax.children().find_map(ExprRedNode::cast)
+    }
+    pub fn body(&self) -> Option<ExprRedNode> {
+        self.syntax.children().filter_map(ExprRedNode::cast).nth(1)
     }
 }
-
-pub fn child_decl_red(parent_span: &Span, child: &GreenChild<GreenDecl>) -> DeclRedNode {
-    let start = parent_span.start_off + child.relative_start;
-    let len = child.node.text_len;
-    DeclRedNode {
-        span: Span {
-            source_id: parent_span.source_id,
-            start_off: start,
-            end_off: start + len.0,
-        },
-        inner: Arc::clone(&child.node),
-    }
+impl AstNode for MatchArm {
+    fn can_cast(kind: SyntaxKind) -> bool { kind == SyntaxKind::MatchArm }
+    fn cast(node: SyntaxNode) -> Option<Self> { MatchArm::cast(node) }
+    fn syntax(&self) -> &SyntaxNode { &self.syntax }
+    fn clone_for_update(&self) -> Self { MatchArm { syntax: self.syntax.clone_for_update() } }
+    fn wrap(node: SyntaxNode) -> Self { MatchArm { syntax: node } }
 }
 
-pub fn child_span(parent_span: &Span, relative_start: usize, text_len: usize) -> Span {
+// ===----------------------------
+// EffectControl
+// ===----------------------------
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct EffectControl {
+    syntax: SyntaxNode,
+}
+impl EffectControl {
+    pub fn cast(node: SyntaxNode) -> Option<Self> {
+        if node.kind() == SyntaxKind::EffectControl {
+            Some(Self { syntax: node })
+        } else {
+            None
+        }
+    }
+    pub fn name(&self) -> Option<IdentName> {
+        self.syntax.children_with_tokens().find_map(cast_ident)
+    }
+    pub fn params(&self) -> impl Iterator<Item = Param> {
+        self.syntax.children().filter_map(Param::cast)
+    }
+    pub fn return_type(&self) -> Option<TypeName> {
+        self.syntax.children().find_map(TypeName::cast)
+    }
+}
+impl AstNode for EffectControl {
+    fn can_cast(kind: SyntaxKind) -> bool { kind == SyntaxKind::EffectControl }
+    fn cast(node: SyntaxNode) -> Option<Self> { EffectControl::cast(node) }
+    fn syntax(&self) -> &SyntaxNode { &self.syntax }
+    fn clone_for_update(&self) -> Self { EffectControl { syntax: self.syntax.clone_for_update() } }
+    fn wrap(node: SyntaxNode) -> Self { EffectControl { syntax: node } }
+}
+
+// ===----------------------------
+// CatchClause
+// ===----------------------------
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct CatchClause {
+    syntax: SyntaxNode,
+}
+impl CatchClause {
+    pub fn cast(node: SyntaxNode) -> Option<Self> {
+        if node.kind() == SyntaxKind::CatchClause {
+            Some(Self { syntax: node })
+        } else {
+            None
+        }
+    }
+    pub fn control_path(&self) -> Option<Path> {
+        self.syntax.children().find_map(Path::cast)
+    }
+    pub fn params(&self) -> Vec<CatchParam> {
+        self.syntax.children().filter_map(CatchParam::cast).collect()
+    }
+    pub fn body(&self) -> Option<ExprRedNode> {
+        self.syntax.children().find_map(ExprRedNode::cast)
+    }
+}
+impl AstNode for CatchClause {
+    fn can_cast(kind: SyntaxKind) -> bool { kind == SyntaxKind::CatchClause }
+    fn cast(node: SyntaxNode) -> Option<Self> { CatchClause::cast(node) }
+    fn syntax(&self) -> &SyntaxNode { &self.syntax }
+    fn clone_for_update(&self) -> Self { CatchClause { syntax: self.syntax.clone_for_update() } }
+    fn wrap(node: SyntaxNode) -> Self { CatchClause { syntax: node } }
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct CatchParam {
+    syntax: SyntaxNode,
+}
+impl CatchParam {
+    pub fn cast(node: SyntaxNode) -> Option<Self> {
+        if node.kind() == SyntaxKind::CatchParam {
+            Some(Self { syntax: node })
+        } else {
+            None
+        }
+    }
+    pub fn is_rest(&self) -> bool {
+        self.syntax.children_with_tokens().any(|t| t.kind() == SyntaxKind::DotDot)
+    }
+    pub fn name(&self) -> Option<IdentName> {
+        self.syntax.children_with_tokens().find_map(cast_ident)
+    }
+}
+impl AstNode for CatchParam {
+    fn can_cast(kind: SyntaxKind) -> bool { kind == SyntaxKind::CatchParam }
+    fn cast(node: SyntaxNode) -> Option<Self> { CatchParam::cast(node) }
+    fn syntax(&self) -> &SyntaxNode { &self.syntax }
+    fn clone_for_update(&self) -> Self { CatchParam { syntax: self.syntax.clone_for_update() } }
+    fn wrap(node: SyntaxNode) -> Self { CatchParam { syntax: node } }
+}
+
+// ===----------------------------
+// ElseIf
+// ===----------------------------
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct ElseIf {
+    syntax: SyntaxNode,
+}
+impl ElseIf {
+    pub fn cast(node: SyntaxNode) -> Option<Self> {
+        if node.kind() == SyntaxKind::ElseIf {
+            Some(Self { syntax: node })
+        } else {
+            None
+        }
+    }
+    pub fn cond(&self) -> Option<ExprRedNode> {
+        self.syntax.children().find_map(ExprRedNode::cast)
+    }
+    pub fn body(&self) -> Option<ExprRedNode> {
+        self.syntax.children().filter_map(ExprRedNode::cast).nth(1)
+    }
+}
+impl AstNode for ElseIf {
+    fn can_cast(kind: SyntaxKind) -> bool { kind == SyntaxKind::ElseIf }
+    fn cast(node: SyntaxNode) -> Option<Self> { ElseIf::cast(node) }
+    fn syntax(&self) -> &SyntaxNode { &self.syntax }
+    fn clone_for_update(&self) -> Self { ElseIf { syntax: self.syntax.clone_for_update() } }
+    fn wrap(node: SyntaxNode) -> Self { ElseIf { syntax: node } }
+}
+
+// ===----------------------------
+// AtomExprNode
+// ===----------------------------
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct AtomExprNode {
+    syntax: SyntaxNode,
+}
+impl AtomExprNode {
+    pub fn cast(node: SyntaxNode) -> Option<Self> {
+        if node.kind() == SyntaxKind::AtomExpr {
+            Some(Self { syntax: node })
+        } else {
+            None
+        }
+    }
+    pub fn text(&self) -> String {
+        self.syntax.text().to_string()
+    }
+    pub fn kind(&self) -> SyntaxKind {
+        self.syntax.first_child_or_token()
+            .map(|e| e.kind())
+            .unwrap_or(SyntaxKind::Error)
+    }
+}
+impl AstNode for AtomExprNode {
+    fn can_cast(kind: SyntaxKind) -> bool { kind == SyntaxKind::AtomExpr }
+    fn cast(node: SyntaxNode) -> Option<Self> { AtomExprNode::cast(node) }
+    fn syntax(&self) -> &SyntaxNode { &self.syntax }
+    fn clone_for_update(&self) -> Self { AtomExprNode { syntax: self.syntax.clone_for_update() } }
+    fn wrap(node: SyntaxNode) -> Self { AtomExprNode { syntax: node } }
+}
+
+// ===----------------------------
+// Helper functions (red -> red)
+// ===----------------------------
+
+pub fn child_expr_red(_parent: &SyntaxNode, child: &SyntaxNode) -> ExprRedNode {
+    ExprRedNode::wrap(child.clone())
+}
+
+pub fn child_decl_red(_parent: &SyntaxNode, child: &SyntaxNode) -> DeclRedNode {
+    DeclRedNode::wrap(child.clone())
+}
+
+pub fn child_span(parent: &SyntaxNode, relative_start: usize, text_len: usize) -> Span {
+    let base_start = usize::from(parent.text_range().start());
     Span {
-        source_id: parent_span.source_id,
-        start_off: parent_span.start_off + relative_start,
-        end_off: parent_span.start_off + relative_start + text_len,
+        source_id: crate::id::FileId(0),
+        start_off: base_start + relative_start,
+        end_off: base_start + relative_start + text_len,
     }
 }
 
-pub fn child_span_of<T: HasTextLen>(base: &Span, child: &GreenChild<T>) -> Span {
-    let start = base.start_off + child.relative_start;
-    let len = child.node.text_len();
+pub fn child_span_of(_base: &SyntaxNode, child: &SyntaxNode) -> Span {
+    let range = child.text_range();
     Span {
-        source_id: base.source_id,
-        start_off: start,
-        end_off: start + len.0,
+        source_id: crate::id::FileId(0),
+        start_off: usize::from(range.start()),
+        end_off: usize::from(range.end()),
     }
 }

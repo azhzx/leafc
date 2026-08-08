@@ -71,6 +71,7 @@ pub struct Preprocessor {
     preprocessors: HashMap<String, PPDef>,
     expanding: HashSet<String>,
     counter: usize,
+    frozen: HashSet<String>,
     diag_collector: RefCell<DiagCollector>,
 }
 
@@ -382,12 +383,6 @@ impl Preprocessor {
     fn expand_all(&mut self, tokens: Vec<Token>) -> Result<Vec<Token>, DiagError> {
         let mut current_tokens = tokens;
 
-        // fixme:
-        // __define A 2 * B
-        // __define B A + 3
-        // A
-        // fail to expand
-
         loop {
             let mut result = Vec::new();
             let mut index = 0;
@@ -431,7 +426,7 @@ impl Preprocessor {
                                 depth += 1;
                                 current_arg.push(token.clone());
                             }
-                            TokenType::Rparen => {
+                            Rparen => {
                                 depth -= 1;
                                 if depth == 0 {
                                     // 这是最外层的右括号
@@ -441,7 +436,7 @@ impl Preprocessor {
                                     current_arg.push(token.clone());
                                 }
                             }
-                            TokenType::Comma => {
+                            Comma => {
                                 if depth == 1 {
                                     args.push(current_arg.clone());
                                     current_arg.clear();
@@ -506,13 +501,20 @@ impl Preprocessor {
 
 
                     // 展开
-                    if self.expanding.contains(&macro_name.text) {
-                        // 不替换
+                    if self.frozen.contains(&macro_name.text) {
+                        // 原样保留
+                        result.push(macro_name.clone());
+                        result.append(&mut current_tokens[index_before_args..index].to_vec());
+                    } else if self.expanding.contains(&macro_name.text) {
+                        for name in self.expanding.iter() {
+                            self.frozen.insert(name.clone());
+                        }
+                        self.frozen.insert(macro_name.text.clone());
                         result.push(macro_name.clone());
                         result.append(&mut current_tokens[index_before_args..index].to_vec());
                     } else {
-                        self.expanding.insert(macro_name.text.clone());
 
+                        self.expanding.insert(macro_name.text.clone());
 
                         let regular_args = &args[..def.params.len()]; // 仅取前 N 个
                         let mut arg_map: HashMap<String, Vec<Token>> = def
@@ -960,7 +962,15 @@ impl Preprocessor {
 
         let macro_name = token.text.clone();
 
+        if self.frozen.contains(&macro_name) {
+            return Ok(vec![token.clone()]);
+        }
+
         if self.expanding.contains(&macro_name) {
+            for name in self.expanding.iter() {
+                self.frozen.insert(name.clone());
+            }
+            self.frozen.insert(macro_name.clone());
             return Ok(vec![token.clone()]);
         }
 
@@ -1015,6 +1025,7 @@ impl Preprocessor {
             source,
             expanding: HashSet::new(),
             counter: 0,
+            frozen: Default::default(),
             diag_collector: Default::default(),
         }
     }
